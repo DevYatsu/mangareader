@@ -114,12 +114,9 @@ fn seed_data(conn: &rusqlite::Connection) {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let conn = rusqlite::Connection::open("mangaread.db")?;
+    let conn = db::open_db()?;
     db::init_db(&conn)?;
     seed_data(&conn);
-
-    // Enable WAL + busy timeout so the background scraper won't block reads
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
 
     let state = Arc::new(AppState {
         db: Mutex::new(conn),

@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     let driver = WebDriver::managed(DesiredCapabilities::chrome()).await?;
 
     // Open DB
-    let conn = rusqlite::Connection::open("mangaread.db")?;
+    let conn = db::open_db()?;
     db::init_db(&conn)?;
 
     let mut engine = ScraperEngine::new();

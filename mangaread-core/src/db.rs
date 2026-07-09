@@ -4,6 +4,19 @@ use crate::error::Error;
 use crate::domain::*;
 use crate::domain::title::{clean_display_title, normalize_title};
 
+/// Return the database file path, using `MANGAREAD_DB` env var or a default.
+pub fn database_path() -> String {
+    std::env::var("MANGAREAD_DB").unwrap_or_else(|_| "mangaread.db".to_string())
+}
+
+/// Open a connection to the configured database.
+pub fn open_db() -> Result<Connection, Error> {
+    let path = database_path();
+    let conn = Connection::open(&path)?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+    Ok(conn)
+}
+
 /// Create tables if they don't exist + run migrations.
 pub fn init_db(conn: &Connection) -> Result<(), Error> {
     conn.execute_batch(

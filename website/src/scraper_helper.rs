@@ -23,7 +23,8 @@ fn build_chrome_caps() -> thirtyfour::ChromeCapabilities {
 
 /// Open a dedicated read-write connection for a background scraper task.
 fn open_db() -> rusqlite::Result<rusqlite::Connection> {
-    let conn = rusqlite::Connection::open("mangaread.db")?;
+    let path = mangaread_core::db::database_path();
+    let conn = rusqlite::Connection::open(&path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;")?;
     Ok(conn)
 }

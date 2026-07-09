@@ -5,9 +5,10 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      # Persist the SQLite database between restarts
-      - mangaread_data:/app
+      # Persist the SQLite database between restarts (not /app — that shadows the binary)
+      - mangaread_data:/app/data
     environment:
+      - MANGAREAD_DB=/app/data/mangaread.db
       - CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage --disable-gpu
       # If behind a proxy, uncomment and set:
       # - http_proxy=http://proxy:port

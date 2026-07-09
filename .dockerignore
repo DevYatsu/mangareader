@@ -1,0 +1,9 @@
+target
+.git
+*.db
+*.db-shm
+*.db-wal
+.dockerignore
+Dockerfile
+README.md
+docs
