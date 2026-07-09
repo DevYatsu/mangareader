@@ -37,59 +37,42 @@ pub async fn chapter_reader(
     let next_chapter = current_idx.and_then(|i| all_chapters.get(i + 1));
 
     let content = html! {
-        div class="reader-info" {
-            a class="back-link" href={"/manga/"(manga_id)} { "← " (manga.title) }
-            h2 {
-                span class="chapter-label" { "Chapter " (chapter.number) }
+        // Floating navigation overlay (hidden by default, shows on click)
+        nav id="reader-nav" class="reader-nav" {
+            div class="nav-top" {
+                a class="back-link" href={"/manga/"(manga_id)} { "← Back" }
+                span class="chapter-title" { (manga.title) " — Ch. " (chapter.number) }
             }
-        }
-
-        div class="reader-nav" {
-            @if let Some(prev) = prev_chapter {
-                a href={"/read/"(manga_id)"/"(prev.id)} {
-                    span { "← Ch. " (prev.number) }
+            div class="nav-controls" {
+                @if let Some(prev) = prev_chapter {
+                    a href={"/read/"(manga_id)"/"(prev.id)} class="nav-btn" {
+                        "← Ch. " (prev.number)
+                    }
+                } @else {
+                    span class="nav-btn disabled" { "← First" }
                 }
-            } @else {
-                span class="nav-disabled" { "← First" }
-            }
-            span class="current" { (manga.title) " — Ch. " (chapter.number) }
-            @if let Some(next) = next_chapter {
-                a href={"/read/"(manga_id)"/"(next.id)} {
-                    span { "Ch. " (next.number) " →" }
-                }
-            } @else {
-                span class="nav-disabled" { "Last →" }
-            }
-        }
-
-        div class="reader-wrapper" {
-            div class="reader" {
-                @for page in &pages {
-                    img src=(page.image_url) alt={"Page "(page.index)};
+                @if let Some(next) = next_chapter {
+                    a href={"/read/"(manga_id)"/"(next.id)} class="nav-btn" {
+                        "Ch. " (next.number) " →"
+                    }
+                } @else {
+                    span class="nav-btn disabled" { "Last →" }
                 }
             }
         }
 
-        div class="reader-nav bottom" {
-            @if let Some(prev) = prev_chapter {
-                a href={"/read/"(manga_id)"/"(prev.id)} {
-                    span { "← Ch. " (prev.number) }
-                }
-            } @else {
-                span class="nav-disabled" { "← First" }
-            }
-            span class="current" { (pages.len()) " pages" }
-            @if let Some(next) = next_chapter {
-                a href={"/read/"(manga_id)"/"(next.id)} {
-                    span { "Ch. " (next.number) " →" }
-                }
-            } @else {
-                span class="nav-disabled" { "Last →" }
+        // Page images — full width, no chrome
+        div id="reader-images" class="reader-images" {
+            @for page in &pages {
+                img src=(page.image_url) alt={"Page "(page.index)};
             }
         }
+
+        // Subtle hint that fades out
+        div id="reader-hint" class="reader-hint" { "Tap anywhere" }
     };
 
-    Html(crate::templates::layout::base_layout(
+    Html(crate::templates::layout::reader_layout(
         &format!("Ch. {} — {}", chapter.number, manga.title),
         content,
     ).0)

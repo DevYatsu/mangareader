@@ -520,129 +520,142 @@ header h1 a:hover::before {
   color: var(--accent);
 }
 
-/* ── Reader ── */
-.reader-wrapper {
-  max-width: 100%;
-  margin: 0 auto;
+/* ── Reader Page (Immersive Mode) ── */
+.reader-page {
+  background: #000;
+  min-height: 100vh;
+  overflow-x: hidden;
 }
 
-.reader {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0 1rem;
-  animation: fadeIn 0.4s ease-out;
-}
-
-.reader img {
-  max-width: 100%;
-  width: auto;
-  height: auto;
-  display: block;
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-md);
-  border: 1px solid var(--border);
-  transition: box-shadow var(--transition-base);
-}
-
-.reader img:hover {
-  box-shadow: var(--shadow-lg);
-}
-
-/* ── Reader Navigation ── */
-.reader-nav {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 1rem 1.5rem;
-  margin: 0 auto 1.5rem;
-  max-width: 900px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  position: sticky;
-  top: 0.5rem;
+.reader-page .reader-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 100;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow: var(--shadow-md);
-  animation: slideDown 0.4s ease-out;
+  background: linear-gradient(180deg, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.85) 70%, transparent 100%);
+  padding: env(safe-area-inset-top, 0) 0 2rem;
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
 }
 
-.reader-nav.bottom {
-  position: static;
-  margin-top: 2rem;
-  margin-bottom: 3rem;
-  animation: fadeInUp 0.4s ease-out;
+.reader-page .reader-nav.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
 }
 
-.reader-nav a,
-.reader-nav span {
-  display: inline-flex;
+.reader-page .nav-top {
+  display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.5rem 1rem;
-  font-family: var(--font-display);
-  font-size: 0.9rem;
-  font-weight: 500;
-  border-radius: var(--radius-sm);
-  transition: all var(--transition-fast);
-  white-space: nowrap;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem 0.5rem;
 }
 
-.reader-nav a {
+.reader-page .nav-top .back-link {
   color: var(--accent);
-  border: 1px solid rgba(245, 158, 11, 0.2);
-  background: var(--accent-dim);
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 500;
+  flex-shrink: 0;
+  opacity: 0.8;
+  transition: opacity var(--transition-fast);
 }
 
-.reader-nav a:hover {
-  background: rgba(245, 158, 11, 0.12);
-  border-color: rgba(245, 158, 11, 0.4);
-  color: var(--accent-hover);
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px var(--accent-glow);
+.reader-page .nav-top .back-link:hover {
+  opacity: 1;
 }
 
-.reader-nav span {
-  color: var(--text-muted);
-}
-
-.reader-nav .current {
-  font-weight: 600;
+.reader-page .nav-top .chapter-title {
   color: var(--text-secondary);
-  text-align: center;
-  flex: 1;
-  min-width: 0;
+  font-size: 0.8rem;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.reader-nav .nav-disabled {
-  color: var(--text-dim);
-  border: 1px solid var(--border-subtle);
-  cursor: not-allowed;
+.reader-page .nav-controls {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0 1rem;
 }
 
-/* ── Reader Header Info ── */
-.reader-info {
-  text-align: center;
-  margin-bottom: 1.5rem;
-  animation: fadeIn 0.5s ease-out;
-}
-
-.reader-info h2 {
+.reader-page .nav-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 0.4rem;
+  padding: 0.65rem 1rem;
   font-family: var(--font-display);
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--accent);
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: var(--radius-sm);
+  transition: all var(--transition-fast);
+  text-decoration: none;
 }
 
-.reader-info .chapter-label {
-  color: var(--accent);
-  font-weight: 500;
+.reader-page .nav-btn:hover {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.reader-page .nav-btn.disabled {
+  color: var(--text-dim);
+  background: transparent;
+  border-color: var(--border-subtle);
+  cursor: default;
+}
+
+/* ── Reader Page Images ── */
+.reader-images {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+}
+
+.reader-images img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  vertical-align: top;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ── Reader Hint ── */
+.reader-hint {
+  position: fixed;
+  bottom: 3rem;
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(255,255,255,0.3);
+  font-size: 0.8rem;
+  font-family: var(--font-body);
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.8s ease;
+  animation: hintPulse 2.5s ease-in-out infinite;
+}
+
+.reader-hint.hidden {
+  opacity: 0;
+}
+
+@keyframes hintPulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.6; }
 }
 
 /* ── Footer ── */
@@ -755,43 +768,12 @@ footer p {
     margin: 0 auto;
   }
 
-  .reader-nav {
-    padding: 0.75rem 1rem;
-    gap: 0.5rem;
-    top: 0;
-    border-radius: 0;
-    border-left: none;
-    border-right: none;
-    margin: 0 -1rem 1rem;
-    max-width: none;
-  }
-
-  .reader-nav a,
-  .reader-nav span {
-    font-size: 0.8rem;
-    padding: 0.4rem 0.6rem;
-  }
-
-  .reader-nav .current {
-    font-size: 0.8rem;
-  }
-
   .chapter-list li a {
     padding: 0.75rem 1rem;
   }
 
   .source-list ul {
     grid-template-columns: 1fr;
-  }
-
-  .reader {
-    padding: 0 0.5rem;
-  }
-
-  .reader img {
-    border-radius: 0;
-    border-left: none;
-    border-right: none;
   }
 }
 
@@ -809,16 +791,21 @@ footer p {
     font-size: 0.8rem;
   }
 
-  .reader-nav a span,
-  .reader-nav span span {
-    display: none;
+  .reader-page .nav-btn {
+    font-size: 0.8rem;
+    padding: 0.55rem 0.75rem;
   }
 
-  .reader-nav a::after {
-    content: '→';
+  .reader-page .nav-top {
+    padding: 0.5rem 0.75rem 0.4rem;
   }
 
-  .reader-nav a[href]::before {
-    content: '';
+  .reader-page .reader-nav {
+    padding-bottom: 1.25rem;
+  }
+
+  .reader-hint {
+    font-size: 0.7rem;
+    bottom: 2rem;
   }
 }

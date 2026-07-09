@@ -27,3 +27,21 @@ pub fn base_layout(title: &str, content: Markup) -> Markup {
         }
     }
 }
+
+pub fn reader_layout(title: &str, content: Markup) -> Markup {
+    html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no";
+                title { (title) " — MangaRead" }
+                link rel="stylesheet" href="/static/style.css";
+            }
+            body class="reader-page" {
+                (content)
+                script src="/static/reader.js" {}
+            }
+        }
+    }
+}
