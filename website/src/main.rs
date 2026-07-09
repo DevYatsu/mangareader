@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
             "/read/{manga_id}/{chapter_id}",
             get(crate::routes::reader::chapter_reader),
         )
-        .nest_service("/static", ServeDir::new("static"))
+        .nest_service("/static", ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static")))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;

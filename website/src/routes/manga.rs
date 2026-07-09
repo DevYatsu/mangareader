@@ -14,7 +14,7 @@ pub async fn manga_detail(
     let manga = match mangaread_core::db::get_manga_by_id(&db, id) {
         Ok(m) => m,
         Err(_) => {
-            let content = html! { h2 { "Manga not found" } };
+            let content = html! { h2 class="page-title" { "Manga not found" } };
             return Html(crate::templates::layout::base_layout("Not found", content).0);
         }
     };
@@ -22,9 +22,13 @@ pub async fn manga_detail(
     let chapters = mangaread_core::db::list_chapters_by_manga(&db, manga.id).unwrap_or_default();
 
     let content = html! {
+        a class="back-link" href={"/source/"(manga.source)} { "← Back to source" }
+
         div class="manga-detail" {
-            @if let Some(ref cover) = manga.cover_url {
-                img src=(cover) alt=(manga.title);
+            div class="cover" {
+                @if let Some(ref cover) = manga.cover_url {
+                    img src=(cover) alt=(manga.title);
+                }
             }
             div class="meta" {
                 h2 { (manga.title) }
@@ -34,12 +38,15 @@ pub async fn manga_detail(
                 @if let Some(ref desc) = manga.description {
                     p class="description" { (desc) }
                 }
-                p { "Source: " (manga.source) }
+                span class="source-badge" { (manga.source) }
             }
         }
-        h3 { "Chapters" }
+
+        h3 class="section-title" { "Chapters" }
         @if chapters.is_empty() {
-            p { "No chapters scraped yet." }
+            div class="empty-state" {
+                p { "No chapters scraped yet." }
+            }
         } @else {
             ul class="chapter-list" {
                 @for ch in &chapters {
@@ -47,8 +54,9 @@ pub async fn manga_detail(
                         a href={"/read/"(manga.id)"/"(ch.id)} {
                             span class="chapter-num" { "Ch. " (ch.number) }
                             @if let Some(ref t) = ch.title {
-                                span { " — " (t) }
+                                span class="chapter-title" { " — " (t) }
                             }
+                            span class="chapter-arrow" { "→" }
                         }
                     }
                 }
