@@ -5,13 +5,17 @@ use serde::Serialize;
 
 use crate::AppState;
 
+/// JSON response for the manga chapter-check endpoint.
 #[derive(Serialize)]
 pub struct MangaCheck {
+    /// Number of chapters currently stored for the manga.
     pub chapters: usize,
 }
 
+/// JSON response for the chapter page-check endpoint.
 #[derive(Serialize)]
 pub struct ChapterCheck {
+    /// Number of pages currently stored for the chapter.
     pub pages: usize,
 }
 

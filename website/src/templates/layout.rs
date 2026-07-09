@@ -1,5 +1,10 @@
 use maud::{html, Markup, DOCTYPE};
 
+/// Render the standard page layout (HTML document shell).
+///
+/// Includes the `<title>`, Google Fonts preconnects, stylesheet, site header,
+/// main content area, and footer. The caller supplies the page title and
+/// inner body content as Maud `Markup`.
 pub fn base_layout(title: &str, content: Markup) -> Markup {
     html! {
         (DOCTYPE)
@@ -28,6 +33,11 @@ pub fn base_layout(title: &str, content: Markup) -> Markup {
     }
 }
 
+/// Render the reader-specific page layout.
+///
+/// A minimal layout without the standard site header or footer, intended for
+/// the full-screen chapter reader view. Loads the reader stylesheet and the
+/// `reader.js` script for page navigation and progress tracking.
 pub fn reader_layout(title: &str, content: Markup) -> Markup {
     html! {
         (DOCTYPE)

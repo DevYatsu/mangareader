@@ -6,22 +6,45 @@ use tracing;
 
 use crate::adapter::SiteAdapter;
 
+/// Orchestrates the full scraping pipeline across one or more site adapters.
+///
+/// Holds a collection of [`SiteAdapter`] implementations and provides high-level
+/// methods that drive each adapter through its three phases while persisting results
+/// into the shared SQLite database.
 pub struct ScraperEngine {
     adapters: Vec<Box<dyn SiteAdapter>>,
 }
 
 impl ScraperEngine {
+    /// Create a new empty engine with no adapters registered.
+    ///
+    /// Use [`add_adapter`](Self::add_adapter) to register adapters before calling any
+    /// sync methods.
     pub fn new() -> Self {
         Self {
             adapters: Vec::new(),
         }
     }
 
+    /// Register a site adapter with the engine.
+    ///
+    /// Registered adapters are consulted (in insertion order) during [`scan_all`],
+    /// [`sync_manga`], and [`sync_chapter`].
+    ///
+    /// # Arguments
+    /// * `adapter` — A boxed adapter implementing [`SiteAdapter`].
     pub fn add_adapter(&mut self, adapter: Box<dyn SiteAdapter>) {
         self.adapters.push(adapter);
     }
 
-    /// Run discover_manga for all adapters and upsert into DB.
+    /// Run [`discover_manga`](SiteAdapter::discover_manga) for every registered adapter
+    /// and upsert discovered manga into the database.
+    ///
+    /// Each manga is also auto-linked to a series by its normalized title.
+    ///
+    /// # Arguments
+    /// * `driver` — Shared Selenium WebDriver.
+    /// * `db` — SQLite connection to persist results into.
     pub async fn scan_all(&self, driver: &WebDriver, db: &Connection) -> anyhow::Result<()> {
         for adapter in &self.adapters {
             let source = adapter.source_name();
@@ -51,7 +74,18 @@ impl ScraperEngine {
         Ok(())
     }
 
-    /// For a given manga ID, visit its detail page and upsert chapters.
+    /// Visit a manga's detail page and upsert its chapters into the database.
+    ///
+    /// Looks up the manga's source to find the matching adapter, then calls
+    /// [`fetch_manga`](SiteAdapter::fetch_manga) to obtain full metadata and chapter
+    /// listings. Chapters are inserted (or updated) and the manga's metadata (author,
+    /// description, cover) is refreshed. The parent series title is also updated with
+    /// the clean detail-page title.
+    ///
+    /// # Arguments
+    /// * `driver` — Shared Selenium WebDriver.
+    /// * `db` — SQLite connection.
+    /// * `manga_id` — Database row ID of the manga to sync.
     pub async fn sync_manga(&self, driver: &WebDriver, db: &Connection, manga_id: i64) -> anyhow::Result<()> {
         let manga = db::get_manga_by_id(db, manga_id)?;
 
@@ -109,7 +143,16 @@ impl ScraperEngine {
         Ok(())
     }
 
-    /// For a given chapter ID, visit its page and upsert page image URLs.
+    /// Visit a chapter's reader page and upsert its page image URLs into the database.
+    ///
+    /// Resolves the manga owning this chapter to find the matching adapter, then calls
+    /// [`fetch_pages`](SiteAdapter::fetch_pages) to obtain the ordered list of page
+    /// image URLs. Each page is inserted as a separate row with its 1-based index.
+    ///
+    /// # Arguments
+    /// * `driver` — Shared Selenium WebDriver.
+    /// * `db` — SQLite connection.
+    /// * `chapter_id` — Database row ID of the chapter to sync.
     pub async fn sync_chapter(&self, driver: &WebDriver, db: &Connection, chapter_id: i64) -> anyhow::Result<()> {
         let chapter = db::get_chapter_by_id(db, chapter_id)?;
         let manga = db::get_manga_by_id(db, chapter.manga_id)?;

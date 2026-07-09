@@ -5,6 +5,10 @@ use std::sync::Arc;
 
 use crate::AppState;
 
+/// GET `/` — render the landing page.
+///
+/// Queries series count, chapter count, unique sources, and the 30 most
+/// recently updated chapters, then renders them inside the `base_layout`.
 pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
     let db = state.db.lock().await;
 

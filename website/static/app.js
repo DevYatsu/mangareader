@@ -1,5 +1,10 @@
-// ── MangaRead Client-Side Features ──
-// Source preferences, read tracking, reading progress
+/**
+ * MangaRead client-side features.
+ *
+ * Handles source preference toggling, read-status tracking via localStorage,
+ * reader page navigation (keyboard, click zones), and auto-scroll to resume
+ * reading position.
+ */
 
 (function () {
   'use strict';
@@ -34,6 +39,7 @@
     applySourceFilters();
   }
 
+  /** Apply source filter checkboxes and show/hide chapter list items accordingly. */
   function applySourceFilters() {
     const enabled = getEnabledSources();
     const toggles = document.querySelectorAll('.source-toggle input');
@@ -66,6 +72,11 @@
     return {};
   }
 
+  /**
+   * Persist the full read-state object for a series to localStorage.
+   * @param {number|string} seriesId
+   * @param {Object} state
+   */
   function saveReadState(seriesId, state) {
     localStorage.setItem(storageKey(seriesId), JSON.stringify(state));
   }
@@ -88,7 +99,11 @@
     return state['ch_' + chapterId] || null;
   }
 
-  /** Apply read-status CSS classes to the chapter list */
+  /**
+   * Apply read-status CSS classes (`ch-unread`, `ch-started`, `ch-finished`)
+   * to each chapter list item based on the saved read state.
+   * @param {number|string} seriesId
+   */
   function applyReadStatus(seriesId) {
     const state = getReadState(seriesId);
     document.querySelectorAll('.chapter-list > li[data-chapter-id]').forEach(li => {
@@ -116,30 +131,41 @@
   //  READER PAGE: progress tracking
   // ============================================================
 
-  function initReader(seriesId, chapterId, totalPages, mangaId) {
+  /**
+   * Initialize reading progress tracking on the reader page.
+   *
+   * Observes `.reader-page` elements (which already have `data-page-idx`
+   * from the server template).  Saves the last viewed page to localStorage
+   * on `beforeunload` and auto-marks the chapter as finished when the last
+   * page scrolls into view.
+   *
+   * @param {number|string} seriesId
+   * @param {number|string} chapterId
+   * @param {number} totalPages
+   */
+  function initReader(seriesId, chapterId, totalPages) {
     // Mark as started
     setChapterStatus(seriesId, chapterId, 'started', 1);
 
-    // Track which page images are visible
-    const images = document.querySelectorAll('.reader-images img');
+    const pages = document.querySelectorAll('.reader-page[data-page-idx]');
+    if (pages.length === 0) return;
     let lastVisible = 1;
     let finishedMarked = false;
 
-    const observer = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
+    const observer = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
         if (entry.isIntersecting) {
-          const idx = parseInt(entry.target.getAttribute('data-page-idx') || '1', 10);
-          if (idx > lastVisible) lastVisible = idx;
+          let idx = parseInt(entry.target.getAttribute('data-page-idx'), 10);
+          if (idx > lastVisible) {
+            lastVisible = idx;
+          }
         }
       });
-    }, { threshold: 0.5 });
+    }, { threshold: 0.4 });
 
-    images.forEach((img, i) => {
-      img.setAttribute('data-page-idx', String(i + 1));
-      observer.observe(img);
-    });
+    pages.forEach(function (p) { observer.observe(p); });
 
-    // Save progress periodically and on unload
+    // Save progress on unload
     function saveProgress() {
       setChapterStatus(seriesId, chapterId, 'started', lastVisible);
     }
@@ -151,32 +177,29 @@
       if (lastVisible >= totalPages) {
         setChapterStatus(seriesId, chapterId, 'finished', totalPages);
         finishedMarked = true;
-        // Show a subtle completed indicator
-        const nav = document.getElementById('reader-nav');
-        if (nav) {
-          const badge = document.createElement('span');
-          badge.className = 'completed-badge';
-          badge.textContent = '✓ Read';
-          nav.querySelector('.chapter-title')?.appendChild(badge);
-        }
+          let badge = document.createElement('span');
+        badge.className = 'completed-badge';
+        badge.textContent = '✓ Read';
+        let target = document.querySelector('.reader-topbar-chapter');
+        if (target) target.appendChild(badge);
       }
     }
 
-    // Check on scroll and periodically
-    window.addEventListener('scroll', () => {
-      // Debounced check
+    // Check on scroll and after images load
+    window.addEventListener('scroll', function () {
       if (window._finishCheck) clearTimeout(window._finishCheck);
       window._finishCheck = setTimeout(checkFinished, 500);
     });
-    // Also check after images load
-    let loadedCount = 0;
-    images.forEach(img => {
-      img.addEventListener('load', () => {
-        loadedCount++;
-        if (loadedCount === images.length) {
-          setTimeout(checkFinished, 300);
-        }
-      });
+
+    let loaded = 0;
+    pages.forEach(function (p) {
+      var img = p.querySelector('img');
+      if (img) {
+        img.addEventListener('load', function () {
+          loaded++;
+          if (loaded >= pages.length) setTimeout(checkFinished, 300);
+        });
+      }
     });
   }
 
@@ -184,6 +207,10 @@
   //  READER: page navigation & UX
   // ============================================================
 
+  /**
+   * Initialize reader UX: page navigation via click zones, keyboard arrows,
+   * scroll-aware topbar visibility, and a fading hint for first-time readers.
+   */
   function initReaderUX() {
     const images = document.getElementById('reader-images');
     if (!images) return;
@@ -337,9 +364,8 @@
       const seriesId = readerEl.getAttribute('data-series-id');
       const chapterId = readerEl.getAttribute('data-chapter-id');
       const totalPages = parseInt(readerEl.getAttribute('data-total-pages') || '0', 10);
-      const mangaId = readerEl.getAttribute('data-manga-id');
       if (seriesId && chapterId) {
-        initReader(seriesId, chapterId, totalPages, mangaId);
+        initReader(seriesId, chapterId, totalPages);
       }
     }
 
@@ -353,11 +379,10 @@
       if (saved && saved.page && saved.page > 1) {
         resumeTarget.setAttribute('data-page', String(saved.page));
         const page = saved.page;
-        const img = document.querySelector('.reader-images img[data-page-idx="' + page + '"]');
-        if (img) {
-          setTimeout(function () {
-            img.scrollIntoView({ behavior: 'instant', block: 'start' });
-          }, 200);
+        // The server template already sets data-page-idx on .reader-page divs
+        const el = document.querySelector('.reader-page[data-page-idx="' + page + '"]');
+        if (el) {
+          el.scrollIntoView({ behavior: 'instant', block: 'start' });
         }
       }
     }

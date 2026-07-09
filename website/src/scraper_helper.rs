@@ -1,3 +1,8 @@
+//! Background scraper helpers that spawn chromedriver-based sync tasks.
+//!
+//! Each sync runs on a dedicated OS thread with its own tokio runtime to
+//! work around rusqlite's `!Send` constraint on `&Connection`.
+
 use thirtyfour::ChromiumLikeCapabilities;
 
 // ── Chrome / WebDriver helpers ──
@@ -95,6 +100,9 @@ pub fn sync_manga_background(manga_id: i64) {
 }
 
 /// Sync a chapter's pages in the background.
+///
+/// Each task creates its own chromedriver and quits it when done.
+/// Spawned on a dedicated OS thread with its own tokio runtime.
 pub fn sync_chapter_background(chapter_id: i64) {
     spawn_scraper(move || async move {
         tracing::info!("bg sync: chapter {} starting...", chapter_id);

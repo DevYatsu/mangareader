@@ -1,3 +1,13 @@
+//! Route handlers for the MangaRead web application.
+//!
+//! Each submodule handles a specific group of endpoints:
+//! - `home`:    landing page with stats and recent chapters
+//! - `series`:  series listing and detail pages
+//! - `manga`:   manga-to-series redirect logic
+//! - `reader`:  chapter reading interface
+//! - `source`:  per-source manga listing
+//! - `check`:   lightweight API endpoints for sync polling
+
 pub mod check;
 pub mod home;
 pub mod manga;

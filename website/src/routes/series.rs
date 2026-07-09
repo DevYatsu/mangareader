@@ -6,6 +6,12 @@ use std::sync::Arc;
 
 use crate::AppState;
 
+/// GET `/series/{id}` — render the series detail page.
+///
+/// Loads the series, its manga entries (one per source), and merges chapters
+/// from all sources into a unified list. Triggers a background sync if the
+/// series data is stale (>30 minutes old). Returns a "not found" page when
+/// the series does not exist.
 pub async fn series_detail(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
@@ -187,7 +193,10 @@ pub async fn series_detail(
     Html(crate::templates::layout::base_layout(&s.title, content).0)
 }
 
-/// List all series, optionally filtered by search query `?q=`.
+/// GET `/series` — render the series listing page.
+///
+/// Accepts an optional `?q=` query parameter to filter by title search.
+/// Renders a grid of manga cards with cover images and chapter counts.
 pub async fn series_list(
     State(state): State<Arc<AppState>>,
     query: Query<HashMap<String, String>>,

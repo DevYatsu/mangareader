@@ -61,6 +61,8 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
 
 // ── Manga CRUD ──
 
+/// Insert a manga entry, updating on conflict of `(source, source_id)`.
+/// Returns the row id.
 pub fn insert_manga(conn: &Connection, m: &NewManga) -> Result<i64, Error> {
     conn.execute(
         "INSERT INTO manga (source, source_id, title, author, cover_url, description, detail_url, series_id)
@@ -87,6 +89,7 @@ pub fn insert_manga(conn: &Connection, m: &NewManga) -> Result<i64, Error> {
     Ok(conn.last_insert_rowid())
 }
 
+/// List all distinct source site identifiers known in the database.
 pub fn list_manga_sources(conn: &Connection) -> Result<Vec<String>, Error> {
     let mut stmt = conn.prepare("SELECT DISTINCT source FROM manga ORDER BY source")?;
     let rows = stmt.query_map([], |row| row.get(0))?;
@@ -119,6 +122,7 @@ pub fn is_manga_fresh(conn: &Connection, manga_id: i64, stale_minutes: i64) -> R
     Ok(fresh)
 }
 
+/// List manga entries from a given source site, ordered by title.
 pub fn list_manga_by_source(conn: &Connection, source: &str) -> Result<Vec<Manga>, Error> {
     let mut stmt = conn.prepare(
         "SELECT id, source, source_id, title, author, cover_url, description, detail_url, created_at, updated_at, chapters_synced_at, series_id
@@ -128,6 +132,7 @@ pub fn list_manga_by_source(conn: &Connection, source: &str) -> Result<Vec<Manga
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
 }
 
+/// List manga entries from a source site with their scraped chapter count.
 pub fn list_manga_by_source_with_count(conn: &Connection, source: &str) -> Result<Vec<MangaWithCount>, Error> {
     let mut stmt = conn.prepare(
         "SELECT m.id, m.source, m.source_id, m.title, m.author, m.cover_url, m.description, m.detail_url, m.created_at, m.updated_at, m.chapters_synced_at, m.series_id,
@@ -145,6 +150,7 @@ pub fn list_manga_by_source_with_count(conn: &Connection, source: &str) -> Resul
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
 }
 
+/// List every manga entry across all sources, ordered by title.
 pub fn list_all_manga(conn: &Connection) -> Result<Vec<Manga>, Error> {
     let mut stmt = conn.prepare(
         "SELECT id, source, source_id, title, author, cover_url, description, detail_url, created_at, updated_at, chapters_synced_at, series_id
@@ -154,6 +160,10 @@ pub fn list_all_manga(conn: &Connection) -> Result<Vec<Manga>, Error> {
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
 }
 
+/// Fetch a single manga entry by its database id.
+///
+/// # Errors
+/// Returns `Error::NotFound` if no manga matches the given id.
 pub fn get_manga_by_id(conn: &Connection, id: i64) -> Result<Manga, Error> {
     let mut stmt = conn.prepare(
         "SELECT id, source, source_id, title, author, cover_url, description, detail_url, created_at, updated_at, chapters_synced_at, series_id
@@ -186,6 +196,7 @@ fn map_manga_row(row: &rusqlite::Row) -> rusqlite::Result<Manga> {
 // ── Series CRUD ──
 
 
+/// Insert a new series and return its id.
 pub fn insert_series(conn: &Connection, title: &str) -> Result<i64, Error> {
     conn.execute(
         "INSERT INTO series (title) VALUES (?1)",
@@ -194,6 +205,10 @@ pub fn insert_series(conn: &Connection, title: &str) -> Result<i64, Error> {
     Ok(conn.last_insert_rowid())
 }
 
+/// Fetch a single series by its database id.
+///
+/// # Errors
+/// Returns `Error::NotFound` if no series matches the given id.
 pub fn get_series_by_id(conn: &Connection, id: i64) -> Result<Series, Error> {
     conn.query_row(
         "SELECT id, title, created_at FROM series WHERE id = ?1",
@@ -384,6 +399,8 @@ pub fn list_recent_chapters(conn: &Connection, limit: i64) -> Result<Vec<RecentC
 
 // ── Chapter CRUD ──
 
+/// Insert a chapter, updating on conflict of `(manga_id, source_id)`.
+/// Returns the row id.
 pub fn insert_chapter(conn: &Connection, ch: &NewChapter) -> Result<i64, Error> {
     conn.execute(
         "INSERT INTO chapters (manga_id, source_id, number, title, url)
@@ -397,6 +414,7 @@ pub fn insert_chapter(conn: &Connection, ch: &NewChapter) -> Result<i64, Error> 
     Ok(conn.last_insert_rowid())
 }
 
+/// List all chapters for a manga, ordered by chapter number.
 pub fn list_chapters_by_manga(conn: &Connection, manga_id: i64) -> Result<Vec<Chapter>, Error> {
     let mut stmt = conn.prepare(
         "SELECT id, manga_id, source_id, number, title, url, created_at
@@ -406,6 +424,10 @@ pub fn list_chapters_by_manga(conn: &Connection, manga_id: i64) -> Result<Vec<Ch
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
 }
 
+/// Fetch a single chapter by its database id.
+///
+/// # Errors
+/// Returns `Error::NotFound` if no chapter matches the given id.
 pub fn get_chapter_by_id(conn: &Connection, id: i64) -> Result<Chapter, Error> {
     let mut stmt = conn.prepare(
         "SELECT id, manga_id, source_id, number, title, url, created_at
@@ -432,6 +454,8 @@ fn map_chapter_row(row: &rusqlite::Row) -> rusqlite::Result<Chapter> {
 
 // ── Page CRUD ──
 
+/// Insert a page, updating on conflict of `(chapter_id, page_index)`.
+/// Returns the row id.
 pub fn insert_page(conn: &Connection, p: &NewPage) -> Result<i64, Error> {
     conn.execute(
         "INSERT INTO pages (chapter_id, page_index, image_url)
@@ -442,6 +466,7 @@ pub fn insert_page(conn: &Connection, p: &NewPage) -> Result<i64, Error> {
     Ok(conn.last_insert_rowid())
 }
 
+/// List all pages for a chapter, ordered by page index.
 pub fn list_pages_by_chapter(conn: &Connection, chapter_id: i64) -> Result<Vec<Page>, Error> {
     let mut stmt = conn.prepare(
         "SELECT id, chapter_id, page_index, image_url, downloaded

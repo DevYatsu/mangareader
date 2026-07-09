@@ -1,3 +1,5 @@
+//! Canonical data model, SQLite-backed repository, and business services for Mangaread.
+
 pub mod db;
 pub mod domain;
 pub mod error;

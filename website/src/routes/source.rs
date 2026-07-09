@@ -5,6 +5,10 @@ use std::sync::Arc;
 
 use crate::AppState;
 
+/// GET `/source/{source}` — list all manga from a given source.
+///
+/// Renders a grid of manga cards for entries matching the specified source
+/// name, with chapter counts and links to series or manga detail pages.
 pub async fn source_list(
     State(state): State<Arc<AppState>>,
     Path(source): Path<String>,

@@ -1,3 +1,7 @@
+//! HTTP server and HTML templates for the MangaRead manga library application.
+//!
+//! This crate provides the web frontend using Axum and Maud templates.
+
 mod routes;
 mod scraper_helper;
 mod templates;
@@ -12,10 +16,17 @@ use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
 use tracing_subscriber;
 
+/// Shared application state holding a SQLite database connection.
+///
+/// Wrapped in `Arc` and accessed via Axum's `State` extractor.
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
 }
 
+/// Seed the database with sample manga, chapters, and pages if the DB is empty.
+///
+/// Inserts One Piece as a demo entry with two chapters and eight total pages.
+/// Skips seeding if the `manga` table already contains rows.
 fn seed_data(conn: &rusqlite::Connection) {
     // Only seed if DB is empty
     let count: i64 = conn
@@ -93,6 +104,12 @@ fn seed_data(conn: &rusqlite::Connection) {
     tracing::info!("seed data inserted: 1 manga, 2 chapters, 8 pages");
 }
 
+/// Application entrypoint.
+///
+/// Initializes tracing, opens the SQLite database (with WAL mode and a busy
+/// timeout so background scrapers do not block reads), seeds sample data,
+/// builds the Axum router with all routes and static file serving, then
+/// binds to `0.0.0.0:3000`.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();

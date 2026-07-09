@@ -7,6 +7,16 @@ use tracing;
 use crate::adapter::SiteAdapter;
 use crate::adapters::helpers;
 
+/// Adapter for [Manhuaplus.top](https://manhuaplus.top).
+///
+/// - **Listing page**: `/all-manga/1` — finds `<a>` links with `href` starting with
+///   `/manga/` and exactly two path segments (filtering out chapter links and nav).
+///   Uses `title` attribute or element text for the manga title.
+/// - **Detail page**: extracts the `h1.title-detail` title, meta description, author
+///   selectors, cover image (checking `data-original` first, then `src`), and chapter
+///   links from `#nt_listchapter` / `.list-chapter`.
+/// - **Chapter page**: extracts images from `div.page-chapter img`, falling back
+///   through `src` → `data-src` → `data-original`.
 pub struct ManhuaplusAdapter;
 
 #[async_trait]

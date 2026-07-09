@@ -1,17 +1,33 @@
 use thirtyfour::WebDriver;
 use tracing;
 
-/// Wait a fixed duration for dynamic page content to load.
+/// Wait a fixed 2-second pause for dynamic page content to finish rendering.
 ///
-/// All scraped sites need a brief pause after navigation while
-/// JavaScript renders the DOM.  The constant 2-second sleep is
-/// coarse but works for all current adapters.
+/// All scraped sites use JavaScript to populate their DOM after navigation; a simple
+/// sleep is coarse but sufficient for current adapters.
+///
+/// # Arguments
+/// * `_driver` — WebDriver handle (unused, but reserved for future smarter waits).
+/// * `label` — Human-readable label logged for diagnostics (e.g. `"demonicscans index"`).
 pub async fn wait_for_page(_driver: &WebDriver, label: &str) {
     tracing::info!("{label}: page loaded, waiting 2s for dynamic content...");
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 }
 
-/// Resolve a possibly-relative URL against a base origin.
+/// Resolve a possibly-relative URL against a given base origin.
+///
+/// Handles three cases:
+/// - Already-absolute URLs (`http://...` / `https://...`) are returned as-is.
+/// - Protocol-relative URLs (`//host/path`) get `https:` prepended.
+/// - Absolute paths (`/path`) are joined to the base origin.
+/// - Relative paths (`path`) are joined with a `/` separator.
+///
+/// # Arguments
+/// * `base_origin` — Scheme + host (e.g. `"https://example.com"`).
+/// * `href` — The raw href value to resolve.
+///
+/// # Returns
+/// A fully-qualified URL string.
 pub fn make_absolute(base_origin: &str, href: &str) -> String {
     if href.starts_with("http") || href.starts_with("//") {
         // already absolute, or protocol-relative
@@ -30,8 +46,16 @@ pub fn make_absolute(base_origin: &str, href: &str) -> String {
     }
 }
 
-/// Extract a chapter number from text like "Chapter 124" or URLs like
-/// ".../chapter-124" or ".../chapter-522-6" (for 522.6).
+/// Extract a chapter number from text or a URL segment.
+///
+/// Supports patterns such as `"Chapter 124"`, `"Ch. 5"`, `"Chapter 522.6"`,
+/// `"/chapter-124"`, and `"/chapter-522-6"` (decoded as `522.6`).
+///
+/// # Arguments
+/// * `s` — The text or URL to scan.
+///
+/// # Returns
+/// The extracted number, or [`None`] if no chapter-like pattern is found.
 pub fn extract_chapter_number(s: &str) -> Option<f64> {
     // Primary: match "Chapter 124", "Ch. 124", "Chapter 522.6", "capitulo 124"
     let re = regex_lite::Regex::new(r"(?i)(?:chapter|ch\.?|capitulo)\s*(\d+(?:\.\d+)?)").ok()?;

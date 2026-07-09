@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+/// Crate-level error type.
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("Database error: {0}")]

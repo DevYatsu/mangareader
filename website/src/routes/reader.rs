@@ -5,6 +5,12 @@ use std::sync::Arc;
 
 use crate::AppState;
 
+/// GET `/read/{manga_id}/{chapter_id}` — render the chapter reader page.
+///
+/// Loads the manga, chapter, and page list from the database. If no pages
+/// exist yet (unsynced chapter), triggers a background sync and displays a
+/// loading state with polling-based auto-reload. Provides prev/next chapter
+/// navigation and uses the reader-specific layout.
 pub async fn chapter_reader(
     State(state): State<Arc<AppState>>,
     Path((manga_id, chapter_id)): Path<(i64, i64)>,

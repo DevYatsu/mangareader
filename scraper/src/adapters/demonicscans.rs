@@ -7,6 +7,13 @@ use tracing;
 use crate::adapter::SiteAdapter;
 use crate::adapters::helpers;
 
+/// Adapter for [Demonicscans.org](https://demonicscans.org).
+///
+/// - **Listing page**: `/index.php` — finds `<a>` links whose `href` contains `/manga/`.
+/// - **Detail page**: extracts the `<h1>` title, meta description, author selectors,
+///   cover image, and chapter links from `#chapters-list`.
+/// - **Chapter page**: matches page images against multiple selector patterns and falls
+///   back to all `<img>` tags (filtering out logos/icons/avatars).
 pub struct DemonicscansAdapter;
 
 #[async_trait]
