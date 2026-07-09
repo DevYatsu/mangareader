@@ -68,7 +68,7 @@ geckodriver --port=4444
 Scans the index page of each configured source and saves manga entries to the database:
 
 ```bash
-cargo run -p scraper scan
+cargo run -p manga-scraper scan
 ```
 
 Example output:
@@ -83,7 +83,7 @@ Example output:
 Visit a specific manga's detail page, extract chapter list and update metadata:
 
 ```bash
-cargo run -p scraper sync-manga <id>
+cargo run -p manga-scraper sync-manga <id>
 ```
 
 Replace `<id>` with the manga's database ID (shown from the scan output or by checking the DB).
@@ -99,7 +99,7 @@ Example output:
 Visit a chapter's reader page and extract all page image URLs:
 
 ```bash
-cargo run -p scraper sync-chapter <id>
+cargo run -p manga-scraper sync-chapter <id>
 ```
 
 Replace `<id>` with the chapter's database ID.
@@ -117,9 +117,9 @@ Example output:
 chromedriver --port=9515
 
 # Terminal 2: Scrape + serve
-cargo run -p scraper scan
-cargo run -p scraper sync-manga 1
-cargo run -p scraper sync-chapter 1
+cargo run -p manga-scraper scan
+cargo run -p manga-scraper sync-manga 1
+cargo run -p manga-scraper sync-chapter 1
 cargo run -p website
 ```
 

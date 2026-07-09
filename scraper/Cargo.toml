@@ -1,7 +1,14 @@
 [package]
-name = "scraper"
+name = "manga-scraper"
 version = "0.1.0"
 edition = "2024"
+
+[lib]
+name = "scraper"
+
+[[bin]]
+name = "scraper"
+path = "src/main.rs"
 
 [dependencies]
 mangaread-core = { path = "../mangaread-core" }

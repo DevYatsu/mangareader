@@ -33,10 +33,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
-
-    // Connect to WebDriver (defaults to chromedriver on localhost:9515)
-    let driver_url = std::env::var("WEBDRIVER_URL").unwrap_or_else(|_| "http://localhost:9515".to_string());
-    let driver = WebDriver::new(&driver_url, DesiredCapabilities::chrome()).await?;
+    let driver = WebDriver::managed(DesiredCapabilities::chrome()).await?;
 
     // Open DB
     let conn = rusqlite::Connection::open("mangaread.db")?;
