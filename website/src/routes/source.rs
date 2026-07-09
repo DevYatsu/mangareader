@@ -47,8 +47,13 @@ pub async fn source_list(
                 @for item in &manga_list {
                     @let m = &item.manga;
                     @let count = item.chapter_count;
+                    @let series_url = if let Some(sid) = m.series_id {
+                        format!("/series/{}", sid)
+                    } else {
+                        format!("/manga/{}", m.id)
+                    };
                     div class="manga-card" {
-                        a href={"/manga/"(m.id)} {
+                        a href=(series_url) {
                             div class="cover-wrapper" {
                                 @if let Some(ref cover) = m.cover_url {
                                     img src=(cover) alt=(m.title) loading="lazy";

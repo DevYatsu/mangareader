@@ -1,5 +1,6 @@
 use mangaread_core::db;
-use mangaread_core::models::{NewChapter, NewManga, NewPage};
+use mangaread_core::{NewChapter, NewManga, NewPage};
+use rusqlite::Connection;
 use thirtyfour::WebDriver;
 use tracing;
 
@@ -7,14 +8,12 @@ use crate::adapter::SiteAdapter;
 
 pub struct ScraperEngine {
     adapters: Vec<Box<dyn SiteAdapter>>,
-    db: rusqlite::Connection,
 }
 
 impl ScraperEngine {
-    pub fn new(db: rusqlite::Connection) -> Self {
+    pub fn new() -> Self {
         Self {
             adapters: Vec::new(),
-            db,
         }
     }
 
@@ -23,7 +22,7 @@ impl ScraperEngine {
     }
 
     /// Run discover_manga for all adapters and upsert into DB.
-    pub async fn scan_all(&mut self, driver: &WebDriver) -> anyhow::Result<()> {
+    pub async fn scan_all(&self, driver: &WebDriver, db: &Connection) -> anyhow::Result<()> {
         for adapter in &self.adapters {
             let source = adapter.source_name();
             tracing::info!("scanning {source} for manga...");
@@ -36,13 +35,16 @@ impl ScraperEngine {
                 let new_manga = NewManga {
                     source: source.to_string(),
                     source_id: listing.detail_url.clone(),
-                    title: listing.title,
+                    title: listing.title.clone(),
                     author: None,
                     cover_url: listing.cover_url,
                     description: None,
                     detail_url: listing.detail_url,
+                    series_id: None,
                 };
-                let id = db::insert_manga(&self.db, &new_manga)?;
+                let id = db::insert_manga(db, &new_manga)?;
+                // Auto-link to a series by normalized title
+                db::ensure_manga_in_series(db, &listing.title, id)?;
                 tracing::debug!("saved manga id={} \"{}\"", id, new_manga.title);
             }
         }
@@ -50,8 +52,8 @@ impl ScraperEngine {
     }
 
     /// For a given manga ID, visit its detail page and upsert chapters.
-    pub async fn sync_manga(&mut self, driver: &WebDriver, manga_id: i64) -> anyhow::Result<()> {
-        let manga = db::get_manga_by_id(&self.db, manga_id)?;
+    pub async fn sync_manga(&self, driver: &WebDriver, db: &Connection, manga_id: i64) -> anyhow::Result<()> {
+        let manga = db::get_manga_by_id(db, manga_id)?;
 
         let adapter = self
             .adapters
@@ -63,17 +65,25 @@ impl ScraperEngine {
 
         let info = adapter.fetch_manga(driver, &manga.detail_url).await?;
 
-        // Update manga metadata
+        // Ensure manga is linked to a series (for newly inserted or pre-feature entries)
+        let series_id = if let Some(sid) = manga.series_id {
+            sid
+        } else {
+            db::ensure_manga_in_series(db, &info.title, manga_id)?
+        };
+
+        // Update manga metadata (preserve series link from DB)
         let updated = NewManga {
             source: manga.source.clone(),
             source_id: manga.source_id.clone(),
-            title: info.title,
+            title: info.title.clone(),
             author: info.author,
             cover_url: info.cover_url,
             description: info.description,
             detail_url: info.detail_url,
+            series_id: Some(series_id),
         };
-        db::insert_manga(&self.db, &updated)?;
+        db::insert_manga(db, &updated)?;
 
         let chapter_count = info.chapters.len();
         for ch in info.chapters {
@@ -85,18 +95,24 @@ impl ScraperEngine {
                 title: ch.title,
                 url: ch.url,
             };
-            let ch_id = db::insert_chapter(&self.db, &new_chapter)?;
+            let ch_id = db::insert_chapter(db, &new_chapter)?;
             tracing::debug!("saved chapter id={} ch.{}", ch_id, new_chapter.number);
         }
+
+        // Mark when chapters were last fetched
+        db::set_chapters_synced(db, manga_id)?;
+
+        // Update the series title with the clean detail-page title
+        db::update_series_title(db, series_id, &info.title)?;
 
         tracing::info!("synced {chapter_count} chapters for manga {manga_id}",);
         Ok(())
     }
 
     /// For a given chapter ID, visit its page and upsert page image URLs.
-    pub async fn sync_chapter(&mut self, driver: &WebDriver, chapter_id: i64) -> anyhow::Result<()> {
-        let chapter = db::get_chapter_by_id(&self.db, chapter_id)?;
-        let manga = db::get_manga_by_id(&self.db, chapter.manga_id)?;
+    pub async fn sync_chapter(&self, driver: &WebDriver, db: &Connection, chapter_id: i64) -> anyhow::Result<()> {
+        let chapter = db::get_chapter_by_id(db, chapter_id)?;
+        let manga = db::get_manga_by_id(db, chapter.manga_id)?;
 
         let adapter = self
             .adapters
@@ -121,7 +137,7 @@ impl ScraperEngine {
                 index: (i + 1) as i32,
                 image_url: url.clone(),
             };
-            db::insert_page(&self.db, &new_page)?;
+            db::insert_page(db, &new_page)?;
         }
 
         tracing::info!(
@@ -130,9 +146,5 @@ impl ScraperEngine {
             chapter_id
         );
         Ok(())
-    }
-
-    pub fn into_db(self) -> rusqlite::Connection {
-        self.db
     }
 }

@@ -1,10 +1,12 @@
 mod routes;
+mod scraper_helper;
 mod templates;
 
 use axum::{
     routing::{get},
     Router,
 };
+use mangaread_core::db;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
@@ -27,7 +29,7 @@ fn seed_data(conn: &rusqlite::Connection) {
 
     let manga_id = mangaread_core::db::insert_manga(
         conn,
-        &mangaread_core::models::NewManga {
+        &mangaread_core::NewManga {
             source: "demonicscans".into(),
             source_id: "one-piece".into(),
             title: "One Piece".into(),
@@ -35,13 +37,14 @@ fn seed_data(conn: &rusqlite::Connection) {
             cover_url: Some("https://placehold.co/300x400/1a1a1a/f59e0b?text=One+Piece".into()),
             description: Some("A pirate adventure manga following Monkey D. Luffy and his crew as they search for the legendary One Piece treasure.".into()),
             detail_url: "https://demonicscans.org/manga/one-piece".into(),
+            series_id: None,
         },
     )
     .expect("insert manga");
 
     let ch1_id = mangaread_core::db::insert_chapter(
         conn,
-        &mangaread_core::models::NewChapter {
+        &mangaread_core::NewChapter {
             manga_id,
             source_id: "ch-1".into(),
             number: 1.0,
@@ -54,7 +57,7 @@ fn seed_data(conn: &rusqlite::Connection) {
     for i in 1..=5 {
         mangaread_core::db::insert_page(
             conn,
-            &mangaread_core::models::NewPage {
+            &mangaread_core::NewPage {
                 chapter_id: ch1_id,
                 index: i,
                 image_url: format!("https://placehold.co/800x1200/333/f59e0b?text=Page+{}", i),
@@ -65,7 +68,7 @@ fn seed_data(conn: &rusqlite::Connection) {
 
     let ch2_id = mangaread_core::db::insert_chapter(
         conn,
-        &mangaread_core::models::NewChapter {
+        &mangaread_core::NewChapter {
             manga_id,
             source_id: "ch-2".into(),
             number: 2.0,
@@ -78,7 +81,7 @@ fn seed_data(conn: &rusqlite::Connection) {
     for i in 1..=3 {
         mangaread_core::db::insert_page(
             conn,
-            &mangaread_core::models::NewPage {
+            &mangaread_core::NewPage {
                 chapter_id: ch2_id,
                 index: i,
                 image_url: format!("https://placehold.co/800x1200/444/f59e0b?text=Page+{}", i),
@@ -95,19 +98,28 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let conn = rusqlite::Connection::open("mangaread.db")?;
-    mangaread_core::db::init_db(&conn)?;
+    db::init_db(&conn)?;
     seed_data(&conn);
 
-    let state = Arc::new(AppState { db: Mutex::new(conn) });
+    // Enable WAL + busy timeout so the background scraper won't block reads
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+
+    let state = Arc::new(AppState {
+        db: Mutex::new(conn),
+    });
 
     let app = Router::new()
         .route("/", get(crate::routes::home::home))
+        .route("/series", get(crate::routes::series::series_list))
+        .route("/series/{id}", get(crate::routes::series::series_detail))
         .route("/source/{source}", get(crate::routes::source::source_list))
         .route("/manga/{id}", get(crate::routes::manga::manga_detail))
         .route(
             "/read/{manga_id}/{chapter_id}",
             get(crate::routes::reader::chapter_reader),
         )
+        .route("/api/check-manga/{id}", get(crate::routes::check::check_manga))
+        .route("/api/check-chapter/{id}", get(crate::routes::check::check_chapter))
         .nest_service("/static", ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static")))
         .with_state(state);
 

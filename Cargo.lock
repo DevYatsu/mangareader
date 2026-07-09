@@ -2639,9 +2639,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "manga-scraper",
  "mangaread-core",
  "maud",
  "rusqlite",
+ "serde",
+ "serde_json",
+ "thirtyfour",
  "thiserror",
  "tokio",
  "tower-http 0.7.0",

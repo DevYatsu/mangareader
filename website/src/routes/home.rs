@@ -1,24 +1,33 @@
 use axum::extract::State;
 use axum::response::Html;
 use maud::html;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::AppState;
 
 pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
     let db = state.db.lock().await;
-    let sources = mangaread_core::db::list_manga_sources(&db).unwrap_or_default();
 
-    // Build source -> manga count map
-    let all_manga = mangaread_core::db::list_all_manga(&db).unwrap_or_default();
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for m in &all_manga {
-        *counts.entry(m.source.clone()).or_insert(0) += 1;
-    }
+    let series_count = mangaread_core::db::list_all_series(&db)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let chapter_count: i64 = db
+        .query_row("SELECT COUNT(*) FROM chapters", [], |row| row.get(0))
+        .unwrap_or(0);
+    let sources_concat: String = db
+        .query_row(
+            "SELECT IFNULL(GROUP_CONCAT(DISTINCT source, ', '), '') FROM manga",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
+    let source_count = if sources_concat.is_empty() {
+        0
+    } else {
+        sources_concat.split(", ").count()
+    };
 
-    let total_manga = all_manga.len();
-    let total_sources = sources.len();
+    let recent = mangaread_core::db::list_recent_chapters(&db, 30).unwrap_or_default();
 
     let content = html! {
         // ── Hero Section ──
@@ -28,49 +37,55 @@ pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
                 p class="hero-tagline" { "Your personal manga library. Read, track, and discover." }
                 div class="hero-stats" {
                     div class="hero-stat" {
-                        span class="hero-stat-value" { (total_manga) }
-                        span class="hero-stat-label" { "Manga" }
+                        span class="hero-stat-value" { (series_count) }
+                        span class="hero-stat-label" { "Series" }
                     }
                     div class="hero-stat-divider" {}
                     div class="hero-stat" {
-                        span class="hero-stat-value" { (total_sources) }
+                        span class="hero-stat-value" { (chapter_count) }
+                        span class="hero-stat-label" { "Chapters" }
+                    }
+                    div class="hero-stat-divider" {}
+                    div class="hero-stat" {
+                        span class="hero-stat-value" { (source_count) }
                         span class="hero-stat-label" { "Sources" }
                     }
+                }
+                a href="/series" class="browse-btn" {
+                    svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
+                        path d="M5 12h14M12 5l7 7-7 7" {}
+                    }
+                    "Browse All Series"
                 }
             }
         }
 
-        // ── Sources Grid ──
-        h2 class="section-title" { "Browse by Source" }
-        @if sources.is_empty() {
+        // ── Recent Chapters ──
+        h2 class="section-title" { "Recently Updated" }
+        @if recent.is_empty() {
             div class="empty-state" {
-                p { "No manga sources found. Run the scraper first!" }
+                p { "No chapters scraped yet. Run the scraper or visit a series to trigger a sync." }
             }
         } @else {
-            div class="source-grid" {
-                @for s in &sources {
-                    @let count = counts.get(s).copied().unwrap_or(0);
-                    a class="source-card" href={"/source/"(s)} {
-                        div class="source-card-glow" {}
-                        div class="source-card-body" {
-                            div class="source-card-icon" {
-                                span { (s.chars().next().unwrap_or('?').to_uppercase()) }
+            ul class="chapter-list" {
+                @for ch in &recent {
+                    li {
+                        a href={"/read/"(ch.manga_id)"/"(ch.chapter_id)} {
+                            @if let Some(ref cover) = ch.cover_url {
+                                img class="chapter-list-thumb" src=(cover) alt="" loading="lazy";
                             }
-                            div class="source-card-info" {
-                                h3 { (s) }
-                                p {
-                                    (count)
-                                    @if count == 1 {
-                                        " manga"
-                                    } @else {
-                                        " manga"
-                                    }
+                            div class="chapter-list-body" {
+                                span class="chapter-list-title" { (ch.series_title) }
+                                span class="chapter-num" { "Ch. " (ch.chapter_number) }
+                                @if let Some(ref t) = ch.chapter_title {
+                                    span class="chapter-title" { (t) }
                                 }
                             }
-                        }
-                        div class="source-card-arrow" {
-                            svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
-                                path d="M5 12h14M12 5l7 7-7 7" {}
+                            span class="chapter-list-date" { (ch.created_at) }
+                            span class="chapter-arrow" {
+                                svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
+                                    path d="M5 12h14M12 5l7 7-7 7" {}
+                                }
                             }
                         }
                     }

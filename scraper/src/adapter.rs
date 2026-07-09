@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use mangaread_core::models::{MangaInfo, MangaListing};
+use mangaread_core::{MangaInfo, MangaListing};
 
 #[async_trait]
 pub trait SiteAdapter: Send + Sync {

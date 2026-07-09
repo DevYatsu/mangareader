@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 mangaread-core = { path = "../mangaread-core" }
+manga-scraper = { path = "../scraper" }
 axum = "0.8"
 maud = "0.27"
 tokio = { version = "1", features = ["full"] }
@@ -14,3 +15,6 @@ tracing-subscriber = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2"
 anyhow = "1"
+thirtyfour = "0.37"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

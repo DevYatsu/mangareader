@@ -39,24 +39,24 @@ async fn main() -> anyhow::Result<()> {
     let conn = rusqlite::Connection::open("mangaread.db")?;
     db::init_db(&conn)?;
 
-    let mut engine = ScraperEngine::new(conn);
+    let mut engine = ScraperEngine::new();
     engine.add_adapter(Box::new(DemonicscansAdapter));
+    engine.add_adapter(Box::new(scraper::adapters::manhuaplus::ManhuaplusAdapter));
 
     match cli.command {
         Commands::Scan => {
-            engine.scan_all(&driver).await?;
-            let db = engine.into_db();
-            let count: i64 = db
+            engine.scan_all(&driver, &conn).await?;
+            let count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM manga", [], |row| row.get(0))
                 .unwrap_or(0);
             tracing::info!("scan complete. {} manga in database.", count);
         }
         Commands::SyncManga { id } => {
-            engine.sync_manga(&driver, id).await?;
+            engine.sync_manga(&driver, &conn, id).await?;
             tracing::info!("manga {} synced.", id);
         }
         Commands::SyncChapter { id } => {
-            engine.sync_chapter(&driver, id).await?;
+            engine.sync_chapter(&driver, &conn, id).await?;
             tracing::info!("chapter {} synced.", id);
         }
     }

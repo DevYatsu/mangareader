@@ -1,0 +1,24 @@
+services:
+  mangaread:
+    build: .
+    container_name: mangaread
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persist the SQLite database between restarts
+      - mangaread_data:/app
+    environment:
+      - CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage --disable-gpu
+      # If behind a proxy, uncomment and set:
+      # - http_proxy=http://proxy:port
+      # - https_proxy=http://proxy:port
+    restart: unless-stopped
+    # Chromium needs extra capabilities in Docker
+    cap_add:
+      - SYS_ADMIN
+    # Or use --security-opt seccomp=unconfined (alternative to cap_add)
+    security_opt:
+      - seccomp:unconfined
+
+volumes:
+  mangaread_data:

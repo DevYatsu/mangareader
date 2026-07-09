@@ -1,10 +1,11 @@
 use async_trait::async_trait;
-use mangaread_core::models::{ChapterListing, MangaInfo, MangaListing};
+use mangaread_core::{ChapterListing, MangaInfo, MangaListing};
 use selectrs::{Html, Selector};
 use thirtyfour::prelude::*;
 use tracing;
 
 use crate::adapter::SiteAdapter;
+use crate::adapters::helpers;
 
 pub struct DemonicscansAdapter;
 
@@ -19,10 +20,8 @@ impl SiteAdapter for DemonicscansAdapter {
     }
 
     async fn discover_manga(&self, driver: &WebDriver) -> anyhow::Result<Vec<MangaListing>> {
-        tracing::info!("navigating to index page: https://demonicscans.org/index.php");
         driver.goto("https://demonicscans.org/index.php").await?;
-        tracing::info!("page loaded, waiting 2s for dynamic content...");
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        helpers::wait_for_page(driver, "demonicscans index").await;
 
         let page_source = driver.source().await?;
         tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
@@ -101,10 +100,8 @@ impl SiteAdapter for DemonicscansAdapter {
         driver: &WebDriver,
         detail_url: &str,
     ) -> anyhow::Result<MangaInfo> {
-        tracing::info!("navigating to manga detail page: {detail_url}");
         driver.goto(detail_url).await?;
-        tracing::info!("page loaded, waiting 2s for dynamic content...");
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        helpers::wait_for_page(driver, &format!("demonicscans detail")).await;
 
         let page_source = driver.source().await?;
         tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
@@ -135,23 +132,17 @@ impl SiteAdapter for DemonicscansAdapter {
 
         // Extract cover image
         let cover_sel =
-            Selector::parse("img[class*='cover'], .manga-cover img, img[class*='thumbnail']")
+            Selector::parse("img[class*='cover'], .manga-cover img, img[class*='thumbnail'], #manga-page img")
                 .unwrap();
         let cover_url = document
             .select(&cover_sel)
             .next()
             .and_then(|e| e.value().attr("src"))
-            .map(|s| {
-                if s.starts_with("http") {
-                    s.to_string()
-                } else {
-                    format!("https://demonicscans.org{}", s)
-                }
-            });
+            .map(|s| helpers::make_absolute(self.base_url(), s));
 
         // Extract chapter links
         let ch_sel = Selector::parse(
-            "a[href*='/manga/'][href*='chapter'], .chapter-list a, a[href*='capitulo']",
+            "#chapters-list a, a.chplinks, a[href*='chapter=']",
         )
         .unwrap();
         let chapters: Vec<ChapterListing> = document
@@ -159,14 +150,10 @@ impl SiteAdapter for DemonicscansAdapter {
             .filter_map(|e| {
                 let href = e.value().attr("href")?;
                 let text = e.text().collect::<String>().trim().to_string();
-                let url = if href.starts_with("http") {
-                    href.to_string()
-                } else {
-                    format!("https://demonicscans.org{}", href)
-                };
+                let url = helpers::make_absolute(self.base_url(), href);
 
-                let number = extract_chapter_number(&text)
-                    .or_else(|| extract_chapter_number(&url))
+                let number = helpers::extract_chapter_number(&text)
+                    .or_else(|| helpers::extract_chapter_number(&url))
                     .unwrap_or(0.0);
 
                 Some(ChapterListing {
@@ -202,10 +189,8 @@ impl SiteAdapter for DemonicscansAdapter {
         driver: &WebDriver,
         chapter_url: &str,
     ) -> anyhow::Result<Vec<String>> {
-        tracing::info!("navigating to chapter page: {chapter_url}");
         driver.goto(chapter_url).await?;
-        tracing::info!("page loaded, waiting 2s for dynamic content...");
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        helpers::wait_for_page(driver, "demonicscans chapter").await;
 
         let page_source = driver.source().await?;
         tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
@@ -223,11 +208,7 @@ impl SiteAdapter for DemonicscansAdapter {
                 .attr("src")
                 .or_else(|| img.value().attr("data-src"))
             {
-                let url = if src.starts_with("http") {
-                    src.to_string()
-                } else {
-                    format!("https://demonicscans.org{}", src)
-                };
+                let url = helpers::make_absolute(self.base_url(), src);
                 tracing::debug!("found page image via primary selector: {url}");
                 pages.push(url);
             }
@@ -243,11 +224,7 @@ impl SiteAdapter for DemonicscansAdapter {
                         tracing::debug!("skipping non-page image: {src}");
                         continue;
                     }
-                    let url = if src.starts_with("http") {
-                        src.to_string()
-                    } else {
-                        format!("https://demonicscans.org{}", src)
-                    };
+                    let url = helpers::make_absolute(self.base_url(), src);
                     tracing::debug!("found page image via fallback: {url}");
                     pages.push(url);
                 }
@@ -263,19 +240,4 @@ impl SiteAdapter for DemonicscansAdapter {
     }
 }
 
-fn extract_chapter_number(s: &str) -> Option<f64> {
-    let re = regex_lite::Regex::new(r"(?i)(?:chapter|ch\.?|capitulo)\s*(\d+(?:\.\d+)?)").ok()?;
-    if let Some(caps) = re.captures(s) {
-        if let Some(m) = caps.get(1) {
-            return m.as_str().parse::<f64>().ok();
-        }
-    }
-    // Fallback: try to find standalone number at end of URL segment
-    let re2 = regex_lite::Regex::new(r"[_-](\d+(?:\.\d+)?)$").ok()?;
-    if let Some(caps) = re2.captures(s) {
-        if let Some(m) = caps.get(1) {
-            return m.as_str().parse::<f64>().ok();
-        }
-    }
-    None
-}
+
