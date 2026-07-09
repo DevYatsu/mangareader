@@ -105,7 +105,10 @@ pub fn get_manga_by_id(conn: &Connection, id: i64) -> Result<Manga, Error> {
          FROM manga WHERE id = ?1",
     )?;
     stmt.query_row(rusqlite::params![id], map_manga_row)
-        .map_err(|_| Error::NotFound(format!("manga id={}", id)))
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("manga id={}", id)),
+            other => other.into(),
+        })
 }
 
 fn map_manga_row(row: &rusqlite::Row) -> rusqlite::Result<Manga> {
@@ -153,7 +156,10 @@ pub fn get_chapter_by_id(conn: &Connection, id: i64) -> Result<Chapter, Error> {
          FROM chapters WHERE id = ?1",
     )?;
     stmt.query_row(rusqlite::params![id], map_chapter_row)
-        .map_err(|_| Error::NotFound(format!("chapter id={}", id)))
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("chapter id={}", id)),
+            other => other.into(),
+        })
 }
 
 fn map_chapter_row(row: &rusqlite::Row) -> rusqlite::Result<Chapter> {
