@@ -90,6 +90,23 @@ pub fn list_manga_by_source(conn: &Connection, source: &str) -> Result<Vec<Manga
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
 }
 
+pub fn list_manga_by_source_with_count(conn: &Connection, source: &str) -> Result<Vec<MangaWithCount>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.source, m.source_id, m.title, m.author, m.cover_url, m.description, m.detail_url, m.created_at, m.updated_at,
+                COALESCE(cnt.c, 0) AS chapter_count
+         FROM manga m
+         LEFT JOIN (SELECT manga_id, COUNT(*) AS c FROM chapters GROUP BY manga_id) cnt ON cnt.manga_id = m.id
+         WHERE m.source = ?1
+         ORDER BY m.title",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![source], |row| {
+        let manga = map_manga_row(row)?;
+        let chapter_count: i64 = row.get(10)?;
+        Ok(MangaWithCount { manga, chapter_count })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+}
+
 pub fn list_all_manga(conn: &Connection) -> Result<Vec<Manga>, Error> {
     let mut stmt = conn.prepare(
         "SELECT id, source, source_id, title, author, cover_url, description, detail_url, created_at, updated_at

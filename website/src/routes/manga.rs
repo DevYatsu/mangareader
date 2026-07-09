@@ -20,43 +20,92 @@ pub async fn manga_detail(
     };
 
     let chapters = mangaread_core::db::list_chapters_by_manga(&db, manga.id).unwrap_or_default();
+    let chapter_count = chapters.len();
 
     let content = html! {
-        a class="back-link" href={"/source/"(manga.source)} { "← Back to source" }
+        // ── Breadcrumb ──
+        nav class="breadcrumb" {
+            a href="/" { "Home" }
+            span class="breadcrumb-sep" { "/" }
+            a href={"/source/"(manga.source)} { (manga.source) }
+            span class="breadcrumb-sep" { "/" }
+            span class="breadcrumb-current" { (manga.title) }
+        }
 
-        div class="manga-detail" {
-            div class="cover" {
+        // ── Hero Detail ──
+        div class="manga-hero" {
+            div class="manga-hero-cover" {
                 @if let Some(ref cover) = manga.cover_url {
                     img src=(cover) alt=(manga.title);
+                } @else {
+                    div class="manga-hero-placeholder" {
+                        div class="manga-hero-initial" {
+                            span { (manga.title.chars().next().unwrap_or('?').to_uppercase()) }
+                        }
+                    }
                 }
             }
-            div class="meta" {
-                h2 { (manga.title) }
+            div class="manga-hero-info" {
+                h1 { (manga.title) }
                 @if let Some(ref author) = manga.author {
-                    p class="author" { "by " (author) }
+                    p class="manga-hero-author" {
+                        svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
+                            path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" {}
+                            circle cx="12" cy="7" r="4" {}
+                        }
+                        (author)
+                    }
                 }
                 @if let Some(ref desc) = manga.description {
-                    p class="description" { (desc) }
+                    p class="manga-hero-desc" { (desc) }
                 }
-                span class="source-badge" { (manga.source) }
+                div class="manga-hero-meta" {
+                    span class="source-badge" { (manga.source) }
+                    @if chapter_count > 0 {
+                        span class="meta-stat" {
+                            svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
+                                path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" {}
+                                path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" {}
+                            }
+                            (chapter_count)
+                            @if chapter_count == 1 {
+                                " Chapter"
+                            } @else {
+                                " Chapters"
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        h3 class="section-title" { "Chapters" }
-        @if chapters.is_empty() {
-            div class="empty-state" {
-                p { "No chapters scraped yet." }
+        // ── Chapter Section ──
+        div class="chapter-section" {
+            h2 class="section-title" {
+                "Chapters"
+                @if chapter_count > 0 {
+                    span class="section-count" { (chapter_count) }
+                }
             }
-        } @else {
-            ul class="chapter-list" {
-                @for ch in &chapters {
-                    li {
-                        a href={"/read/"(manga.id)"/"(ch.id)} {
-                            span class="chapter-num" { "Ch. " (ch.number) }
-                            @if let Some(ref t) = ch.title {
-                                span class="chapter-title" { " — " (t) }
+            @if chapters.is_empty() {
+                div class="empty-state" {
+                    p { "No chapters scraped yet." }
+                }
+            } @else {
+                ul class="chapter-list" {
+                    @for ch in &chapters {
+                        li {
+                            a href={"/read/"(manga.id)"/"(ch.id)} {
+                                span class="chapter-num" { "Ch. " (ch.number) }
+                                @if let Some(ref t) = ch.title {
+                                    span class="chapter-title" { (t) }
+                                }
+                                span class="chapter-arrow" {
+                                    svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
+                                        path d="M5 12h14M12 5l7 7-7 7" {}
+                                    }
+                                }
                             }
-                            span class="chapter-arrow" { "→" }
                         }
                     }
                 }
