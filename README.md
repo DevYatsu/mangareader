@@ -19,20 +19,7 @@ website/           Binary — axum + maud web server for browsing manga
 rustup update
 ```
 
-### WebDriver (for the scraper)
-
-The scraper uses Selenium WebDriver to render JavaScript-heavy manga sites. Install one of:
-
-**ChromeDriver:**
-```bash
-brew install chromedriver
-# or download from https://chromedriver.chromium.org/
-```
-
-**GeckoDriver (Firefox):**
-```bash
-brew install geckodriver
-```
+The scraper auto-manages its own WebDriver (chromedriver) — no manual installation needed.
 
 ## Running the Website
 
@@ -51,19 +38,7 @@ The server listens on `0.0.0.0:3000` and stores the database at `./mangaread.db`
 
 The scraper navigates manga sites via WebDriver, extracts manga listings, chapters, and page images, then saves everything to SQLite.
 
-### 1. Start WebDriver
-
-In a separate terminal:
-
-```bash
-# If using Chrome (default port used by the scraper)
-chromedriver --port=9515
-
-# If using geckodriver (Firefox) — override URL with WEBDRIVER_URL
-geckodriver --port=4444
-```
-
-### 2. Discover manga from source sites
+### 1. Discover manga from source sites
 
 Scans the index page of each configured source and saves manga entries to the database:
 
@@ -78,7 +53,7 @@ Example output:
 2026-07-09T16:00:02.789Z  INFO scan complete. 42 manga in database.
 ```
 
-### 3. Sync a manga's chapters
+### 2. Sync a manga's chapters
 
 Visit a specific manga's detail page, extract chapter list and update metadata:
 
@@ -94,7 +69,7 @@ Example output:
 2026-07-09T16:01:05.456Z  INFO synced 200 chapters for manga 1
 ```
 
-### 4. Sync a chapter's page images
+### 3. Sync a chapter's page images
 
 Visit a chapter's reader page and extract all page image URLs:
 
@@ -113,10 +88,6 @@ Example output:
 ### Full workflow
 
 ```bash
-# Terminal 1: Start WebDriver
-chromedriver --port=9515
-
-# Terminal 2: Scrape + serve
 cargo run -p manga-scraper scan
 cargo run -p manga-scraper sync-manga 1
 cargo run -p manga-scraper sync-chapter 1
