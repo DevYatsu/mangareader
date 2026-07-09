@@ -34,9 +34,9 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    // Connect to WebDriver (expects chromedriver/geckodriver on localhost:4444)
-    let caps = DesiredCapabilities::chrome();
-    let driver = WebDriver::new("http://localhost:4444", caps).await?;
+    // Connect to WebDriver (defaults to chromedriver on localhost:9515)
+    let driver_url = std::env::var("WEBDRIVER_URL").unwrap_or_else(|_| "http://localhost:9515".to_string());
+    let driver = WebDriver::new(&driver_url, DesiredCapabilities::chrome()).await?;
 
     // Open DB
     let conn = rusqlite::Connection::open("mangaread.db")?;

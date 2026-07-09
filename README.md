@@ -56,10 +56,10 @@ The scraper navigates manga sites via WebDriver, extracts manga listings, chapte
 In a separate terminal:
 
 ```bash
-# If using chrome
-chromedriver --port=4444
+# If using Chrome (default port used by the scraper)
+chromedriver --port=9515
 
-# If using geckodriver (Firefox)
+# If using geckodriver (Firefox) — override URL with WEBDRIVER_URL
 geckodriver --port=4444
 ```
 
@@ -114,7 +114,7 @@ Example output:
 
 ```bash
 # Terminal 1: Start WebDriver
-chromedriver --port=4444
+chromedriver --port=9515
 
 # Terminal 2: Scrape + serve
 cargo run -p scraper scan
