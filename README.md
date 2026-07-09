@@ -1,121 +1,182 @@
 # MangaRead
 
-A Rust training project — manga reader that scrapes chapters from third-party sites and serves them through a local web interface.
+Offline manga reader — scrapes chapters from third-party sites, merges them into unified series, and serves them through a local web interface with bookmarking and reading progress tracking.
 
-**Stack:** Axum (web) + Maud (templates) + Thirtyfour (Selenium WebDriver) + SQLite
+## Architecture
+
+```
+┌─────────────────┐     ┌──────────────────────┐     ┌──────────────┐
+│   CLI (scraper) │     │   Web Server (website)│     │  Browser     │
+│                 │     │                      │     │              │
+│  cargo run scan │───▶ │  GET /series         │◀───▶│  HTML pages  │
+│  sync-manga N   │     │  GET /series/{id}    │     │  app.js      │
+│  sync-chapter N │     │  GET /read/{m}/{ch}  │     │  localStorage│
+│                 │     │                      │     │  (bookmarks) │
+│  ┌───────────┐  │     │  ┌─────────────────┐ │     │              │
+│  │Scraper    │  │     │  │bg sync thread   │ │     │              │
+│  │Engine     │──┼─────│─▶│  opens chromedrv│ │     │              │
+│  │ + adapters│  │     │  │  runs sync_*()  │ │     │              │
+│  └───────────┘  │     │  │  quits driver   │ │     │              │
+│                 │     │  └─────────────────┘ │     │              │
+└────────┬────────┘     └──────────┬───────────┘     └──────────────┘
+         │                        │
+         │         ┌──────────────┴──────────────┐
+         └────────▶│     SQLite (mangaread.db)    │
+                   │                              │
+                   │  series → manga → chapters   │
+                   │              → pages         │
+                   └──────────────────────────────┘
+```
+
+**Three crates** in a Cargo workspace:
+
+| Crate | Role |
+|-------|------|
+| `mangaread-core` | Domain types, SQLite schema, repositories, services |
+| `scraper` | CLI binary + library. `SiteAdapter` trait + implementations for each source site |
+| `website` | Axum web server. Routes, templates, background scraper threads |
+
+### Key design decisions
+
+- **Unified series**: Manga from different source sites are linked to a single `series` by normalized title. Chapters from all sources are merged; the preferred source is used where available.
+- **On-demand background sync**: Visiting a series page triggers a background chromedriver session if the data is stale (>30 min). The page shows a loading state and auto-reloads when the sync completes.
+- **No job queue**: Syncs run in ephemeral `std::thread` + `tokio::runtime` instances (one per sync). Each creates a fresh chromedriver and quits it when done.
+- **Client-side state**: Bookmarks, reading progress (current page), source preferences — all stored in `localStorage`. No user accounts.
+
+## Quick Start
+
+```bash
+# 1. Scan source sites for manga listings
+cargo run -p manga-scraper scan
+
+# 2. Sync a specific manga's chapters (optional — website can do this on demand)
+cargo run -p manga-scraper sync-manga 1
+
+# 3. Start the web server
+cargo run -p website
+
+# 4. Open http://localhost:3000
+```
+
+The website will automatically sync chapters and pages when you visit a series or chapter that has no data yet.
+
+## Docker
+
+```bash
+docker compose up --build
+```
+
+Opens on http://localhost:3000. The SQLite database persists in a named volume.
+
+## CLI Reference
+
+### `cargo run -p manga-scraper scan`
+Visit the index page of every configured source site, discover manga listings, upsert into the database. Auto-links each manga to a series by normalized title.
+
+### `cargo run -p manga-scraper sync-manga <id>`
+Visit a manga's detail page, extract chapter list, upsert chapters. Updates the series title with the clean detail-page title.
+
+### `cargo run -p manga-scraper sync-chapter <id>`
+Visit a chapter's reader page, extract page image URLs, upsert pages.
+
+## Source Adapters
+
+| Adapter | Site | Coverage |
+|---------|------|----------|
+| `DemonicscansAdapter` | demonicscans.org | Chapters, pages |
+| `ManhuaplusAdapter` | manhuaplus.top | Chapters, pages |
+
+Adding a new source: implement `SiteAdapter` in `scraper/src/adapters/`, register it in `scraper_helper.rs`.
 
 ## Project Structure
 
 ```
-mangaread-core/    Shared library — domain types, SQLite schema + CRUD
-scraper/           Binary — thirtyfour-based manga scraper with configurable SiteAdapter
-website/           Binary — axum + maud web server for browsing manga
+mangaread/
+├── mangaread-core/           # Shared domain + data layer
+│   └── src/
+│       ├── domain/            # Pure data types (no DB dependency)
+│       │   ├── series.rs      Series, SeriesWithManga
+│       │   ├── manga.rs       Manga, MangaWithCount, NewManga
+│       │   ├── chapter.rs     Chapter, NewChapter, RecentChapter
+│       │   ├── page.rs        Page, NewPage
+│       │   ├── source.rs      MangaListing, MangaInfo (scraper types)
+│       │   └── title.rs       Title cleaning/normalization
+│       ├── db/                # SQLite repos (flat namespace via db.rs)
+│       │   └── ...            insert/get/list for each aggregate
+│       ├── service/           # Business logic
+│       │   └── series.rs      pick_primary, merge_chapters, is_series_fresh
+│       └── error.rs
+│
+├── scraper/                   # CLI + library
+│   └── src/
+│       ├── adapter.rs         SiteAdapter trait
+│       ├── engine.rs          ScraperEngine (scan, sync_manga, sync_chapter)
+│       ├── adapters/
+│       │   ├── demonicscans.rs
+│       │   ├── manhuaplus.rs
+│       │   └── helpers.rs     Shared: wait_for_page, make_absolute, extract_chapter_number
+│       └── main.rs            CLI entrypoint
+│
+├── website/                   # Web server
+│   └── src/
+│       ├── main.rs            AppState, route setup, seed data
+│       ├── scraper_helper.rs  Background sync threads
+│       ├── routes/
+│       │   ├── home.rs        GET /
+│       │   ├── series.rs      GET /series, /series/{id}
+│       │   ├── reader.rs      GET /read/{manga_id}/{chapter_id}
+│       │   ├── source.rs      GET /source/{source}
+│       │   ├── manga.rs       GET /manga/{id} → redirect to series
+│       │   └── check.rs       GET /api/check-manga, /api/check-chapter
+│       ├── templates/
+│       │   └── layout.rs      base_layout, reader_layout
+│       └── static/
+│           ├── style.css      All styles
+│           └── app.js         Client-side: bookmarks, reader UX, source filters
+│
+├── docs/architecture/         Architecture Decision Records
+├── Dockerfile                 Multi-stage Docker build
+└── docker-compose.yml         Single service, port 3000, persistent volume
 ```
 
-## Prerequisites
+## Client-side Features
 
-### Rust toolchain
-```bash
-rustup update
-```
+All state is stored in `localStorage` — no backend required.
 
-The scraper auto-manages its own WebDriver (chromedriver) — no manual installation needed.
+### Reading progress
+- Chapters show status icons: ○ unread, ▶ started, ✓ finished
+- The reader tracks which page the user is on via `IntersectionObserver`
+- Progress is saved on `beforeunload` and auto-restored on return
+- A chapter is marked "finished" when the last page scrolls into view
 
-## Running the Website
+### Source filters
+- When a series has chapters from multiple source sites, checkboxes appear above the chapter list
+- Toggling a source hides/shows chapters from that site
+- The preferred source (most chapters) is used for duplicate chapter numbers
 
-The website serves manga and chapters from the local SQLite database. It includes seed data for testing.
+### Reader UX
+- Click the left third of the screen for previous page, right third for next page
+- Arrow keys: ← prev, → next
+- Scroll up or mouse near top to show the top bar with page indicator
+- Bottom nav after the last page links to prev/next chapters
 
-```bash
-# Start the server (with seed data if DB is empty)
-cargo run -p website
-```
+## Database
 
-Open **http://localhost:3000** in your browser. With seed data you'll see "One Piece" with 2 chapters and placeholder page images.
+SQLite with WAL mode. Tables:
 
-The server listens on `0.0.0.0:3000` and stores the database at `./mangaread.db`.
+- **series**: Unified title, groups manga from multiple sources
+- **manga**: Per-source entries linked to a series
+- **chapters**: Chapter metadata, linked to a manga entry
+- **pages**: Page image URLs, linked to a chapter
 
-## Running the Scraper
+All inserts use `ON CONFLICT ... DO UPDATE` (upsert) — safe to re-run.
 
-The scraper navigates manga sites via WebDriver, extracts manga listings, chapters, and page images, then saves everything to SQLite.
+## Architecture Decision Records
 
-### 1. Discover manga from source sites
-
-Scans the index page of each configured source and saves manga entries to the database:
-
-```bash
-cargo run -p manga-scraper scan
-```
-
-Example output:
-```
-2026-07-09T16:00:00.123Z  INFO scanning demonicscans for manga...
-2026-07-09T16:00:02.456Z  INFO found 42 manga on demonicscans
-2026-07-09T16:00:02.789Z  INFO scan complete. 42 manga in database.
-```
-
-### 2. Sync a manga's chapters
-
-Visit a specific manga's detail page, extract chapter list and update metadata:
-
-```bash
-cargo run -p manga-scraper sync-manga <id>
-```
-
-Replace `<id>` with the manga's database ID (shown from the scan output or by checking the DB).
-
-Example output:
-```
-2026-07-09T16:01:00.123Z  INFO syncing manga: One Piece (https://demonicscans.org/manga/one-piece)
-2026-07-09T16:01:05.456Z  INFO synced 200 chapters for manga 1
-```
-
-### 3. Sync a chapter's page images
-
-Visit a chapter's reader page and extract all page image URLs:
-
-```bash
-cargo run -p manga-scraper sync-chapter <id>
-```
-
-Replace `<id>` with the chapter's database ID.
-
-Example output:
-```
-2026-07-09T16:02:00.123Z  INFO syncing chapter: One Piece ch.1 (https://demonicscans.org/manga/one-piece/ch-1)
-2026-07-09T16:02:05.456Z  INFO synced 15 pages for chapter 1
-```
-
-### Full workflow
-
-```bash
-cargo run -p manga-scraper scan
-cargo run -p manga-scraper sync-manga 1
-cargo run -p manga-scraper sync-chapter 1
-cargo run -p website
-```
-
-Then browse to http://localhost:3000, click through to the reader, and view the scraped images.
-
-## Adding a New Source Site
-
-Implement the `SiteAdapter` trait in a new file under `scraper/src/adapters/`:
-
-```rust
-#[async_trait]
-impl SiteAdapter for MyCustomAdapter {
-    fn source_name(&self) -> &str { "my-site" }
-    fn base_url(&self) -> &str { "https://my-site.org" }
-
-    async fn discover_manga(&self, driver: &WebDriver) -> anyhow::Result<Vec<MangaListing>> { /* ... */ }
-    async fn fetch_manga(&self, driver: &WebDriver, detail_url: &str) -> anyhow::Result<MangaInfo> { /* ... */ }
-    async fn fetch_pages(&self, driver: &WebDriver, chapter_url: &str) -> anyhow::Result<Vec<String>> { /* ... */ }
-}
-```
-
-Then register it in `scraper/src/main.rs`:
-```rust
-engine.add_adapter(Box::new(MyCustomAdapter));
-```
+See [docs/architecture/](docs/architecture/) for ADRs:
+- ADR-001: Domain model restructuring
+- ADR-002: Centralized adapter registry
+- ADR-003: Template extraction from route handlers
 
 ## License
 
