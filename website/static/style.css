@@ -617,14 +617,35 @@ header h1 a:hover::before {
   display: flex;
   flex-direction: column;
   align-items: center;
-  margin: 0;
+  margin: 0 auto;
   padding: 0;
+  /* Mobile: full-bleed immersive */
+  width: 100%;
+  /* Desktop: capped and centered so pages aren't comically wide */
+  max-width: 480px;
+}
+
+@media (min-width: 768px) {
+  .reader-images {
+    max-width: 650px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .reader-images {
+    max-width: 800px;
+  }
+}
+
+@media (min-width: 1440px) {
+  .reader-images {
+    max-width: 900px;
+  }
 }
 
 .reader-images img {
   display: block;
   width: 100%;
-  max-width: 100%;
   height: auto;
   margin: 0;
   padding: 0;
