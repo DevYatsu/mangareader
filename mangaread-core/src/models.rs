@@ -1,4 +1,5 @@
 /// A manga series scraped from a source site.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manga {
     pub id: i64,
     pub source: String,
@@ -8,10 +9,14 @@ pub struct Manga {
     pub cover_url: Option<String>,
     pub description: Option<String>,
     pub detail_url: String,
+    /// ISO 8601 date/time string (e.g. '2026-07-09 12:00:00')
     pub created_at: String,
+    /// ISO 8601 date/time string (e.g. '2026-07-09 12:00:00')
     pub updated_at: String,
 }
 
+/// Input data for inserting or updating a manga entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewManga {
     pub source: String,
     pub source_id: String,
@@ -23,6 +28,7 @@ pub struct NewManga {
 }
 
 /// A chapter belonging to a manga.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Chapter {
     pub id: i64,
     pub manga_id: i64,
@@ -30,9 +36,12 @@ pub struct Chapter {
     pub number: f64,
     pub title: Option<String>,
     pub url: String,
+    /// ISO 8601 date/time string (e.g. '2026-07-09 12:00:00')
     pub created_at: String,
 }
 
+/// Input data for inserting or updating a chapter.
+#[derive(Debug, Clone, PartialEq)]
 pub struct NewChapter {
     pub manga_id: i64,
     pub source_id: String,
@@ -42,6 +51,7 @@ pub struct NewChapter {
 }
 
 /// A single page image in a chapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     pub id: i64,
     pub chapter_id: i64,
@@ -50,6 +60,8 @@ pub struct Page {
     pub downloaded: bool,
 }
 
+/// Input data for inserting a page image.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewPage {
     pub chapter_id: i64,
     pub index: i32,
@@ -59,6 +71,7 @@ pub struct NewPage {
 // --- Scraper-side types (used by SiteAdapter) ---
 
 /// Lightweight result from discovering manga on a listing page.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MangaListing {
     pub title: String,
     pub detail_url: String,
@@ -66,7 +79,10 @@ pub struct MangaListing {
 }
 
 /// Full manga info returned after visiting the detail page.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MangaInfo {
+    pub source: String,
+    pub source_id: String,
     pub title: String,
     pub author: Option<String>,
     pub description: Option<String>,
@@ -76,6 +92,7 @@ pub struct MangaInfo {
 }
 
 /// A chapter entry discovered on a manga detail page.
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChapterListing {
     pub title: Option<String>,
     pub number: f64,
