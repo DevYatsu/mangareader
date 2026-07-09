@@ -102,10 +102,10 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(crate::routes::home::home))
-        .route("/source/:source", get(crate::routes::source::source_list))
-        .route("/manga/:id", get(crate::routes::manga::manga_detail))
+        .route("/source/{source}", get(crate::routes::source::source_list))
+        .route("/manga/{id}", get(crate::routes::manga::manga_detail))
         .route(
-            "/read/:manga_id/:chapter_id",
+            "/read/{manga_id}/{chapter_id}",
             get(crate::routes::reader::chapter_reader),
         )
         .nest_service("/static", ServeDir::new("static"))

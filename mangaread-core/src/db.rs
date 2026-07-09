@@ -35,10 +35,10 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
         CREATE TABLE IF NOT EXISTS pages (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             chapter_id      INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-            index           INTEGER NOT NULL,
+            page_index      INTEGER NOT NULL,
             image_url       TEXT NOT NULL,
             downloaded      INTEGER NOT NULL DEFAULT 0,
-            UNIQUE(chapter_id, index)
+            UNIQUE(chapter_id, page_index)
         );
         ",
     )?;
@@ -178,9 +178,9 @@ fn map_chapter_row(row: &rusqlite::Row) -> rusqlite::Result<Chapter> {
 
 pub fn insert_page(conn: &Connection, p: &NewPage) -> Result<i64, Error> {
     conn.execute(
-        "INSERT INTO pages (chapter_id, index, image_url)
+        "INSERT INTO pages (chapter_id, page_index, image_url)
          VALUES (?1, ?2, ?3)
-         ON CONFLICT(chapter_id, index) DO UPDATE SET image_url = excluded.image_url",
+         ON CONFLICT(chapter_id, page_index) DO UPDATE SET image_url = excluded.image_url",
         rusqlite::params![p.chapter_id, p.index, p.image_url],
     )?;
     Ok(conn.last_insert_rowid())
@@ -188,8 +188,8 @@ pub fn insert_page(conn: &Connection, p: &NewPage) -> Result<i64, Error> {
 
 pub fn list_pages_by_chapter(conn: &Connection, chapter_id: i64) -> Result<Vec<Page>, Error> {
     let mut stmt = conn.prepare(
-        "SELECT id, chapter_id, index, image_url, downloaded
-         FROM pages WHERE chapter_id = ?1 ORDER BY index",
+        "SELECT id, chapter_id, page_index, image_url, downloaded
+         FROM pages WHERE chapter_id = ?1 ORDER BY page_index",
     )?;
     let rows = stmt.query_map(rusqlite::params![chapter_id], map_page_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
