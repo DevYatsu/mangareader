@@ -32,6 +32,7 @@ impl ScraperEngine {
             tracing::info!("found {} manga on {source}", listings.len());
 
             for listing in listings {
+                tracing::debug!("saving manga: \"{}\" ({})", listing.title, listing.detail_url);
                 let new_manga = NewManga {
                     source: source.to_string(),
                     source_id: listing.detail_url.clone(),
@@ -41,7 +42,8 @@ impl ScraperEngine {
                     description: None,
                     detail_url: listing.detail_url,
                 };
-                db::insert_manga(&self.db, &new_manga)?;
+                let id = db::insert_manga(&self.db, &new_manga)?;
+                tracing::debug!("saved manga id={} \"{}\"", id, new_manga.title);
             }
         }
         Ok(())
@@ -75,6 +77,7 @@ impl ScraperEngine {
 
         let chapter_count = info.chapters.len();
         for ch in info.chapters {
+            tracing::debug!("saving chapter: ch.{} \"{}\" ({})", ch.number, ch.title.as_deref().unwrap_or(""), ch.url);
             let new_chapter = NewChapter {
                 manga_id,
                 source_id: ch.url.clone(),
@@ -82,7 +85,8 @@ impl ScraperEngine {
                 title: ch.title,
                 url: ch.url,
             };
-            db::insert_chapter(&self.db, &new_chapter)?;
+            let ch_id = db::insert_chapter(&self.db, &new_chapter)?;
+            tracing::debug!("saved chapter id={} ch.{}", ch_id, new_chapter.number);
         }
 
         tracing::info!("synced {chapter_count} chapters for manga {manga_id}",);
@@ -108,8 +112,10 @@ impl ScraperEngine {
         );
 
         let page_urls = adapter.fetch_pages(driver, &chapter.url).await?;
+        tracing::info!("fetched {} page URLs for chapter {}", page_urls.len(), chapter_id);
 
         for (i, url) in page_urls.iter().enumerate() {
+            tracing::debug!("saving page {}: {url}", i + 1);
             let new_page = NewPage {
                 chapter_id,
                 index: (i + 1) as i32,

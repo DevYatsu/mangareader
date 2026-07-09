@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use mangaread_core::models::{ChapterListing, MangaInfo, MangaListing};
 use selectrs::{Html, Selector};
 use thirtyfour::prelude::*;
+use tracing;
 
 use crate::adapter::SiteAdapter;
 
@@ -18,12 +19,13 @@ impl SiteAdapter for DemonicscansAdapter {
     }
 
     async fn discover_manga(&self, driver: &WebDriver) -> anyhow::Result<Vec<MangaListing>> {
+        tracing::info!("navigating to index page: https://demonicscans.org/index.php");
         driver.goto("https://demonicscans.org/index.php").await?;
-
-        // Wait for the page to load
+        tracing::info!("page loaded, waiting 2s for dynamic content...");
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let page_source = driver.source().await?;
+        tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
         let document = Html::parse_document(&page_source);
 
         // Find manga entry links
@@ -31,10 +33,12 @@ impl SiteAdapter for DemonicscansAdapter {
         let img_selector = Selector::parse("img").unwrap();
 
         let mut manga = Vec::new();
+        let mut skipped = 0u32;
         for element in document.select(&link_selector) {
             let href = element.value().attr("href").unwrap_or("");
             // Skip non-manga links
             if href.len() < 10 || href == "/" || !href.contains("/manga/") {
+                skipped += 1;
                 continue;
             }
 
@@ -70,6 +74,13 @@ impl SiteAdapter for DemonicscansAdapter {
                     }
                 });
 
+            tracing::debug!(
+                "found manga: title=\"{}\" url={} cover={}",
+                title,
+                detail_url,
+                cover_url.as_deref().unwrap_or("none"),
+            );
+
             manga.push(MangaListing {
                 title,
                 detail_url,
@@ -77,6 +88,11 @@ impl SiteAdapter for DemonicscansAdapter {
             });
         }
 
+        tracing::info!(
+            "discovery complete: {} manga found ({} links skipped)",
+            manga.len(),
+            skipped
+        );
         Ok(manga)
     }
 
@@ -85,10 +101,13 @@ impl SiteAdapter for DemonicscansAdapter {
         driver: &WebDriver,
         detail_url: &str,
     ) -> anyhow::Result<MangaInfo> {
+        tracing::info!("navigating to manga detail page: {detail_url}");
         driver.goto(detail_url).await?;
+        tracing::info!("page loaded, waiting 2s for dynamic content...");
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let page_source = driver.source().await?;
+        tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
         let document = Html::parse_document(&page_source);
 
         // Extract title from the page
@@ -158,6 +177,14 @@ impl SiteAdapter for DemonicscansAdapter {
             })
             .collect();
 
+        tracing::info!(
+            "parsed manga: title=\"{title}\" author={} description={} cover={} chapters={}",
+            author.as_deref().unwrap_or("none"),
+            if description.is_some() { "found" } else { "none" },
+            cover_url.as_deref().unwrap_or("none"),
+            chapters.len(),
+        );
+
         Ok(MangaInfo {
             source: self.source_name().to_string(),
             source_id: detail_url.to_string(),
@@ -175,10 +202,13 @@ impl SiteAdapter for DemonicscansAdapter {
         driver: &WebDriver,
         chapter_url: &str,
     ) -> anyhow::Result<Vec<String>> {
+        tracing::info!("navigating to chapter page: {chapter_url}");
         driver.goto(chapter_url).await?;
+        tracing::info!("page loaded, waiting 2s for dynamic content...");
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let page_source = driver.source().await?;
+        tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
         let document = Html::parse_document(&page_source);
 
         // Try multiple selector patterns for chapter images
@@ -198,16 +228,19 @@ impl SiteAdapter for DemonicscansAdapter {
                 } else {
                     format!("https://demonicscans.org{}", src)
                 };
+                tracing::debug!("found page image via primary selector: {url}");
                 pages.push(url);
             }
         }
 
         // Fallback: try all img tags
         if pages.is_empty() {
+            tracing::warn!("primary selectors found no images, trying fallback (all img tags)");
             let all_img = Selector::parse("img").unwrap();
             for img in document.select(&all_img) {
                 if let Some(src) = img.value().attr("src") {
                     if src.contains("logo") || src.contains("icon") || src.contains("avatar") {
+                        tracing::debug!("skipping non-page image: {src}");
                         continue;
                     }
                     let url = if src.starts_with("http") {
@@ -215,11 +248,17 @@ impl SiteAdapter for DemonicscansAdapter {
                     } else {
                         format!("https://demonicscans.org{}", src)
                     };
+                    tracing::debug!("found page image via fallback: {url}");
                     pages.push(url);
                 }
             }
         }
 
+        tracing::info!(
+            "page extraction complete: {} pages found{}",
+            pages.len(),
+            if pages.is_empty() { " (no images detected!)" } else { "" }
+        );
         Ok(pages)
     }
 }
