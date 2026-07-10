@@ -112,7 +112,7 @@ Requires chromium/chromedriver in the image. Container needs `SYS_ADMIN` capabil
 **Prerequisites**: Rust 1.82+, chromedriver on `PATH`.
 
 ```bash
-MANGAREAD_DB=./mangaread.db cargo run -p website
+cargo run -p website
 ```
 
 Open http://localhost:3000. The server starts a background sync loop that discovers manga and fetches chapters automatically — no manual scan needed.
