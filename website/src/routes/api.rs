@@ -89,7 +89,7 @@ pub async fn sync_manga(
 
             let engine = crate::scraper_helper::build_engine();
 
-            let driver = match thirtyfour::WebDriver::managed(
+            let driver = match crate::scraper_helper::create_webdriver(
                 crate::scraper_helper::build_chrome_caps(),
             )
             .await

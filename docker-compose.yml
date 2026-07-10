@@ -16,7 +16,7 @@ services:
       - cargo-cache:/usr/local/cargo/registry
     environment:
       - MANGAREAD_DB=/app/data/mangaread.db
-      - CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage --disable-gpu
+      - CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage --disable-gpu --headless
       - RUST_LOG=info
       - SITE_TITLE=MangaRead
       - SITE_COLOR=#3b82f6

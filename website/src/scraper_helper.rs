@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use thirtyfour::manager::BrowserKind;
 use thirtyfour::ChromiumLikeCapabilities;
 
 use crate::AppState;
@@ -28,6 +29,21 @@ pub(crate) fn build_chrome_caps() -> thirtyfour::ChromeCapabilities {
         }
     }
     caps
+}
+
+/// Create a WebDriver using the system-installed chromedriver.
+///
+/// Uses the system-installed chromedriver instead of letting thirtyfour
+/// download one from Google's CDN (which can mismatch the system Chrome).
+pub(crate) async fn create_webdriver(
+    caps: thirtyfour::ChromeCapabilities,
+) -> thirtyfour::error::WebDriverResult<thirtyfour::WebDriver> {
+    thirtyfour::manager::WebDriverManager::builder()
+        .driver_binary(BrowserKind::Chrome, "/usr/bin/chromedriver")
+        .offline()
+        .build()
+        .launch(caps)
+        .await
 }
 
 // ── DB connection ──
@@ -81,7 +97,7 @@ pub fn sync_manga_background(manga_id: i64) {
 
         let engine = build_engine();
 
-        let driver = match thirtyfour::WebDriver::managed(build_chrome_caps()).await {
+        let driver = match create_webdriver(build_chrome_caps()).await {
             Ok(d) => d,
             Err(e) => {
                 tracing::error!("bg sync: failed to create WebDriver: {:?}", e);
@@ -121,7 +137,7 @@ pub fn sync_chapter_background(chapter_id: i64) {
 
         let engine = build_engine();
 
-        let driver = match thirtyfour::WebDriver::managed(build_chrome_caps()).await {
+        let driver = match create_webdriver(build_chrome_caps()).await {
             Ok(d) => d,
             Err(e) => {
                 tracing::error!("bg sync: failed to create WebDriver: {:?}", e);
@@ -161,7 +177,7 @@ pub fn scan_background() {
 
         let engine = build_engine();
 
-        let driver = match thirtyfour::WebDriver::managed(build_chrome_caps()).await {
+        let driver = match create_webdriver(build_chrome_caps()).await {
             Ok(d) => d,
             Err(e) => {
                 tracing::error!("startup scan: failed to create WebDriver: {:?}", e);
@@ -237,7 +253,7 @@ async fn sync_single_manga(manga_id: i64, state: Arc<AppState>) {
     }
 
     let engine = build_engine();
-    let driver = match thirtyfour::WebDriver::managed(build_chrome_caps()).await {
+    let driver = match create_webdriver(build_chrome_caps()).await {
         Ok(d) => d,
         Err(e) => {
             let msg = format!("WebDriver error: {e}");
@@ -286,7 +302,7 @@ pub fn start_sync_loop(state: Arc<AppState>) {
             tracing::info!("sync loop: scanning sources...");
             let engine = build_engine();
 
-            let scan_driver = match thirtyfour::WebDriver::managed(build_chrome_caps()).await {
+            let scan_driver = match create_webdriver(build_chrome_caps()).await {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::error!("sync loop: scan driver failed: {:?}", e);
