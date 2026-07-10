@@ -11,7 +11,7 @@ maud = "0.27"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.7", features = ["fs"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = "2"
 anyhow = "1"

@@ -7,8 +7,10 @@
 //! - `reader`:  chapter reading interface
 //! - `source`:  per-source manga listing
 //! - `check`:   lightweight API endpoints for sync polling
+//! - `health`:   liveness probe for Docker
 
 pub mod check;
+pub mod health;
 pub mod home;
 pub mod manga;
 pub mod reader;

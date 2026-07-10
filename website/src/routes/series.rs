@@ -22,8 +22,10 @@ pub async fn series_detail(
     let s = match mangaread_core::db::get_series_by_id(&db, id) {
         Ok(s) => s,
         Err(_) => {
-            let content = html! { h2 class="page-title" { "Series not found" } };
-            return Html(crate::templates::layout::base_layout("Not found", content).0);
+            return Html(crate::templates::layout::error_layout(
+                "Not Found",
+                "This series doesn't exist or may have been removed.",
+            ).0);
         }
     };
 

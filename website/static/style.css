@@ -1454,6 +1454,51 @@ footer p {
   }
 }
 
+/* ── Error Page ── */
+.error-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 50vh;
+  text-align: center;
+  gap: 1rem;
+}
+
+.error-heading {
+  font-family: var(--font-display);
+  font-size: 3rem;
+  color: var(--text-primary);
+}
+
+.error-message {
+  color: var(--text-muted);
+  font-size: 1rem;
+  max-width: 400px;
+}
+
+.error-home-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1.25rem;
+  background: var(--accent);
+  color: #000;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  margin-top: 0.5rem;
+  transition: all var(--transition-base);
+}
+
+.error-home-btn:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-glow);
+}
+
 /* ── Browse Button (Home) ── */
 .browse-btn {
   display: inline-flex;

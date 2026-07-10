@@ -19,10 +19,8 @@ pub async fn manga_detail(
             }
         }
         Err(_) => {
-            use maud::html;
-            let content = html! { h2 class="page-title" { "Manga not found" } };
             Err(axum::response::Html(
-                crate::templates::layout::base_layout("Not found", content).0,
+                crate::templates::layout::error_layout("Not Found", "Manga not found.").0,
             ))
         }
     }

@@ -21,15 +21,19 @@ pub async fn chapter_reader(
         let manga = match mangaread_core::db::get_manga_by_id(&db, manga_id) {
             Ok(m) => m,
             Err(_) => {
-                let content = html! { h2 class="page-title" { "Manga not found" } };
-                return Html(crate::templates::layout::base_layout("Not found", content).0);
+                return Html(crate::templates::layout::error_layout(
+                    "Not Found",
+                    "This manga doesn't exist or may have been removed.",
+                ).0);
             }
         };
         let chapter = match mangaread_core::db::get_chapter_by_id(&db, chapter_id) {
             Ok(c) => c,
             Err(_) => {
-                let content = html! { h2 class="page-title" { "Chapter not found" } };
-                return Html(crate::templates::layout::base_layout("Not found", content).0);
+                return Html(crate::templates::layout::error_layout(
+                    "Not Found",
+                    "This chapter doesn't exist or may have been removed.",
+                ).0);
             }
         };
         let pages = mangaread_core::db::list_pages_by_chapter(&db, chapter.id).unwrap_or_default();

@@ -14,7 +14,7 @@ use mangaread_core::db;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
-use tracing_subscriber;
+use tracing_subscriber::EnvFilter;
 
 /// Shared application state holding a SQLite database connection.
 ///
@@ -112,7 +112,10 @@ fn seed_data(conn: &rusqlite::Connection) {
 /// binds to `0.0.0.0:3000`.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new("info")))
+        .init();
 
     let conn = db::open_db()?;
     db::init_db(&conn)?;
@@ -144,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/check-manga/{id}", get(crate::routes::check::check_manga))
         .route("/api/check-chapter/{id}", get(crate::routes::check::check_chapter))
+        .route("/health", get(crate::routes::health::health))
         .nest_service("/static", ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static")))
         .with_state(state);
 
