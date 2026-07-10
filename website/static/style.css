@@ -66,6 +66,8 @@ body {
   font-size: 15px;
   line-height: 1.65;
   min-height: 100vh;
+  overflow-x: hidden;
+  /* Subtle radial gradient for depth */
   background-image: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(245, 158, 11, 0.04), transparent);
   background-attachment: fixed;
 }
