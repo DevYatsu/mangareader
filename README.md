@@ -12,6 +12,16 @@ Open http://localhost:3000. SQLite database lives in a named volume.
 
 Development without Docker: see [Running without Docker](#running-without-docker).
 
+### Screenshots
+
+| Home | Series List |
+|------|-------------|
+| ![home](docs/website/home.jpg) | ![series](docs/website/series.jpg) |
+
+| Series Details | Chapter Reader |
+|----------------|----------------|
+| ![series-details](docs/website/series-details.jpg) | ![chapter](docs/website/chapter.jpg) |
+
 ## Architecture
 
 ```mermaid
