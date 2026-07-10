@@ -35,11 +35,14 @@ pub(crate) fn build_chrome_caps() -> thirtyfour::ChromeCapabilities {
 ///
 /// Uses the system-installed chromedriver instead of letting thirtyfour
 /// download one from Google's CDN (which can mismatch the system Chrome).
+/// Set `CHROMEDRIVER_PATH` to override the default `/usr/bin/chromedriver`.
 pub(crate) async fn create_webdriver(
     caps: thirtyfour::ChromeCapabilities,
 ) -> thirtyfour::error::WebDriverResult<thirtyfour::WebDriver> {
+    let chromedriver_path = std::env::var("CHROMEDRIVER_PATH")
+        .unwrap_or_else(|_| "/usr/bin/chromedriver".to_string());
     thirtyfour::manager::WebDriverManager::builder()
-        .driver_binary(BrowserKind::Chrome, "/usr/bin/chromedriver")
+        .driver_binary(BrowserKind::Chrome, chromedriver_path)
         .offline()
         .build()
         .launch(caps)
