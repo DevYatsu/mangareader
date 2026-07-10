@@ -35,20 +35,28 @@ fn find_chromedriver() -> String {
     if let Ok(path) = std::env::var("CHROMEDRIVER_PATH") {
         return path;
     }
-    if let Ok(out) = std::process::Command::new("which")
+    let which = if cfg!(target_os = "windows") { "where" } else { "which" };
+    if let Ok(out) = std::process::Command::new(which)
         .arg("chromedriver")
         .output()
     {
         if out.status.success() {
             if let Ok(path) = String::from_utf8(out.stdout) {
-                let trimmed = path.trim().to_string();
-                if !trimmed.is_empty() {
-                    return trimmed;
+                for line in path.lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        return trimmed.to_string();
+                    }
                 }
             }
         }
     }
-    "/usr/bin/chromedriver".to_string()
+    let default = if cfg!(target_os = "windows") {
+        "chromedriver.exe"
+    } else {
+        "/usr/bin/chromedriver"
+    };
+    default.to_string()
 }
 
 pub(crate) async fn create_webdriver(
