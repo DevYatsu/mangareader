@@ -9,7 +9,7 @@ use thirtyfour::ChromiumLikeCapabilities;
 
 /// Create Chrome capabilities, applying any extra CLI flags from
 /// the `CHROMIUM_FLAGS` environment variable (e.g. for Docker).
-fn build_chrome_caps() -> thirtyfour::ChromeCapabilities {
+pub(crate) fn build_chrome_caps() -> thirtyfour::ChromeCapabilities {
     let mut caps = thirtyfour::DesiredCapabilities::chrome();
     if let Ok(flags) = std::env::var("CHROMIUM_FLAGS") {
         for flag in flags.split_whitespace() {
@@ -22,7 +22,7 @@ fn build_chrome_caps() -> thirtyfour::ChromeCapabilities {
 // ── DB connection ──
 
 /// Open a dedicated read-write connection for a background scraper task.
-fn open_db() -> rusqlite::Result<rusqlite::Connection> {
+pub(crate) fn open_db() -> rusqlite::Result<rusqlite::Connection> {
     let path = mangaread_core::db::database_path();
     let conn = rusqlite::Connection::open(&path)?;
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;")?;
@@ -48,7 +48,7 @@ where
 }
 
 /// Build an engine with all registered adapters.
-fn build_engine() -> scraper::engine::ScraperEngine {
+pub(crate) fn build_engine() -> scraper::engine::ScraperEngine {
     let mut engine = scraper::engine::ScraperEngine::new();
     engine.add_adapter(Box::new(
         scraper::adapters::demonicscans::DemonicscansAdapter,

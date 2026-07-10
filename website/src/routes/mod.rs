@@ -8,7 +8,9 @@
 //! - `source`:  per-source manga listing
 //! - `check`:   lightweight API endpoints for sync polling
 //! - `health`:   liveness probe for Docker
+//! - `api`:     sync management, progress tracking
 
+pub mod api;
 pub mod check;
 pub mod health;
 pub mod home;

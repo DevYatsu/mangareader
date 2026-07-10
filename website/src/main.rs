@@ -7,7 +7,7 @@ mod scraper_helper;
 mod templates;
 
 use axum::{
-    routing::{get},
+    routing::{get, post},
     Router,
 };
 use mangaread_core::db;
@@ -16,11 +16,16 @@ use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
 use tracing_subscriber::EnvFilter;
 
-/// Shared application state holding a SQLite database connection.
+/// Shared application state holding a SQLite database connection and
+/// background sync status.
 ///
 /// Wrapped in `Arc` and accessed via Axum's `State` extractor.
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
+    /// Last sync error message (cleared on read).
+    pub sync_error: Mutex<Option<String>>,
+    /// IDs of manga currently being synced in the background.
+    pub syncing_manga_ids: Mutex<Vec<i64>>,
 }
 
 /// Seed the database with sample manga, chapters, and pages if the DB is empty.
@@ -133,6 +138,8 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         db: Mutex::new(conn),
+        sync_error: Mutex::new(None),
+        syncing_manga_ids: Mutex::new(Vec::new()),
     });
 
     let app = Router::new()
@@ -147,6 +154,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/check-manga/{id}", get(crate::routes::check::check_manga))
         .route("/api/check-chapter/{id}", get(crate::routes::check::check_chapter))
+        .route("/api/sync-status", get(crate::routes::api::sync_status))
+        .route("/api/sync-manga/{id}", post(crate::routes::api::sync_manga))
+        .route("/api/progress-series", get(crate::routes::api::progress_series))
         .route("/health", get(crate::routes::health::health))
         .nest_service("/static", ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static")))
         .with_state(state);
