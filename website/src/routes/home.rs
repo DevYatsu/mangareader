@@ -79,19 +79,6 @@ pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
     let chapter_count: i64 = db
         .query_row("SELECT COUNT(*) FROM chapters", [], |row| row.get(0))
         .unwrap_or(0);
-    let sources_concat: String = db
-        .query_row(
-            "SELECT IFNULL(GROUP_CONCAT(DISTINCT source, ', '), '') FROM manga",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or_default();
-    let source_count = if sources_concat.is_empty() {
-        0
-    } else {
-        sources_concat.split(", ").count()
-    };
-
     let recent = mangaread_core::db::list_recent_chapters(&db, 30).unwrap_or_default();
 
     let content = html! {
@@ -109,11 +96,6 @@ pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
                     div class="hero-stat" {
                         span class="hero-stat-value" { (chapter_count) }
                         span class="hero-stat-label" { "Chapters" }
-                    }
-                    div class="hero-stat-divider" {}
-                    div class="hero-stat" {
-                        span class="hero-stat-value" { (source_count) }
-                        span class="hero-stat-label" { "Sources" }
                     }
                 }
                 a href="/series" class="browse-btn" {
