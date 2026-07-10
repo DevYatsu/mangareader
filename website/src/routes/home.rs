@@ -10,6 +10,16 @@ use crate::AppState;
 /// Queries series count, chapter count, unique sources, and the 30 most
 /// recently updated chapters, then renders them inside the `base_layout`.
 pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
+    let banner = {
+        let p = state.auto_sync.lock().await;
+        if p.running && p.total > 0 {
+            let pct = p.current * 100 / p.total;
+            Some(format!("Syncing series\u{2026} {} of {} ({}%)", p.current, p.total, pct))
+        } else {
+            None
+        }
+    };
+
     let db = state.db.lock().await;
 
     let series_count = mangaread_core::db::count_manga_with_chapters(&db)
@@ -100,5 +110,5 @@ pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
         }
     };
 
-    Html(crate::templates::layout::base_layout("Home", content).0)
+    Html(crate::templates::layout::base_layout("Home", content, banner.as_deref()).0)
 }

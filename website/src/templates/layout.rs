@@ -5,7 +5,10 @@ use maud::{html, Markup, DOCTYPE};
 /// Includes the `<title>`, Google Fonts preconnects, stylesheet, site header,
 /// main content area, and footer. The caller supplies the page title and
 /// inner body content as Maud `Markup`.
-pub fn base_layout(title: &str, content: Markup) -> Markup {
+///
+/// If `sync_banner` is `Some(...)`, a banner is shown at the top of the
+/// page indicating the background sync loop is running.
+pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -19,7 +22,12 @@ pub fn base_layout(title: &str, content: Markup) -> Markup {
                 link rel="stylesheet" href="/static/style.css";
             }
             body {
-                div id="sync-banner" class="sync-banner" style="display:none" {}
+                @if let Some(text) = sync_banner {
+                    div class="sync-banner" {
+                        span class="sync-banner-spinner" {}
+                        (text)
+                    }
+                }
                 div.container {
                     header {
                         h1 { a href="/" { "MangaRead" } }

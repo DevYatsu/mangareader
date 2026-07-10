@@ -13,6 +13,16 @@ pub async fn source_list(
     State(state): State<Arc<AppState>>,
     Path(source): Path<String>,
 ) -> Html<String> {
+    let banner = {
+        let p = state.auto_sync.lock().await;
+        if p.running && p.total > 0 {
+            let pct = p.current * 100 / p.total;
+            Some(format!("Syncing series\u{2026} {} of {} ({}%)", p.current, p.total, pct))
+        } else {
+            None
+        }
+    };
+
     let db = state.db.lock().await;
     let manga_list: Vec<_> = mangaread_core::db::list_manga_by_source_with_count(&db, &source)
         .unwrap_or_default()
@@ -93,5 +103,5 @@ pub async fn source_list(
         }
     };
 
-    Html(crate::templates::layout::base_layout(&source, content).0)
+    Html(crate::templates::layout::base_layout(&source, content, banner.as_deref()).0)
 }

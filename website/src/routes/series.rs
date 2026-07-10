@@ -16,6 +16,16 @@ pub async fn series_detail(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Html<String> {
+    let banner = {
+        let p = state.auto_sync.lock().await;
+        if p.running && p.total > 0 {
+            let pct = p.current * 100 / p.total;
+            Some(format!("Syncing series\u{2026} {} of {} ({}%)", p.current, p.total, pct))
+        } else {
+            None
+        }
+    };
+
     let db = state.db.lock().await;
 
     // Load series
@@ -40,7 +50,7 @@ pub async fn series_detail(
             }
             h2 class="page-title" { "Series not found" }
         };
-        return Html(crate::templates::layout::base_layout(&s.title, content).0);
+        return Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref()).0);
     }
 
     // Use the new service layer for domain logic
@@ -199,7 +209,7 @@ pub async fn series_detail(
         script src="/static/app.js" {}
     };
 
-    Html(crate::templates::layout::base_layout(&s.title, content).0)
+    Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref()).0)
 }
 
 /// GET `/series` — render the series listing page.
@@ -210,6 +220,16 @@ pub async fn series_list(
     State(state): State<Arc<AppState>>,
     query: Query<HashMap<String, String>>,
 ) -> Html<String> {
+    let banner = {
+        let p = state.auto_sync.lock().await;
+        if p.running && p.total > 0 {
+            let pct = p.current * 100 / p.total;
+            Some(format!("Syncing series\u{2026} {} of {} ({}%)", p.current, p.total, pct))
+        } else {
+            None
+        }
+    };
+
     let search = query.get("q").map(|s| s.trim()).unwrap_or("");
     let db = state.db.lock().await;
 
@@ -295,5 +315,5 @@ pub async fn series_list(
         }
     };
 
-    Html(crate::templates::layout::base_layout("Series", content).0)
+    Html(crate::templates::layout::base_layout("Series", content, banner.as_deref()).0)
 }
