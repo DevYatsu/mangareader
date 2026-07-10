@@ -2,6 +2,7 @@
 //!
 //! This crate provides the web frontend using Axum and Maud templates.
 
+mod config;
 mod routes;
 mod scraper_helper;
 mod templates;
@@ -10,6 +11,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use crate::config::SiteConfig;
 use mangaread_core::db;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -55,6 +57,8 @@ pub struct AppState {
     pub auto_sync: Mutex<SyncProgress>,
     /// Per-source adapter health (keyed by source name).
     pub adapter_health: Mutex<HashMap<String, AdapterHealth>>,
+    /// Site branding configuration (env-driven).
+    pub config: SiteConfig,
 }
 
 
@@ -75,11 +79,14 @@ async fn main() -> anyhow::Result<()> {
     let conn = db::open_db()?;
     db::init_db(&conn)?;
 
+    let site_config = SiteConfig::from_env();
+
     let state = Arc::new(AppState {
         db: Mutex::new(conn),
         sync_error: Mutex::new(None),
         syncing_manga_ids: Mutex::new(Vec::new()),
         auto_sync: Mutex::new(SyncProgress { running: false, total: 0, current: 0 }),
+        config: site_config,
         adapter_health: Mutex::new(HashMap::from([
             ("demonicscans".into(), AdapterHealth {
                 source: "demonicscans".into(),

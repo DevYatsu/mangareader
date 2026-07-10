@@ -165,5 +165,6 @@ pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
         }
     };
 
-    Html(crate::templates::layout::base_layout("Home", content, banner.as_deref()).0)
+    let css = state.config.css_overrides();
+    Html(crate::templates::layout::base_layout("Home", content, banner.as_deref(), &css, &state.config.site_title).0)
 }

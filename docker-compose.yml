@@ -18,6 +18,9 @@ services:
       - MANGAREAD_DB=/app/data/mangaread.db
       - CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage --disable-gpu
       - RUST_LOG=info
+      - SITE_TITLE=MangaRead
+      - SITE_COLOR=#3b82f6
+      - SITE_BG=#0f0f0f
     restart: unless-stopped
     init: true
 

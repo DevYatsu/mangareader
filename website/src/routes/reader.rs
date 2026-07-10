@@ -171,8 +171,11 @@ if(++a>=20)clearInterval(iv)
         script src="/static/app.js" {}
     };
 
+    let css = state.config.css_overrides();
     Html(crate::templates::layout::reader_layout(
         &format!("Ch. {} — {}", chapter.number, manga.title),
         content,
+        &css,
+        &state.config.site_title,
     ).0)
 }

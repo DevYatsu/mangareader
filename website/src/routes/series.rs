@@ -50,7 +50,8 @@ pub async fn series_detail(
             }
             h2 class="page-title" { "Series not found" }
         };
-        return Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref()).0);
+        let css = state.config.css_overrides();
+        return Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref(), &css, &state.config.site_title).0);
     }
 
     // Use the new service layer for domain logic
@@ -209,7 +210,8 @@ pub async fn series_detail(
         script src="/static/app.js" {}
     };
 
-    Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref()).0)
+    let css = state.config.css_overrides();
+    Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref(), &css, &state.config.site_title).0)
 }
 
 /// GET `/series` — render the series listing page.
@@ -306,5 +308,6 @@ pub async fn series_list(
         }
     };
 
-    Html(crate::templates::layout::base_layout("Series", content, banner.as_deref()).0)
+    let css = state.config.css_overrides();
+    Html(crate::templates::layout::base_layout("Series", content, banner.as_deref(), &css, &state.config.site_title).0)
 }

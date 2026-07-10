@@ -103,5 +103,6 @@ pub async fn source_list(
         }
     };
 
-    Html(crate::templates::layout::base_layout(&source, content, banner.as_deref()).0)
+    let css = state.config.css_overrides();
+    Html(crate::templates::layout::base_layout(&source, content, banner.as_deref(), &css, &state.config.site_title).0)
 }
