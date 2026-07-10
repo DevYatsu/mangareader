@@ -4,28 +4,30 @@ Offline manga reader — scrapes chapters from third-party sites, merges them in
 
 ## Architecture
 
-```
-┌─────────────────┐     ┌──────────────────────┐     ┌──────────────┐
-│   CLI (scraper) │     │   Web Server (website)│     │  Browser     │
-│                 │     │                      │     │              │
-│  cargo run scan │───▶ │  GET /series         │◀───▶│  HTML pages  │
-│  sync-manga N   │     │  GET /series/{id}    │     │  app.js      │
-│  sync-chapter N │     │  GET /read/{m}/{ch}  │     │  localStorage│
-│                 │     │                      │     │  (bookmarks) │
-│  ┌───────────┐  │     │  ┌─────────────────┐ │     │              │
-│  │Scraper    │  │     │  │bg sync thread   │ │     │              │
-│  │Engine     │──┼─────│─▶│  opens chromedrv│ │     │              │
-│  │ + adapters│  │     │  │  runs sync_*()  │ │     │              │
-│  └───────────┘  │     │  │  quits driver   │ │     │              │
-│                 │     │  └─────────────────┘ │     │              │
-└────────┬────────┘     └──────────┬───────────┘     └──────────────┘
-         │                        │
-         │         ┌──────────────┴──────────────┐
-         └────────▶│     SQLite (mangaread.db)    │
-                   │                              │
-                   │  series → manga → chapters   │
-                   │              → pages         │
-                   └──────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph CLI["CLI (scraper)"]
+        SCR[ScraperEngine<br/>+ adapters]
+    end
+    subgraph WEB["Web Server (website)"]
+        BG[bg sync thread<br/>chromedriver session]
+        ROUTES[GET /series<br/>GET /read/{m}/{ch}<br/>...]
+    end
+    subgraph BROWSER["Browser"]
+        HTML[HTML pages]
+        JS[app.js<br/>localStorage]
+    end
+    subgraph DB["SQLite (mangaread.db)"]
+        S[(series)]
+        M[(manga)]
+        C[(chapters)]
+        P[(pages)]
+    end
+    CLI --> DB
+    WEB --> DB
+    WEB <--> BROWSER
+    SCR --> DB
+    BG --> DB
 ```
 
 **Three crates** in a Cargo workspace:
@@ -39,8 +41,8 @@ Offline manga reader — scrapes chapters from third-party sites, merges them in
 ### Key design decisions
 
 - **Unified series**: Manga from different source sites are linked to a single `series` by normalized title. Chapters from all sources are merged; the preferred source is used where available.
-- **On-demand background sync**: Visiting a series page triggers a background chromedriver session if the data is stale (>30 min). The page shows a loading state and auto-reloads when the sync completes.
-- **No job queue**: Syncs run in ephemeral `std::thread` + `tokio::runtime` instances (one per sync). Each creates a fresh chromedriver and quits it when done.
+- **Auto-sync loop**: On startup, a background loop scans all sources for manga listings, then syncs their chapters in parallel (up to 3 concurrent chromedriver sessions). Each session opens its own driver and DB connection, then quits when done. The loop repeats every 6 hours, re-syncing stale entries (>2h since last sync).
+- **Only series with chapters are shown**: The frontend filters out series with zero chapters, so you only see manga that have been fully fetched.
 - **Client-side state**: Bookmarks, reading progress (current page), source preferences — all stored in `localStorage`. No user accounts.
 
 ## Quick Start
@@ -90,53 +92,37 @@ Adding a new source: implement `SiteAdapter` in `scraper/src/adapters/`, registe
 
 ## Project Structure
 
-```
-mangaread/
-├── mangaread-core/           # Shared domain + data layer
-│   └── src/
-│       ├── domain/            # Pure data types (no DB dependency)
-│       │   ├── series.rs      Series, SeriesWithManga
-│       │   ├── manga.rs       Manga, MangaWithCount, NewManga
-│       │   ├── chapter.rs     Chapter, NewChapter, RecentChapter
-│       │   ├── page.rs        Page, NewPage
-│       │   ├── source.rs      MangaListing, MangaInfo (scraper types)
-│       │   └── title.rs       Title cleaning/normalization
-│       ├── db/                # SQLite repos (flat namespace via db.rs)
-│       │   └── ...            insert/get/list for each aggregate
-│       ├── service/           # Business logic
-│       │   └── series.rs      pick_primary, merge_chapters, is_series_fresh
-│       └── error.rs
-│
-├── scraper/                   # CLI + library
-│   └── src/
-│       ├── adapter.rs         SiteAdapter trait
-│       ├── engine.rs          ScraperEngine (scan, sync_manga, sync_chapter)
-│       ├── adapters/
-│       │   ├── demonicscans.rs
-│       │   ├── manhuaplus.rs
-│       │   └── helpers.rs     Shared: wait_for_page, make_absolute, extract_chapter_number
-│       └── main.rs            CLI entrypoint
-│
-├── website/                   # Web server
-│   └── src/
-│       ├── main.rs            AppState, route setup, seed data
-│       ├── scraper_helper.rs  Background sync threads
-│       ├── routes/
-│       │   ├── home.rs        GET /
-│       │   ├── series.rs      GET /series, /series/{id}
-│       │   ├── reader.rs      GET /read/{manga_id}/{chapter_id}
-│       │   ├── source.rs      GET /source/{source}
-│       │   ├── manga.rs       GET /manga/{id} → redirect to series
-│       │   └── check.rs       GET /api/check-manga, /api/check-chapter
-│       ├── templates/
-│       │   └── layout.rs      base_layout, reader_layout
-│       └── static/
-│           ├── style.css      All styles
-│           └── app.js         Client-side: bookmarks, reader UX, source filters
-│
-├── docs/architecture/         Architecture Decision Records
-├── Dockerfile                 Multi-stage Docker build
-└── docker-compose.yml         Single service, port 3000, persistent volume
+```mermaid
+flowchart TB
+    subgraph ROOT["mangaread/"]
+        subgraph CORE["mangaread-core"]
+            CORE_SRC["src/"]
+            DOMAIN["domain/<br/>series.rs · manga.rs<br/>chapter.rs · page.rs<br/>source.rs · title.rs"]
+            DB["db.rs<br/>insert / get / list"]
+            SERVICE["service/<br/>series.rs"]
+            ERR["error.rs"]
+        end
+
+        subgraph SCRAPER["scraper"]
+            SCR_SRC["src/"]
+            ADAPTER["adapter.rs<br/>SiteAdapter trait"]
+            ENGINE["engine.rs<br/>ScraperEngine"]
+            ADAPT["adapters/<br/>demonicscans.rs<br/>manhuaplus.rs<br/>helpers.rs"]
+            MAIN["main.rs<br/>CLI entrypoint"]
+        end
+
+        subgraph WEB["website"]
+            WEB_SRC["src/"]
+            MAIN_RS["main.rs<br/>AppState · routes"]
+            SCR_HELPER["scraper_helper.rs<br/>bg sync threads"]
+            ROUTES["routes/<br/>home.rs · series.rs<br/>reader.rs · source.rs<br/>manga.rs · check.rs<br/>api.rs · health.rs"]
+            TEMPLATES["templates/<br/>layout.rs"]
+            STATIC["static/<br/>style.css · app.js"]
+        end
+
+        DOCS["docs/architecture/<br/>ADRs"]
+        DOCKER["Dockerfile<br/>docker-compose.yml"]
+    end
 ```
 
 ## Client-side Features
