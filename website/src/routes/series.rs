@@ -245,7 +245,7 @@ pub async fn series_list(
 
     let content = html! {
         // ── Search Header ──
-        div class="series-search-header" {
+        div class="search-card" {
             h1 class="page-title" { "Series" }
             form class="search-form" action="/series" method="get" {
                 input type="search" name="q" placeholder="Search series…"
