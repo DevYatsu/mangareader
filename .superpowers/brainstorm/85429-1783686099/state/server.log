@@ -1,6 +1,0 @@
-{"type":"server-started","port":62130,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:62130","screen_dir":"/Users/yanis/Programming/mangaread/.superpowers/brainstorm/85429-1783686099/content","state_dir":"/Users/yanis/Programming/mangaread/.superpowers/brainstorm/85429-1783686099/state"}
-{"type":"screen-added","file":"/Users/yanis/Programming/mangaread/.superpowers/brainstorm/85429-1783686099/content/01-scope.html"}
-{"source":"user-event","type":"click","text":"D\n    \n      All of the above\n      Full redesign matching Asura's home page structure: hero stats → trending row → latest updates list.","choice":"all","id":null,"timestamp":1783686127539}
-{"type":"screen-added","file":"/Users/yanis/Programming/mangaread/.superpowers/brainstorm/85429-1783686099/content/02-mockup.html"}
-{"source":"user-event","type":"click","text":"~\n    \n      Some changes\n      I'll tell you what to adjust","choice":"tweak","id":null,"timestamp":1783686178709}
-{"type":"screen-added","file":"/Users/yanis/Programming/mangaread/.superpowers/brainstorm/85429-1783686099/content/03-waiting.html"}
