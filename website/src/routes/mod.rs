@@ -9,9 +9,6 @@
 //! - `check`:   lightweight API endpoints for sync polling
 //! - `health`:   liveness probe for Docker
 //! - `api`:     sync management, progress tracking
-//! - `admin`:   admin dashboard (source health, diagnostics)
-
-pub mod admin;
 pub mod api;
 pub mod check;
 pub mod health;

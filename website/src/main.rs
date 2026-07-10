@@ -211,7 +211,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sync-manga/{id}", post(crate::routes::api::sync_manga))
         .route("/api/progress-series", get(crate::routes::api::progress_series))
         .route("/health", get(crate::routes::health::health))
-        .route("/admin", get(crate::routes::admin::admin))
         .nest_service(
             "/static",
             ServeDir::new(

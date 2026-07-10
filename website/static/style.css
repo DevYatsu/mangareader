@@ -1316,21 +1316,6 @@ footer p {
   opacity: 0.7;
 }
 
-.footer-links {
-  margin-top: 0.5rem;
-  opacity: 0.5;
-  font-size: 0.75rem;
-}
-
-.footer-links a {
-  color: var(--text-muted);
-  text-decoration: none;
-}
-
-.footer-links a:hover {
-  color: var(--accent);
-}
-
 /* ── Animations ── */
 @keyframes fadeIn {
   from {

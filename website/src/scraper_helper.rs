@@ -210,20 +210,26 @@ async fn sync_single_manga(manga_id: i64, state: Arc<AppState>) {
         }
     };
 
-    // Helper: record a failure for this source
+    // Helper: record a failure for this source and log a warning
     async fn record_failure(state: &AppState, src: &str, msg: &str) {
         let mut h = state.adapter_health.lock().await;
         if let Some(entry) = h.get_mut(src) {
+            if entry.healthy {
+                tracing::warn!("adapter {} is now UNHEALTHY: {msg}", src);
+            }
             entry.healthy = false;
             entry.consecutive_failures += 1;
             entry.last_error = Some(msg.to_string());
         }
     }
 
-    // Helper: record a success for this source
+    // Helper: record a success for this source, log recovery
     async fn record_success(state: &AppState, src: &str) {
         let mut h = state.adapter_health.lock().await;
         if let Some(entry) = h.get_mut(src) {
+            if !entry.healthy {
+                tracing::info!("adapter {} recovered after {} failures", src, entry.consecutive_failures);
+            }
             entry.healthy = true;
             entry.consecutive_failures = 0;
             entry.last_error = None;
