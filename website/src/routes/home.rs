@@ -5,6 +5,58 @@ use std::sync::Arc;
 
 use crate::AppState;
 
+/// Convert a SQLite datetime string (e.g. "2026-07-09 12:00:00") into a
+/// human-friendly relative time like "5h ago", "2d ago".
+fn relative_time(dt: &str) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    // Parse "YYYY-MM-DD HH:MM:SS"
+    let parts: Vec<&str> = dt.split(|c| c == ' ' || c == '-' || c == ':').collect();
+    if parts.len() != 6 {
+        return dt.to_string();
+    }
+
+    let year = parts[0].parse::<i64>().unwrap_or(0);
+    let month = parts[1].parse::<i64>().unwrap_or(0);
+    let day = parts[2].parse::<i64>().unwrap_or(0);
+    let hour = parts[3].parse::<i64>().unwrap_or(0);
+    let minute = parts[4].parse::<i64>().unwrap_or(0);
+    let second = parts[5].parse::<i64>().unwrap_or(0);
+
+    // Simple day-counting (not leap-year perfect, but good enough for relative time)
+    let days_in_month = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut total_days = (year - 1970) * 365 + (year - 1969) / 4;
+    for m in 1..month {
+        total_days += days_in_month[m as usize];
+    }
+    if month > 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) {
+        total_days += 1;
+    }
+    total_days += day - 1;
+
+    let ts = total_days * 86400 + hour * 3600 + minute * 60 + second;
+    let diff = (now - ts).max(0);
+
+    if diff < 60 {
+        "just now".to_string()
+    } else if diff < 3600 {
+        format!("{}m ago", diff / 60)
+    } else if diff < 86400 {
+        format!("{}h ago", diff / 3600)
+    } else if diff < 604800 {
+        format!("{}d ago", diff / 86400)
+    } else if diff < 2592000 {
+        format!("{}w ago", diff / 604800)
+    } else if diff < 31536000 {
+        format!("{}mo ago", diff / 2592000)
+    } else {
+        format!("{}y ago", diff / 31536000)
+    }
+}
+
 /// GET `/` — render the landing page.
 ///
 /// Queries series count, chapter count, unique sources, and the 30 most
@@ -83,22 +135,24 @@ pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
                 div class="skeleton skeleton-row" {}
             }
         } @else {
-            ul class="chapter-list" {
+            ul class="recent-list" {
                 @for ch in &recent {
-                    li {
+                    li class="recent-item" {
                         a href={"/read/"(ch.manga_id)"/"(ch.chapter_id)} {
                             @if let Some(ref cover) = ch.cover_url {
-                                img class="chapter-list-thumb" src=(cover) alt="" loading="lazy";
+                                img class="recent-thumb" src=(cover) alt="" loading="lazy";
                             }
-                            div class="chapter-list-body" {
-                                span class="chapter-list-title" { (ch.series_title) }
-                                span class="chapter-num" { "Ch. " (ch.chapter_number) }
-                                @if let Some(ref t) = ch.chapter_title {
-                                    span class="chapter-title" { (t) }
+                            div class="recent-body" {
+                                span class="recent-title" { (ch.series_title) }
+                                div class="recent-chapter" {
+                                    span class="recent-chapter-num" { "Ch. " (ch.chapter_number) }
+                                    @if let Some(ref t) = ch.chapter_title {
+                                        span class="recent-chapter-title" { (t) }
+                                    }
                                 }
                             }
-                            span class="chapter-list-date" { (ch.created_at) }
-                            span class="chapter-arrow" {
+                            span class="recent-time" { (relative_time(&ch.created_at)) }
+                            span class="recent-arrow" {
                                 svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
                                     path d="M5 12h14M12 5l7 7-7 7" {}
                                 }

@@ -165,13 +165,13 @@
 
     // Collect unique series IDs from localStorage
     var inProgress = {};
-    for (var i = 0; i < localStorage.length; i++) {
-      var key = localStorage.key(i);
+    for (let i = 0; i < localStorage.length; i++) {
+      let key = localStorage.key(i);
       if (key && key.indexOf('mangaread_read_') === 0) {
-        var seriesId = key.replace('mangaread_read_', '');
+        let seriesId = key.replace('mangaread_read_', '');
         try {
-          var state = JSON.parse(localStorage.getItem(key));
-          for (var chKey in state) {
+          let state = JSON.parse(localStorage.getItem(key));
+          for (let chKey in state) {
             if (state[chKey].status === 'started') {
               inProgress[seriesId] = (inProgress[seriesId] || 0) + 1;
             }
@@ -198,12 +198,22 @@
         data.forEach(function (item) {
           var cover = item.cover_url || '';
           var url = '/read/' + item.manga_id + '/' + item.chapter_id;
+          var pct = item.total_pages > 0
+            ? Math.round((item.page / item.total_pages) * 100)
+            : 0;
           html += '<a href="' + url + '" class="continue-card">';
           html += '<div class="cover-wrapper">';
           if (cover) html += '<img src="' + cover + '" alt="" loading="lazy">';
           html += '<div class="continue-overlay">';
           html += '<span class="continue-ch">Ch. ' + item.chapter_number + '</span>';
-          html += '</div></div>';
+          if (item.total_pages > 0) {
+            html += '<div class="continue-pct">p. ' + item.page + ' / ' + item.total_pages + '</div>';
+          }
+          html += '</div>';
+          html += '<div class="continue-progress">';
+          html += '<div class="continue-progress-bar" style="width:' + pct + '%"></div>';
+          html += '</div>';
+          html += '</div>';
           html += '<h3>' + escapeHtml(item.title) + '</h3>';
           html += '</a>';
         });
@@ -347,10 +357,10 @@
     function updatePreload() {
       preloadLinks.forEach(function (l) { l.remove(); });
       preloadLinks = [];
-      for (var i = currentPage; i < currentPage + 3 && i < pageImages.length; i++) {
-        var src = pageImages[i];
+      for (let i = currentPage; i < currentPage + 3 && i < pageImages.length; i++) {
+        let src = pageImages[i];
         if (!src) continue;
-        var link = document.createElement('link');
+        let link = document.createElement('link');
         link.rel = 'preload';
         link.as = 'image';
         link.href = src;
