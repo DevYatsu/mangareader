@@ -109,22 +109,17 @@ Requires chromium/chromedriver in the image. Container needs `SYS_ADMIN` capabil
 
 ## Running without Docker
 
-**Prerequisites**: Rust 1.82+, system chromedriver on `PATH`.
+**Prerequisites**: Rust 1.82+, chromedriver on `PATH`.
 
 ```bash
-# 1. Scan sources for manga listings
-cargo run -p manga-scraper scan
-
-# 2. Sync one manga's chapters
-cargo run -p manga-scraper sync-manga 1
-
-# 3. Start the web server
 MANGAREAD_DB=./mangaread.db cargo run -p website
-
-# 4. Open http://localhost:3000
 ```
 
+Open http://localhost:3000. The server starts a background sync loop that discovers manga and fetches chapters automatically — no manual scan needed.
+
 ## CLI Reference
+
+These are optional — the server's background sync loop handles everything automatically. Use them for one-off debugging.
 
 ### `cargo run -p manga-scraper scan`
 Visits each source's index page, finds manga listings, upserts to DB. Auto-links manga to series by normalized title.
