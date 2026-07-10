@@ -429,12 +429,42 @@
   //  BOOT: run on page load
   // ============================================================
 
+  // ============================================================
+  //  SYNC BANNER
+  // ============================================================
+
+  function pollSyncBanner() {
+    var banner = document.getElementById('sync-banner');
+    if (!banner) return;
+
+    fetch('/api/sync-status')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.auto_sync_running) {
+          var pct = data.auto_sync_total > 0
+            ? Math.round(data.auto_sync_current / data.auto_sync_total * 100)
+            : 0;
+          banner.style.display = '';
+          banner.innerHTML = '<span class="sync-banner-spinner"></span>'
+            + 'Syncing series\u2026 ' + data.auto_sync_current
+            + ' of ' + data.auto_sync_total + ' (' + pct + '%)';
+        } else {
+          banner.style.display = 'none';
+        }
+      })
+      .catch(function () {});
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     // Reader UX setup
     initReaderUX();
 
     // Init continue reading
     initContinueReading();
+
+    // Poll sync banner every 5s
+    pollSyncBanner();
+    setInterval(pollSyncBanner, 5000);
 
     // Rescan button handler
     var rescanBtn = document.getElementById('rescan-btn');

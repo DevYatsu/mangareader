@@ -12,8 +12,7 @@ use crate::AppState;
 pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
     let db = state.db.lock().await;
 
-    let series_count = mangaread_core::db::list_all_series(&db)
-        .map(|v| v.len())
+    let series_count = mangaread_core::db::count_manga_with_chapters(&db)
         .unwrap_or(0);
     let chapter_count: i64 = db
         .query_row("SELECT COUNT(*) FROM chapters", [], |row| row.get(0))

@@ -20,12 +20,28 @@ use tracing_subscriber::EnvFilter;
 /// background sync status.
 ///
 /// Wrapped in `Arc` and accessed via Axum's `State` extractor.
+/// Progress for the automatic sequential sync loop.
+pub struct SyncProgress {
+    /// Whether the loop is currently running.
+    pub running: bool,
+    /// How many manga we need to sync this pass.
+    pub total: i64,
+    /// How many we have synced so far.
+    pub current: i64,
+}
+
+/// Shared application state holding a SQLite database connection and
+/// background sync status.
+///
+/// Wrapped in `Arc` and accessed via Axum's `State` extractor.
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
     /// Last sync error message (cleared on read).
     pub sync_error: Mutex<Option<String>>,
     /// IDs of manga currently being synced in the background.
     pub syncing_manga_ids: Mutex<Vec<i64>>,
+    /// Progress of the automatic sequential sync loop.
+    pub auto_sync: Mutex<SyncProgress>,
 }
 
 /// Seed the database with sample manga, chapters, and pages if the DB is empty.
@@ -125,13 +141,12 @@ async fn main() -> anyhow::Result<()> {
     let conn = db::open_db()?;
     db::init_db(&conn)?;
 
-    // Check if the database is empty — if so, seed and trigger a background scan.
+    // Check if the database is empty — if so, seed sample data.
     let is_empty: bool = conn
         .query_row("SELECT COUNT(*) = 0 FROM manga", [], |row| row.get(0))
         .unwrap_or(true);
     if is_empty {
-        tracing::info!("database is empty, starting background scan...");
-        crate::scraper_helper::scan_background();
+        tracing::info!("database is empty — sample data will be seeded");
     }
 
     seed_data(&conn);
@@ -140,7 +155,12 @@ async fn main() -> anyhow::Result<()> {
         db: Mutex::new(conn),
         sync_error: Mutex::new(None),
         syncing_manga_ids: Mutex::new(Vec::new()),
+        auto_sync: Mutex::new(SyncProgress { running: false, total: 0, current: 0 }),
     });
+
+    // Start the background sync loop (scan → sequential sync → sleep → repeat).
+    tracing::info!("starting background sync loop...");
+    crate::scraper_helper::start_sync_loop(state.clone());
 
     let app = Router::new()
         .route("/", get(crate::routes::home::home))

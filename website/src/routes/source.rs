@@ -14,8 +14,11 @@ pub async fn source_list(
     Path(source): Path<String>,
 ) -> Html<String> {
     let db = state.db.lock().await;
-    let manga_list =
-        mangaread_core::db::list_manga_by_source_with_count(&db, &source).unwrap_or_default();
+    let manga_list: Vec<_> = mangaread_core::db::list_manga_by_source_with_count(&db, &source)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| m.chapter_count > 0)
+        .collect();
 
     let total_manga = manga_list.len();
 

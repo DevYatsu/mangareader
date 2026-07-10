@@ -489,6 +489,63 @@ pub fn list_pages_by_chapter(conn: &Connection, chapter_id: i64) -> Result<Vec<P
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
 }
 
+/// Get the IDs of all manga entries that have zero chapters synced.
+///
+/// Used by the background sync loop to discover which manga still need
+/// their first chapter sync.
+pub fn list_manga_ids_with_zero_chapters(conn: &Connection) -> Result<Vec<i64>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT m.id
+         FROM manga m
+         LEFT JOIN chapters c ON c.manga_id = m.id
+         WHERE c.id IS NULL
+         ORDER BY m.id",
+    )?;
+    let ids = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+    ids.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+}
+
+/// Get the total count of manga that have chapters synced.
+pub fn count_manga_with_chapters(conn: &Connection) -> Result<i64, Error> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(DISTINCT m.id)
+         FROM manga m
+         JOIN chapters c ON c.manga_id = m.id",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}
+
+/// Get manga IDs that need syncing — either never synced or stale.
+///
+/// A manga is stale when its `chapters_synced_at` is older than
+/// `stale_minutes` ago. Returns IDs ordered by stalest first.
+pub fn list_manga_ids_needing_sync(conn: &Connection, stale_minutes: i64) -> Result<Vec<i64>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT m.id
+         FROM manga m
+         LEFT JOIN chapters c ON c.manga_id = m.id
+         WHERE c.id IS NULL
+            OR m.chapters_synced_at IS NULL
+            OR m.chapters_synced_at < datetime('now', ?1)
+         ORDER BY m.chapters_synced_at IS NOT NULL, m.chapters_synced_at ASC
+         LIMIT 50",
+    )?;
+    let ids = stmt.query_map(
+        rusqlite::params![format!("-{} minutes", stale_minutes)],
+        |row| row.get::<_, i64>(0),
+    )?;
+    ids.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+}
+
+/// Get all manga IDs (used for full sync pass).
+pub fn list_all_manga_ids(conn: &Connection) -> Result<Vec<i64>, Error> {
+    let mut stmt = conn.prepare("SELECT id FROM manga ORDER BY id")?;
+    let ids = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+    ids.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+}
+
 fn map_page_row(row: &rusqlite::Row) -> rusqlite::Result<Page> {
     Ok(Page {
         id: row.get(0)?,

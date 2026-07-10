@@ -19,6 +19,7 @@ pub fn base_layout(title: &str, content: Markup) -> Markup {
                 link rel="stylesheet" href="/static/style.css";
             }
             body {
+                div id="sync-banner" class="sync-banner" style="display:none" {}
                 div.container {
                     header {
                         h1 { a href="/" { "MangaRead" } }

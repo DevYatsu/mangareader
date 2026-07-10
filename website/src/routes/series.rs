@@ -213,10 +213,14 @@ pub async fn series_list(
     let search = query.get("q").map(|s| s.trim()).unwrap_or("");
     let db = state.db.lock().await;
 
-    let all_series = if search.is_empty() {
-        mangaread_core::db::list_all_series(&db).unwrap_or_default()
-    } else {
-        mangaread_core::db::search_series(&db, search).unwrap_or_default()
+    let all_series: Vec<_> = {
+        let list = if search.is_empty() {
+            mangaread_core::db::list_all_series(&db).unwrap_or_default()
+        } else {
+            mangaread_core::db::search_series(&db, search).unwrap_or_default()
+        };
+        // Only show series that have at least one chapter
+        list.into_iter().filter(|s| s.total_chapters > 0).collect()
     };
 
     let content = html! {

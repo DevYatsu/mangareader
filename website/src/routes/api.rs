@@ -21,6 +21,12 @@ pub struct SyncStatusResponse {
     pub manga_ids: Vec<i64>,
     /// The most recent sync error (cleared after reading).
     pub last_error: Option<String>,
+    /// Whether the automatic sequential sync loop is running.
+    pub auto_sync_running: bool,
+    /// Total manga to sync in this pass.
+    pub auto_sync_total: i64,
+    /// Manga synced so far in this pass.
+    pub auto_sync_current: i64,
 }
 
 /// Response for the sync-manga trigger endpoint.
@@ -53,10 +59,14 @@ pub struct ProgressQuery {
 pub async fn sync_status(State(state): State<Arc<AppState>>) -> Json<SyncStatusResponse> {
     let error = state.sync_error.lock().await.take();
     let manga_ids = state.syncing_manga_ids.lock().await.clone();
+    let auto_progress = state.auto_sync.lock().await;
     Json(SyncStatusResponse {
         syncing: !manga_ids.is_empty(),
         manga_ids,
         last_error: error,
+        auto_sync_running: auto_progress.running,
+        auto_sync_total: auto_progress.total,
+        auto_sync_current: auto_progress.current,
     })
 }
 
