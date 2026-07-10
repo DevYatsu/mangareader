@@ -41,6 +41,11 @@ RUN groupadd -r mangaread && useradd -r -g mangaread -m -d /app mangaread
 WORKDIR /app
 COPY --from=builder --chown=mangaread:mangaread /app/mangaread-server ./
 
+# Ensure the data directory exists and is writable by the mangaread user.
+# Docker volumes are mounted as root by default, so we create it here
+# and chown it while we still have root.
+RUN mkdir -p /app/data && chown mangaread:mangaread /app/data
+
 USER mangaread
 EXPOSE 3000
 ENV CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu"
