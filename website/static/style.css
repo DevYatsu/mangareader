@@ -277,14 +277,17 @@ a:hover {
   color: var(--accent);
 }
 
-/* ── Hero Section (Home) ── */
+/* ── Hero Section (Home) — full-bleed ── */
 .hero-section {
-  margin: -2.5rem -1.5rem 3rem;
+  width: 100vw;
+  margin-left: calc(-50vw + 50%);
+  margin-right: calc(-50vw + 50%);
   padding: 4rem 1.5rem 3rem;
   background: linear-gradient(180deg, rgba(245, 158, 11, 0.07) 0%, transparent 100%);
   border-bottom: 1px solid var(--border-subtle);
   position: relative;
   overflow: hidden;
+  margin-bottom: 2.5rem;
 }
 
 /* Decorative glow spots */
@@ -2017,8 +2020,11 @@ footer p {
   }
 
   .hero-section {
-    margin: -1.5rem -1rem 2rem;
+    width: 100vw;
+    margin-left: calc(-50vw + 50%);
+    margin-right: calc(-50vw + 50%);
     padding: 2.5rem 1rem 2rem;
+    margin-bottom: 1.5rem;
   }
 
   .hero-title {
