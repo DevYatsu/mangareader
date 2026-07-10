@@ -414,10 +414,16 @@
     if (clickLeft) clickLeft.addEventListener('click', prevPage);
     if (clickRight) clickRight.addEventListener('click', nextPage);
 
-    // Keyboard nav
+    // Keyboard nav: arrows navigate chapters, space scrolls normally
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'ArrowLeft') prevPage();
-      if (e.key === 'ArrowRight') nextPage();
+      if (e.key === 'ArrowLeft') {
+        const prev = document.querySelector('.reader-bottom-nav-inner > :first-child');
+        if (prev && prev.tagName === 'A') window.location.href = prev.href;
+      }
+      if (e.key === 'ArrowRight') {
+        const next = document.querySelector('.reader-bottom-nav-inner > :last-child');
+        if (next && next.tagName === 'A') window.location.href = next.href;
+      }
     });
 
     // Show/hide topbar on scroll
