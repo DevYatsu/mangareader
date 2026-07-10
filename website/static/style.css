@@ -49,12 +49,14 @@
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 
   /* Layout — override these by setting your own in an inline <style> or local CSS */
-  --max-width: 1200px;
+  --max-width: 1400px;
   --container-padding: 1.5rem;
 }
 
 /* ── Base Reset ── */
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
@@ -107,7 +109,9 @@ body {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ── Custom Scrollbar ── */
@@ -154,6 +158,7 @@ a:hover {
 
 /* ── Container ── */
 .container {
+  width: 100%;
   max-width: var(--max-width);
   margin: 0 auto;
   padding: 0 var(--container-padding);
@@ -691,7 +696,7 @@ a:hover {
 .card-overlay {
   position: absolute;
   inset: 0;
-  background: linear-gradient(to top, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.1) 40%, transparent 60%);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.1) 40%, transparent 60%);
   opacity: 0;
   transition: opacity var(--transition-base);
   pointer-events: none;
@@ -915,7 +920,9 @@ a:hover {
 }
 
 /* ── Read Status Indicators ── */
-.ch-list > li { position: relative; }
+.ch-list>li {
+  position: relative;
+}
 
 .ch-status-icon {
   display: inline-flex;
@@ -1239,13 +1246,13 @@ a:hover {
   width: 36px;
   height: 36px;
   border-radius: 8px;
-  color: rgba(255,255,255,0.6);
+  color: rgba(255, 255, 255, 0.6);
   transition: all 0.2s ease;
   flex-shrink: 0;
 }
 
 .reader-back-btn:hover {
-  background: rgba(255,255,255,0.08);
+  background: rgba(255, 255, 255, 0.08);
   color: #fff;
 }
 
@@ -1258,7 +1265,7 @@ a:hover {
 
 .reader-topbar-title {
   font-size: 0.8rem;
-  color: rgba(255,255,255,0.5);
+  color: rgba(255, 255, 255, 0.5);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1275,7 +1282,7 @@ a:hover {
 
 .reader-page-indicator {
   font-size: 0.8rem;
-  color: rgba(255,255,255,0.4);
+  color: rgba(255, 255, 255, 0.4);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
@@ -1352,16 +1359,16 @@ a:hover {
   font-size: 0.9rem;
   font-weight: 600;
   color: #fff;
-  background: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 10px;
   transition: all 0.2s ease;
   text-decoration: none;
 }
 
 .reader-nav-btn:hover {
-  background: rgba(255,255,255,0.14);
-  border-color: rgba(255,255,255,0.2);
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.2);
   color: #fff;
 }
 
@@ -1373,14 +1380,14 @@ a:hover {
 
 .reader-nav-btn.secondary {
   background: transparent;
-  border-color: rgba(255,255,255,0.06);
-  color: rgba(255,255,255,0.5);
+  border-color: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.5);
   font-weight: 500;
 }
 
 .reader-nav-btn.secondary:hover {
   color: #fff;
-  border-color: rgba(255,255,255,0.15);
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 .reader-nav-btn svg {
@@ -1393,7 +1400,7 @@ a:hover {
   bottom: 2rem;
   left: 50%;
   transform: translateX(-50%);
-  color: rgba(255,255,255,0.2);
+  color: rgba(255, 255, 255, 0.2);
   font-size: 0.75rem;
   font-family: var(--font-body);
   letter-spacing: 0.05em;
@@ -1408,8 +1415,15 @@ a:hover {
 }
 
 @keyframes hintPulse {
-  0%, 100% { opacity: 0.2; }
-  50% { opacity: 0.5; }
+
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
 }
 
 /* ── Footer ── */
@@ -1436,36 +1450,95 @@ footer p {
 
 /* ── Animations ── */
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(12px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes slideDown {
-  from { opacity: 0; transform: translateY(-8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Staggered grid animation */
-.manga-grid .manga-card:nth-child(1) { animation-delay: 0ms; }
-.manga-grid .manga-card:nth-child(2) { animation-delay: 40ms; }
-.manga-grid .manga-card:nth-child(3) { animation-delay: 80ms; }
-.manga-grid .manga-card:nth-child(4) { animation-delay: 120ms; }
-.manga-grid .manga-card:nth-child(5) { animation-delay: 160ms; }
-.manga-grid .manga-card:nth-child(6) { animation-delay: 200ms; }
-.manga-grid .manga-card:nth-child(7) { animation-delay: 240ms; }
-.manga-grid .manga-card:nth-child(8) { animation-delay: 280ms; }
+.manga-grid .manga-card:nth-child(1) {
+  animation-delay: 0ms;
+}
 
-.source-grid .source-card:nth-child(1) { animation-delay: 0ms; }
-.source-grid .source-card:nth-child(2) { animation-delay: 50ms; }
-.source-grid .source-card:nth-child(3) { animation-delay: 100ms; }
-.source-grid .source-card:nth-child(4) { animation-delay: 150ms; }
-.source-grid .source-card:nth-child(5) { animation-delay: 200ms; }
-.source-grid .source-card:nth-child(6) { animation-delay: 250ms; }
+.manga-grid .manga-card:nth-child(2) {
+  animation-delay: 40ms;
+}
+
+.manga-grid .manga-card:nth-child(3) {
+  animation-delay: 80ms;
+}
+
+.manga-grid .manga-card:nth-child(4) {
+  animation-delay: 120ms;
+}
+
+.manga-grid .manga-card:nth-child(5) {
+  animation-delay: 160ms;
+}
+
+.manga-grid .manga-card:nth-child(6) {
+  animation-delay: 200ms;
+}
+
+.manga-grid .manga-card:nth-child(7) {
+  animation-delay: 240ms;
+}
+
+.manga-grid .manga-card:nth-child(8) {
+  animation-delay: 280ms;
+}
+
+.source-grid .source-card:nth-child(1) {
+  animation-delay: 0ms;
+}
+
+.source-grid .source-card:nth-child(2) {
+  animation-delay: 50ms;
+}
+
+.source-grid .source-card:nth-child(3) {
+  animation-delay: 100ms;
+}
+
+.source-grid .source-card:nth-child(4) {
+  animation-delay: 150ms;
+}
+
+.source-grid .source-card:nth-child(5) {
+  animation-delay: 200ms;
+}
+
+.source-grid .source-card:nth-child(6) {
+  animation-delay: 250ms;
+}
 
 /* ── Continue Reading Section ── */
 .continue-section {
@@ -1511,11 +1584,13 @@ footer p {
 
 .continue-card .cover-wrapper {
   position: relative;
-  width: 100%;
-  aspect-ratio: 3/4;
+  width: 170px;
+  height: 227px;
   border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--bg-card);
+  background-size: cover;
+  background-position: center;
   border: 1px solid var(--border);
   transition: border-color var(--transition-base), box-shadow var(--transition-base);
 }
@@ -1525,24 +1600,12 @@ footer p {
   box-shadow: var(--shadow-lg), var(--shadow-glow);
 }
 
-.continue-card img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-  transition: transform var(--transition-slow);
-}
-
-.continue-card:hover img {
-  transform: scale(1.08);
-}
-
 .continue-card .continue-overlay {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  background: linear-gradient(transparent 20%, rgba(0,0,0,0.85) 100%);
+  background: linear-gradient(transparent 20%, rgba(0, 0, 0, 0.85) 100%);
   padding: 2rem 0.75rem 0.75rem;
   z-index: 2;
 }
@@ -1568,7 +1631,7 @@ footer p {
   left: 0;
   right: 0;
   height: 3px;
-  background: rgba(255,255,255,0.1);
+  background: rgba(255, 255, 255, 0.1);
   z-index: 3;
 }
 
@@ -1584,6 +1647,7 @@ footer p {
   font-weight: 600;
   color: var(--text-primary);
   margin-top: 0.5rem;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1728,6 +1792,65 @@ footer p {
 .rescan-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ── Bookmark Button ── */
+.bookmark-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1rem;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-base);
+}
+
+.bookmark-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+
+.bookmark-btn.bookmarked {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  background: var(--accent-dim);
+}
+
+.bookmark-btn.bookmarked:hover {
+  color: var(--accent-hover);
+  border-color: var(--accent);
+  background: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.18);
+}
+
+.manga-card .bookmark-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 2;
+  padding: 0.4rem;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  border: none;
+  color: #fff;
+  opacity: 0;
+  transition: opacity var(--transition-base);
+}
+
+.manga-card:hover .bookmark-btn {
+  opacity: 1;
+}
+
+.manga-card .bookmark-btn.bookmarked {
+  opacity: 1;
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.7);
 }
 
 /* ── Error Page ── */
@@ -1897,8 +2020,13 @@ footer p {
 
 /* ── Skeleton Loading ── */
 @keyframes shimmer {
-  0% { background-position: -400px 0; }
-  100% { background-position: 400px 0; }
+  0% {
+    background-position: -400px 0;
+  }
+
+  100% {
+    background-position: 400px 0;
+  }
 }
 
 .skeleton {
@@ -1989,8 +2117,15 @@ footer p {
 }
 
 @keyframes toastIn {
-  from { opacity: 0; transform: translateY(1rem); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(1rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .toast.removing {
@@ -1998,8 +2133,15 @@ footer p {
 }
 
 @keyframes toastOut {
-  from { opacity: 1; transform: translateY(0); }
-  to { opacity: 0; transform: translateY(1rem); }
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(1rem);
+  }
 }
 
 /* ── Responsive ── */

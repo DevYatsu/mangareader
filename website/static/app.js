@@ -10,20 +10,51 @@
   'use strict';
 
   // ============================================================
+  //  DOM UTILITIES
+  // ============================================================
+
+  /**
+   * Shorthand for document.createElement with props and children.
+   *
+   * Props: className, id, textContent, htmlContent, style (object), on* events.
+   * Strings become text nodes, DOM nodes get appended.
+   */
+  function h(tag, props) {
+    const el = document.createElement(tag);
+    let key, val, child, i;
+    if (props) {
+      for (key in props) {
+        if (!Object.prototype.hasOwnProperty.call(props, key)) continue;
+        val = props[key];
+        if (key === 'className') { el.className = val; }
+        else if (key === 'id') { el.id = val; }
+        else if (key === 'textContent') { el.textContent = val; }
+        else if (key === 'htmlContent') { el.innerHTML = val; }
+        else if (key === 'style' && typeof val === 'object') { Object.assign(el.style, val); }
+        else if (key.slice(0, 2) === 'on') { el.addEventListener(key.slice(2).toLowerCase(), val); }
+        else if (val !== false && val != null) { el.setAttribute(key, val); }
+      }
+    }
+    for (i = 2; i < arguments.length; i++) {
+      child = arguments[i];
+      if (typeof child === 'string') { el.appendChild(document.createTextNode(child)); }
+      else if (child) { el.appendChild(child); }
+    }
+    return el;
+  }
+
+  // ============================================================
   //  TOAST SYSTEM
   // ============================================================
 
   function showToast(message, type) {
     type = type || 'error';
-    var container = document.getElementById('toast-container');
+    let container = document.getElementById('toast-container');
     if (!container) {
-      container = document.createElement('div');
-      container.id = 'toast-container';
+      container = h('div', { id: 'toast-container' });
       document.body.appendChild(container);
     }
-    var el = document.createElement('div');
-    el.className = 'toast ' + type;
-    el.textContent = message;
+    const el = h('div', { className: 'toast ' + type, textContent: message });
     container.appendChild(el);
     setTimeout(function () {
       el.classList.add('removing');
@@ -154,24 +185,24 @@
   // ============================================================
 
   function escapeHtml(str) {
-    var div = document.createElement('div');
+    const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
   }
 
   function initContinueReading() {
-    var container = document.getElementById('continue-reading-container');
+    const container = document.getElementById('continue-reading-container');
     if (!container) return;
 
     // Collect unique series IDs from localStorage
-    var inProgress = {};
+    const inProgress = {};
     for (let i = 0; i < localStorage.length; i++) {
-      let key = localStorage.key(i);
+      const key = localStorage.key(i);
       if (key && key.indexOf('mangaread_read_') === 0) {
-        let seriesId = key.replace('mangaread_read_', '');
+        const seriesId = key.replace('mangaread_read_', '');
         try {
-          let state = JSON.parse(localStorage.getItem(key));
-          for (let chKey in state) {
+          const state = JSON.parse(localStorage.getItem(key));
+          for (const chKey in state) {
             if (state[chKey].status === 'started') {
               inProgress[seriesId] = (inProgress[seriesId] || 0) + 1;
             }
@@ -180,7 +211,7 @@
       }
     }
 
-    var ids = Object.keys(inProgress);
+    const ids = Object.keys(inProgress);
     if (ids.length === 0) {
       container.remove();
       return;
@@ -193,17 +224,16 @@
           container.remove();
           return;
         }
-        var html = '<h2 class="section-title">Continue Reading</h2>';
+        let html = '<h2 class="section-title">Continue Reading</h2>';
         html += '<div class="continue-scroll">';
         data.forEach(function (item) {
-          var cover = item.cover_url || '';
-          var url = '/read/' + item.manga_id + '/' + item.chapter_id;
-          var pct = item.total_pages > 0
+          const cover = item.cover_url || '';
+          const url = '/read/' + item.manga_id + '/' + item.chapter_id;
+          const pct = item.total_pages > 0
             ? Math.round((item.page / item.total_pages) * 100)
             : 0;
           html += '<a href="' + url + '" class="continue-card">';
-          html += '<div class="cover-wrapper">';
-          if (cover) html += '<img src="' + cover + '" alt="" loading="lazy">';
+          html += '<div class="cover-wrapper"' + (cover ? ' style="background-image: url(\'' + cover.replace(/'/g, '%27') + '\')"' : '') + '>';
           html += '<div class="continue-overlay">';
           html += '<span class="continue-ch">Ch. ' + item.chapter_number + '</span>';
           if (item.total_pages > 0) {
@@ -214,7 +244,6 @@
           html += '<div class="continue-progress-bar" style="width:' + pct + '%"></div>';
           html += '</div>';
           html += '</div>';
-          html += '<h3>' + escapeHtml(item.title) + '</h3>';
           html += '</a>';
         });
         html += '</div>';
@@ -273,10 +302,8 @@
       if (lastVisible >= totalPages) {
         setChapterStatus(seriesId, chapterId, 'finished', totalPages);
         finishedMarked = true;
-          let badge = document.createElement('span');
-        badge.className = 'completed-badge';
-        badge.textContent = '✓ Read';
-        let target = document.querySelector('.reader-topbar-chapter');
+        const badge = h('span', { className: 'completed-badge', textContent: '\u2713 Read' });
+        const target = document.querySelector('.reader-topbar-chapter');
         if (target) target.appendChild(badge);
       }
     }
@@ -289,7 +316,7 @@
 
     let loaded = 0;
     pages.forEach(function (p) {
-      var img = p.querySelector('img');
+      const img = p.querySelector('img');
       if (img) {
         img.addEventListener('load', function () {
           loaded++;
@@ -347,23 +374,21 @@
     }
 
     // Preload next images
-    var pageImages = Array.from(pages).map(function (p) {
-      var img = p.querySelector('img');
+    const pageImages = Array.from(pages).map(function (p) {
+      const img = p.querySelector('img');
       return img ? img.getAttribute('src') : null;
     });
 
-    var preloadLinks = [];
+    let preloadLinks = [];
 
     function updatePreload() {
+      let i, src, link;
       preloadLinks.forEach(function (l) { l.remove(); });
       preloadLinks = [];
-      for (let i = currentPage; i < currentPage + 3 && i < pageImages.length; i++) {
-        let src = pageImages[i];
+      for (i = currentPage; i < currentPage + 3 && i < pageImages.length; i++) {
+        src = pageImages[i];
         if (!src) continue;
-        let link = document.createElement('link');
-        link.rel = 'preload';
-        link.as = 'image';
-        link.href = src;
+        link = h('link', { rel: 'preload', as: 'image', href: src });
         document.head.appendChild(link);
         preloadLinks.push(link);
       }
@@ -443,15 +468,15 @@
     initContinueReading();
 
     // Rescan button handler
-    var rescanBtn = document.getElementById('rescan-btn');
+    const rescanBtn = document.getElementById('rescan-btn');
     if (rescanBtn) {
       rescanBtn.addEventListener('click', function () {
-        var mangaId = rescanBtn.getAttribute('data-manga-id');
+        const mangaId = rescanBtn.getAttribute('data-manga-id');
         rescanBtn.disabled = true;
         rescanBtn.textContent = ' Syncing...';
         fetch('/api/sync-manga/' + mangaId, { method: 'POST' })
           .then(function () {
-            showToast('Sync started — page will refresh soon.', 'success');
+            showToast('Sync started - page will refresh soon.', 'success');
             setTimeout(function () { location.reload(); }, 5000);
           })
           .catch(function () {
@@ -463,7 +488,7 @@
     }
 
     // Check for sync errors on series page
-    var syncCheck = document.querySelector('[data-series-id]');
+    const syncCheck = document.querySelector('[data-series-id]');
     if (syncCheck) {
       fetch('/api/sync-status')
         .then(function (r) { return r.json(); })
@@ -481,19 +506,17 @@
       const seriesId = chapterList.getAttribute('data-series-id');
 
       // Build source toggles
-      const sources = JSON.parse(chapterList.getAttribute('data-sources') || '[]');
+      let sources = [];
+      try { sources = JSON.parse(chapterList.getAttribute('data-sources') || '[]'); } catch (_) {}
       const toggleContainer = document.getElementById('source-toggles');
       if (toggleContainer && sources.length > 1) {
         sources.forEach(src => {
-          const label = document.createElement('label');
-          label.className = 'source-toggle';
-          const cb = document.createElement('input');
-          cb.type = 'checkbox';
-          cb.value = src;
-          cb.addEventListener('change', () => toggleSource(src));
-          label.appendChild(cb);
-          label.appendChild(document.createTextNode(' ' + src));
-          toggleContainer.appendChild(label);
+          toggleContainer.appendChild(
+            h('label', { className: 'source-toggle' },
+              h('input', { type: 'checkbox', value: src, onChange: function () { toggleSource(src); } }),
+              ' ' + src
+            )
+          );
         });
       }
 
@@ -530,8 +553,9 @@
       const chapterId = readerTrack.getAttribute('data-chapter-id');
       const saved = getChapterStatus(seriesId, chapterId);
       if (saved && saved.page && saved.page > 1) {
-        resumeTarget.setAttribute('data-page', String(saved.page));
-        const page = saved.page;
+        const page = parseInt(saved.page, 10);
+        if (isNaN(page) || page < 1) return;
+        resumeTarget.setAttribute('data-page', String(page));
         // The server template already sets data-page-idx on .reader-page divs
         const el = document.querySelector('.reader-page[data-page-idx="' + page + '"]');
         if (el) {
@@ -539,6 +563,121 @@
         }
       }
     }
+
+    // Bookmark buttons on series detail page
+    initBookmarkButtons();
+
+    // Bookmarks page
+    initBookmarksPage();
   });
+
+  // ============================================================
+  //  BOOKMARKS
+  // ============================================================
+
+  const STORAGE_BOOKMARKS = 'mangaread_bookmarks';
+
+  function getBookmarks() {
+    try {
+      const raw = localStorage.getItem(STORAGE_BOOKMARKS);
+      if (raw) return JSON.parse(raw);
+    } catch (_) {}
+    return [];
+  }
+
+  function setBookmarks(ids) {
+    localStorage.setItem(STORAGE_BOOKMARKS, JSON.stringify(ids));
+  }
+
+  function isBookmarked(seriesId) {
+    return getBookmarks().indexOf(seriesId) !== -1;
+  }
+
+  function toggleBookmark(seriesId) {
+    const ids = getBookmarks();
+    const idx = ids.indexOf(seriesId);
+    if (idx !== -1) {
+      ids.splice(idx, 1);
+    } else {
+      ids.push(seriesId);
+    }
+    setBookmarks(ids);
+    return idx === -1;
+  }
+
+  function initBookmarkButtons() {
+    const btns = document.querySelectorAll('.bookmark-btn');
+    btns.forEach(function (btn) {
+      const seriesId = parseInt(btn.getAttribute('data-series-id'), 10);
+      const label = btn.querySelector('.bookmark-label');
+
+      function update() {
+        const marked = isBookmarked(seriesId);
+        btn.classList.toggle('bookmarked', marked);
+        if (label) label.textContent = marked ? 'Bookmarked' : 'Bookmark';
+      }
+
+      update();
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        toggleBookmark(seriesId);
+        update();
+        showToast(
+          isBookmarked(seriesId) ? 'Series bookmarked' : 'Bookmark removed',
+          'success'
+        );
+      });
+    });
+  }
+
+  function initBookmarksPage() {
+    const container = document.getElementById('bookmarks-container');
+    const emptyEl = document.getElementById('bookmarks-empty');
+    if (!container) return;
+
+    const ids = getBookmarks();
+    if (ids.length === 0) {
+      container.style.display = 'none';
+      if (emptyEl) emptyEl.style.display = '';
+      return;
+    }
+
+    fetch('/api/progress-series?ids=' + ids.join(','))
+      .then(function (r) { return r.json(); })
+      .then(function (series) {
+        if (!series || series.length === 0) {
+          container.style.display = 'none';
+          if (emptyEl) emptyEl.style.display = '';
+          return;
+        }
+        container.innerHTML = '';
+        series.forEach(function (s) {
+          const coverContent = s.cover_url
+            ? h('img', { src: s.cover_url, alt: '', loading: 'lazy' })
+            : h('div', { className: 'card-placeholder' });
+          const link = h('a', { href: '/series/' + s.id },
+            h('div', { className: 'cover-wrapper' },
+              coverContent,
+              h('div', { className: 'card-overlay' })
+            ),
+            h('div', { className: 'info' },
+              h('h3', { textContent: s.title })
+            )
+          );
+          const btn = h('button', {
+            className: 'bookmark-btn bookmarked',
+            'data-series-id': s.id,
+            htmlContent: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>'
+          });
+          const card = h('div', { className: 'manga-card' }, link, btn);
+          container.appendChild(card);
+        });
+        // Wire up bookmark buttons in the grid
+        initBookmarkButtons();
+      })
+      .catch(function () {
+        container.innerHTML = '<div class="empty-state"><p>Failed to load bookmarks.</p></div>';
+      });
+  }
 
 })();

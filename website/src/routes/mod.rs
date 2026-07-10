@@ -9,7 +9,9 @@
 //! - `check`:   lightweight API endpoints for sync polling
 //! - `health`:   liveness probe for Docker
 //! - `api`:     sync management, progress tracking
+//! - `bookmarks`: client-side bookmark page
 pub mod api;
+pub mod bookmarks;
 pub mod check;
 pub mod health;
 pub mod home;

@@ -113,6 +113,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(crate::routes::home::home))
         .route("/series", get(crate::routes::series::series_list))
         .route("/series/{id}", get(crate::routes::series::series_detail))
+        .route("/bookmarks", get(crate::routes::bookmarks::bookmarks_page))
         .route("/source/{source}", get(crate::routes::source::source_list))
         .route("/manga/{id}", get(crate::routes::manga::manga_detail))
         .route(

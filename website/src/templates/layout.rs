@@ -14,6 +14,7 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, config_css: &str, site_title: &str) -> Markup {
     let home_class = if title == "Home" { "active" } else { "" };
     let series_class = if title == "Series" { "active" } else { "" };
+    let bookmarks_class = if title == "Bookmarks" { "active" } else { "" };
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -36,6 +37,7 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                     }
                 }
                 div.site-wrap {
+                    div.container {
                     header class="site-header" {
                         a class="site-logo" href="/" {
                             svg class="logo-mark" width="22" height="22" viewBox="0 0 32 32" fill="none" {
@@ -61,6 +63,12 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                                 }
                                 "Series"
                             }
+                            a href="/bookmarks" class=(bookmarks_class) {
+                                svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" {
+                                    path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" {}
+                                }
+                                "Bookmarks"
+                            }
                         }
                     }
                     main { (content) }
@@ -68,7 +76,9 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                         p { (site_title) }
                         p class="footer-tagline" { "Your personal manga library." }
                     }
+                    }
                 }
+                script src="/static/app.js" {}
             }
         }
     }
@@ -109,13 +119,14 @@ pub fn error_layout(heading: &str, message: &str) -> Markup {
                             p class="error-message" { (message) }
                             a href="/" class="error-home-btn" { "Back to Home" }
                         }
-                    }
-                    footer {
-                        p { (site_title) }
-                    }
-                }
+            }
+            footer {
+                p { (site_title) }
             }
         }
+        script src="/static/app.js" {}
+    }
+}
     }
 }
 

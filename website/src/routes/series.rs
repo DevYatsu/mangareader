@@ -139,6 +139,12 @@ pub async fn series_detail(
                             }
                             "Start Reading"
                         }
+                        button class="bookmark-btn" data-series-id=(s.id) {
+                            svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" {
+                                path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" {}
+                            }
+                            span class="bookmark-label" { "Bookmark" }
+                        }
                         button id="rescan-btn" class="rescan-btn" data-manga-id=(primary.id) {
                             svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
                                 path d="M23 4v6h-6M1 20v-6h6" {}
@@ -186,7 +192,7 @@ pub async fn series_detail(
             } @else {
                 ul id="chapter-list" class="chapter-list"
                     data-series-id=(s.id)
-                    data-sources=(maud::PreEscaped(serde_json::to_string(&all_sources).unwrap_or_else(|_| "[]".to_string()))) {
+                    data-sources=(maud::PreEscaped(serde_json::to_string(&all_sources).unwrap_or_else(|_| "[]".to_string()).replace('"', "&quot;"))) {
                     @for &(src, manga_id, ch_id, num) in &display_chapters {
                         li data-source=(src) data-chapter-id=(ch_id) {
                             a href={"/read/"(manga_id)"/"(ch_id)} {
@@ -205,9 +211,6 @@ pub async fn series_detail(
                 }
             }
         }
-
-        // Client-side features
-        script src="/static/app.js" {}
     };
 
     let css = state.config.css_overrides();

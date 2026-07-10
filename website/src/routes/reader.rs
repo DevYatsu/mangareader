@@ -167,8 +167,6 @@ if(++a>=20)clearInterval(iv)
             // Subtle hint that fades out
             div id="reader-hint" class="reader-hint" { "Tap sides to navigate pages" }
         }
-
-        script src="/static/app.js" {}
     };
 
     let css = state.config.css_overrides();
