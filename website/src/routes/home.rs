@@ -131,8 +131,9 @@ pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
         // ── Recent Chapters ──
         h2 class="section-title" { "Recently Updated" }
         @if recent.is_empty() {
-            @for _ in 0..5 {
-                div class="skeleton skeleton-row" {}
+            div class="empty-state" {
+                span class="empty-state-icon" {}
+                p { "No chapters yet. The sync loop is fetching series in the background." }
             }
         } @else {
             ul class="recent-list" {

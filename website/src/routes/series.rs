@@ -260,18 +260,9 @@ pub async fn series_list(
 
         @if all_series.is_empty() {
             @if search.is_empty() {
-                div class="skeleton-grid" {
-                    @for _ in 0..12 {
-                        div class="manga-card" {
-                            div class="cover-wrapper" {
-                                div class="skeleton skeleton-card" {}
-                            }
-                            div class="info" {
-                                div class="skeleton skeleton-text" {}
-                                div class="skeleton skeleton-text short" {}
-                            }
-                        }
-                    }
+                div class="empty-state" {
+                    span class="empty-state-icon" {}
+                    p { "No series synced yet. The background sync loop will fetch them." }
                 }
             } @else {
                 div class="empty-state" {
