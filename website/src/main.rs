@@ -125,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sync-manga/{id}", post(crate::routes::api::sync_manga))
         .route("/api/progress-series", get(crate::routes::api::progress_series))
         .route("/health", get(crate::routes::health::health))
+        .route("/favicon.ico", get(|| async { axum::response::Redirect::permanent("/static/favicon.svg") }))
         .nest_service(
             "/static",
             ServeDir::new(

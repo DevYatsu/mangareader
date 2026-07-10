@@ -1,13 +1,17 @@
 //! Site configuration driven by environment variables.
 //!
-//! # Overridable settings
+//! # Env vars read by Rust
 //!
 //! | Variable | Default | Description |
 //! |----------|---------|-------------|
 //! | `SITE_TITLE` | `MangaRead` | Site name in header / `<title>` |
 //! | `SITE_COLOR` | `#f59e0b` | Primary accent color (hex) |
-//! | `SITE_COLOR_HOVER` | *(derived)* | Hover variant (lightened) |
 //! | `SITE_BG` | `#0f0f0f` | Page background color |
+//!
+//! Colors `accent_hover`, `accent_dim`, `accent_glow` are auto-derived.
+//! Font, max-width, and other layout tokens are set in CSS variables
+//! (see `:root` in `style.css`) and can be overridden via a local
+//! override stylesheet or inline `<style>`.
 
 /// All user-facing settings derived from environment variables.
 pub struct SiteConfig {
@@ -51,9 +55,8 @@ impl SiteConfig {
 
         Self {
             site_title: std::env::var("SITE_TITLE").unwrap_or_else(|_| "MangaRead".into()),
-            accent_hover: std::env::var("SITE_COLOR_HOVER")
-                .unwrap_or_else(|_| lighten(&accent, 0.25)),
-            accent: accent.clone(),
+            accent_hover: lighten(&accent, 0.25),
+            accent,
             bg_page,
             accent_r,
             accent_g,
@@ -61,7 +64,8 @@ impl SiteConfig {
         }
     }
 
-    /// Generate a `<style>` block overriding CSS custom properties.
+    /// Generate a `<style>` block overriding CSS custom properties
+    /// for accent colors (everything else lives in `style.css`'s `:root`).
     pub fn css_overrides(&self) -> String {
         format!(
             ":root{{--accent:{};--accent-hover:{};--accent-dim:{}14;--bg-page:{};--accent-r:{};--accent-g:{};--accent-b:{};}}",

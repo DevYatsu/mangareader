@@ -47,6 +47,10 @@
 
   --font-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /* Layout — override these by setting your own in an inline <style> or local CSS */
+  --max-width: 1200px;
+  --container-padding: 1.5rem;
 }
 
 /* ── Base Reset ── */
@@ -150,9 +154,9 @@ a:hover {
 
 /* ── Container ── */
 .container {
-  max-width: 1200px;
+  max-width: var(--max-width);
   margin: 0 auto;
-  padding: 0 1.5rem;
+  padding: 0 var(--container-padding);
 }
 
 /* ── Site Header / Navigation ── */
@@ -317,8 +321,9 @@ a:hover {
 }
 
 .hero-content {
-  max-width: 1200px;
+  max-width: var(--max-width);
   margin: 0 auto;
+  padding: 0 var(--container-padding);
   position: relative;
   z-index: 1;
 }
