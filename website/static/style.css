@@ -19,10 +19,13 @@
   --text-muted: #737373;
   --text-dim: #525252;
 
+  --accent-r: 245;
+  --accent-g: 158;
+  --accent-b: 11;
   --accent: #f59e0b;
   --accent-hover: #fbbf24;
-  --accent-glow: rgba(245, 158, 11, 0.15);
-  --accent-dim: rgba(245, 158, 11, 0.08);
+  --accent-glow: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.15);
+  --accent-dim: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.08);
 
   --border: #262626;
   --border-subtle: #1f1f1f;
@@ -68,7 +71,7 @@ body {
   min-height: 100vh;
   overflow-x: hidden;
   /* Subtle radial gradient for depth */
-  background-image: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(245, 158, 11, 0.04), transparent);
+  background-image: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.04), transparent);
   background-attachment: fixed;
 }
 
@@ -283,7 +286,7 @@ a:hover {
   margin-left: calc(-50vw + 50%);
   margin-right: calc(-50vw + 50%);
   padding: 4rem 1.5rem 3rem;
-  background: linear-gradient(180deg, rgba(245, 158, 11, 0.07) 0%, transparent 100%);
+  background: linear-gradient(180deg, rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.07) 0%, transparent 100%);
   border-bottom: 1px solid var(--border-subtle);
   position: relative;
   overflow: hidden;
@@ -298,7 +301,7 @@ a:hover {
   left: -10%;
   width: 50%;
   height: 150%;
-  background: radial-gradient(circle, rgba(245, 158, 11, 0.1) 0%, transparent 65%);
+  background: radial-gradient(circle, rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.1) 0%, transparent 65%);
   pointer-events: none;
 }
 
@@ -436,7 +439,7 @@ a:hover {
   height: 44px;
   border-radius: var(--radius-sm);
   background: linear-gradient(135deg, var(--accent-dim), rgba(245, 158, 11, 0.04));
-  border: 1px solid rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.12);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -522,7 +525,7 @@ a:hover {
   align-items: center;
   padding: 0.35rem 0.85rem;
   background: var(--accent-dim);
-  border: 1px solid rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.15);
   border-radius: 999px;
   font-size: 0.8rem;
   font-weight: 600;
@@ -669,8 +672,8 @@ a:hover {
   width: 64px;
   height: 64px;
   border-radius: 50%;
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(245, 158, 11, 0.05));
-  border: 2px solid rgba(245, 158, 11, 0.2);
+  background: linear-gradient(135deg, rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.15), rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.05));
+  border: 2px solid rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.2);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -779,8 +782,8 @@ a:hover {
   width: 100px;
   height: 100px;
   border-radius: 50%;
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(245, 158, 11, 0.05));
-  border: 2px solid rgba(245, 158, 11, 0.2);
+  background: linear-gradient(135deg, rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.15), rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.05));
+  border: 2px solid rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.2);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -842,7 +845,7 @@ a:hover {
   gap: 0.4rem;
   padding: 0.35rem 0.75rem;
   background: var(--accent-dim);
-  border: 1px solid rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.15);
   border-radius: var(--radius-sm);
   font-size: 0.8rem;
   font-weight: 500;
@@ -1090,7 +1093,7 @@ a:hover {
   align-items: center;
   padding: 0.15rem 0.55rem;
   background: var(--accent-dim);
-  border: 1px solid rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.15);
   border-radius: 999px;
   font-size: 0.7rem;
   font-weight: 600;
