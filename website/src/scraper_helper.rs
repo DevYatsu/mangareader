@@ -193,26 +193,70 @@ pub fn scan_background() {
 /// Sync a single manga using a fresh chromedriver session.
 ///
 /// Opens its own WebDriver, syncs the manga, quits the driver.
-async fn sync_single_manga(manga_id: i64) {
+/// Reports success/failure to [`AppState::adapter_health`].
+async fn sync_single_manga(manga_id: i64, state: Arc<AppState>) {
+    // Look up source name so we can track per-source health
+    let source = match open_db() {
+        Ok(ref db) => match mangaread_core::db::get_manga_by_id(db, manga_id) {
+            Ok(m) => m.source,
+            Err(e) => {
+                tracing::error!("sync worker: failed to look up manga {manga_id}: {e}");
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::error!("sync worker: DB error for manga {manga_id}: {e}");
+            return;
+        }
+    };
+
+    // Helper: record a failure for this source
+    async fn record_failure(state: &AppState, src: &str, msg: &str) {
+        let mut h = state.adapter_health.lock().await;
+        if let Some(entry) = h.get_mut(src) {
+            entry.healthy = false;
+            entry.consecutive_failures += 1;
+            entry.last_error = Some(msg.to_string());
+        }
+    }
+
+    // Helper: record a success for this source
+    async fn record_success(state: &AppState, src: &str) {
+        let mut h = state.adapter_health.lock().await;
+        if let Some(entry) = h.get_mut(src) {
+            entry.healthy = true;
+            entry.consecutive_failures = 0;
+            entry.last_error = None;
+        }
+    }
+
     let engine = build_engine();
     let driver = match thirtyfour::WebDriver::managed(build_chrome_caps()).await {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!("sync worker: driver error for manga {manga_id}: {e}");
+            let msg = format!("WebDriver error: {e}");
+            tracing::error!("sync worker: {msg}");
+            record_failure(&state, &source, &msg).await;
             return;
         }
     };
     let db = match open_db() {
         Ok(db) => db,
         Err(e) => {
-            tracing::error!("sync worker: DB error for manga {manga_id}: {e}");
+            let msg = format!("DB error: {e}");
+            tracing::error!("sync worker: {msg}");
             let _ = driver.quit().await;
+            record_failure(&state, &source, &msg).await;
             return;
         }
     };
 
     if let Err(e) = engine.sync_manga(&driver, &db, manga_id).await {
-        tracing::error!("sync worker: manga {manga_id} failed: {e}");
+        let msg = format!("Sync failed: {e}");
+        tracing::error!("sync worker: {msg}");
+        record_failure(&state, &source, &msg).await;
+    } else {
+        record_success(&state, &source).await;
     }
 
     let _ = driver.quit().await;
@@ -301,7 +345,7 @@ pub fn start_sync_loop(state: Arc<AppState>) {
                     let handle = std::thread::spawn(move || {
                         let rt = tokio::runtime::Runtime::new().expect("sync worker rt");
                         rt.block_on(async move {
-                            sync_single_manga(mid).await;
+                            sync_single_manga(mid, state_clone.clone()).await;
 
                             let done = completed_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                             let mut p = state_clone.auto_sync.lock().await;

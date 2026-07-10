@@ -11,15 +11,12 @@ use axum::{
     Router,
 };
 use mangaread_core::db;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_http::services::ServeDir;
 use tracing_subscriber::EnvFilter;
 
-/// Shared application state holding a SQLite database connection and
-/// background sync status.
-///
-/// Wrapped in `Arc` and accessed via Axum's `State` extractor.
 /// Progress for the automatic sequential sync loop.
 pub struct SyncProgress {
     /// Whether the loop is currently running.
@@ -30,8 +27,22 @@ pub struct SyncProgress {
     pub current: i64,
 }
 
-/// Shared application state holding a SQLite database connection and
-/// background sync status.
+/// Current health status of a single source adapter.
+#[derive(Clone)]
+pub struct AdapterHealth {
+    /// Adapter / source name (e.g. "demonicscans").
+    pub source: String,
+    /// Whether the adapter is currently considered healthy.
+    pub healthy: bool,
+    /// Number of consecutive failures since last success.
+    pub consecutive_failures: u32,
+    /// Timestamp of the last sync attempt.
+    pub last_attempt: String,
+    /// Error message from the most recent failure, if any.
+    pub last_error: Option<String>,
+}
+
+/// Shared application state.
 ///
 /// Wrapped in `Arc` and accessed via Axum's `State` extractor.
 pub struct AppState {
@@ -42,6 +53,8 @@ pub struct AppState {
     pub syncing_manga_ids: Mutex<Vec<i64>>,
     /// Progress of the automatic sequential sync loop.
     pub auto_sync: Mutex<SyncProgress>,
+    /// Per-source adapter health (keyed by source name).
+    pub adapter_health: Mutex<HashMap<String, AdapterHealth>>,
 }
 
 /// Seed the database with sample manga, chapters, and pages if the DB is empty.
@@ -160,6 +173,22 @@ async fn main() -> anyhow::Result<()> {
         sync_error: Mutex::new(None),
         syncing_manga_ids: Mutex::new(Vec::new()),
         auto_sync: Mutex::new(SyncProgress { running: false, total: 0, current: 0 }),
+        adapter_health: Mutex::new(HashMap::from([
+            ("demonicscans".into(), AdapterHealth {
+                source: "demonicscans".into(),
+                healthy: true,
+                consecutive_failures: 0,
+                last_attempt: "never".into(),
+                last_error: None,
+            }),
+            ("manhuaplus".into(), AdapterHealth {
+                source: "manhuaplus".into(),
+                healthy: true,
+                consecutive_failures: 0,
+                last_attempt: "never".into(),
+                last_error: None,
+            }),
+        ])),
     });
 
     // Start the background sync loop (scan → sequential sync → sleep → repeat).
@@ -182,6 +211,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sync-manga/{id}", post(crate::routes::api::sync_manga))
         .route("/api/progress-series", get(crate::routes::api::progress_series))
         .route("/health", get(crate::routes::health::health))
+        .route("/admin", get(crate::routes::admin::admin))
         .nest_service(
             "/static",
             ServeDir::new(

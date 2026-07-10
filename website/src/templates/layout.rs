@@ -35,6 +35,7 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>) -> M
                     main { (content) }
                     footer {
                         p { "MangaRead — training project" }
+                        p class="footer-links" { a href="/admin" { "Admin" } }
                     }
                 }
             }
