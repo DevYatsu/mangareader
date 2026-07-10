@@ -46,7 +46,11 @@ COPY --from=builder --chown=mangaread:mangaread /app/mangaread-server ./
 # and chown it while we still have root.
 RUN mkdir -p /app/data && chown mangaread:mangaread /app/data
 
+# Copy static assets into the runtime image
+COPY website/static /app/static
+
 USER mangaread
 EXPOSE 3000
 ENV CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu"
+ENV MANGAREAD_STATIC_DIR=/app/static
 CMD ["/app/mangaread-server"]

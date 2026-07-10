@@ -178,7 +178,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sync-manga/{id}", post(crate::routes::api::sync_manga))
         .route("/api/progress-series", get(crate::routes::api::progress_series))
         .route("/health", get(crate::routes::health::health))
-        .nest_service("/static", ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/static")))
+        .nest_service(
+            "/static",
+            ServeDir::new(
+                std::env::var("MANGAREAD_STATIC_DIR")
+                    .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/static").to_string()),
+            ),
+        )
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
