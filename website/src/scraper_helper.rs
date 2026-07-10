@@ -139,3 +139,42 @@ pub fn sync_chapter_background(chapter_id: i64) {
         tracing::info!("bg sync: chapter {} complete", chapter_id);
     });
 }
+
+/// Scan all sources for manga listings at startup, discovering new series.
+///
+/// Spawned as a background task so the server can start accepting requests
+/// immediately.  Runs `scan_all` on each configured adapter.
+pub fn scan_background() {
+    spawn_scraper(|| async move {
+        tracing::info!("startup scan: starting...");
+
+        let engine = build_engine();
+
+        let driver = match thirtyfour::WebDriver::managed(build_chrome_caps()).await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!("startup scan: failed to create WebDriver: {:?}", e);
+                return;
+            }
+        };
+
+        let db = match open_db() {
+            Ok(db) => db,
+            Err(e) => {
+                tracing::error!("startup scan: failed to open DB: {:?}", e);
+                let _ = driver.quit().await;
+                return;
+            }
+        };
+
+        if let Err(e) = engine.scan_all(&driver, &db).await {
+            tracing::error!("startup scan: scan failed: {:?}", e);
+        }
+
+        if let Err(e) = driver.quit().await {
+            tracing::warn!("startup scan: driver quit error: {:?}", e);
+        }
+
+        tracing::info!("startup scan: complete");
+    });
+}

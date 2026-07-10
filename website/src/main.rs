@@ -116,6 +116,16 @@ async fn main() -> anyhow::Result<()> {
 
     let conn = db::open_db()?;
     db::init_db(&conn)?;
+
+    // Check if the database is empty — if so, seed and trigger a background scan.
+    let is_empty: bool = conn
+        .query_row("SELECT COUNT(*) = 0 FROM manga", [], |row| row.get(0))
+        .unwrap_or(true);
+    if is_empty {
+        tracing::info!("database is empty, starting background scan...");
+        crate::scraper_helper::scan_background();
+    }
+
     seed_data(&conn);
 
     let state = Arc::new(AppState {
