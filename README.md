@@ -1,21 +1,33 @@
 # MangaRead
 
-Offline manga reader — scrapes chapters from third-party sites, merges them into unified series, and serves them through a local web interface with bookmarking and reading progress tracking.
+Scrapes chapters from third-party manga sites, merges them into series, and serves them through a local web interface. Bookmarks, reading progress, auto-sync.
+
+## Quick Start
+
+```bash
+docker compose up --build
+```
+
+Open http://localhost:3000. SQLite database lives in a named volume.
+
+Development without Docker: see [Running without Docker](#running-without-docker).
 
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph CLI["CLI (scraper)"]
-        SCR[ScraperEngine<br/>+ adapters]
+        SCR[ScraperEngine]
     end
     subgraph WEB["Web Server (website)"]
-        BG[bg sync thread<br/>chromedriver session]
-        ROUTES[GET /series<br/>GET /read/{m}/{ch}<br/>...]
+        APP[AppState<br/>Mutex&lt;Connection&gt;]
+        ASYNC[bg sync loop<br/>6h interval]
+        ROUTES[10 route modules]
+        TMPL[Maud templates<br/>layouts + inline pages]
     end
     subgraph BROWSER["Browser"]
         HTML[HTML pages]
-        JS[app.js<br/>localStorage]
+        JS["app.js<br/>h() · localStorage"]
     end
     subgraph DB["SQLite (mangaread.db)"]
         S[(series)]
@@ -27,142 +39,158 @@ flowchart LR
     WEB --> DB
     WEB <--> BROWSER
     SCR --> DB
-    BG --> DB
+    ASYNC --> DB
 ```
 
-**Three crates** in a Cargo workspace:
+Three crates, one workspace:
 
-| Crate | Role |
-|-------|------|
-| `mangaread-core` | Domain types, SQLite schema, repositories, services |
-| `scraper` | CLI binary + library. `SiteAdapter` trait + implementations for each source site |
-| `website` | Axum web server. Routes, templates, background scraper threads |
+| Crate | What it does |
+|-------|-------------|
+| `mangaread-core` | Domain types, SQLite repository (`db.rs`), services, title normalization |
+| `scraper` | `SiteAdapter` trait + per-site implementations. CLI binary + library |
+| `website` | Axum web server. Routes in `routes/`, templates in `templates/`, static assets |
 
-### Key design decisions
+### Design notes
 
-- **Unified series**: Manga from different source sites are linked to a single `series` by normalized title. Chapters from all sources are merged; the preferred source is used where available.
-- **Auto-sync loop**: On startup, a background loop scans all sources for manga listings, then syncs their chapters in parallel (up to 3 concurrent chromedriver sessions). Each session opens its own driver and DB connection, then quits when done. The loop repeats every 6 hours, re-syncing stale entries (>2h since last sync).
-- **Only series with chapters are shown**: The frontend filters out series with zero chapters, so you only see manga that have been fully fetched.
-- **Client-side state**: Bookmarks, reading progress (current page), source preferences — all stored in `localStorage`. No user accounts.
+- **Unified series**: Manga from different sources link to one `series` by normalized title. Chapters merge across sources; the source with the most chapters wins on duplicates.
+- **Auto-sync**: On startup, scans all sources, finds stale entries (>2h), syncs chapters in parallel (up to 3 chromedriver sessions on OS threads). Repeats every 6 hours.
+- **rusqlite is `!Sync`**: Each scraper thread opens its own connection. Main `AppState` wraps its connection in `Mutex<Connection>`.
+- **Client-side state**: Bookmarks, reading progress, source filters — all `localStorage`. No accounts.
+- **WebDriver**: Uses system-installed chromedriver (`/usr/bin/chromedriver`), offline mode. Chromium flags from `CHROMIUM_FLAGS` env var.
 
-## Quick Start
+### Routes
 
-```bash
-# 1. Scan source sites for manga listings
-cargo run -p manga-scraper scan
+| Route | Handler | What it does |
+|-------|---------|--------------|
+| `GET /` | `home` | Landing page: stats + 30 recent chapters |
+| `GET /series` | `series_list` | Paginated grid, `?q=` search |
+| `GET /series/{id}` | `series_detail` | Merged chapters, source filter, triggers sync if stale |
+| `GET /bookmarks` | `bookmarks_page` | Client-side shell, JS fills from localStorage |
+| `GET /source/{source}` | `source_list` | Manga grid for one source |
+| `GET /manga/{id}` | `manga_detail` | Redirects to series (legacy) |
+| `GET /read/{m}/{ch}` | `chapter_reader` | Reader with prev/next nav, auto-reload if unsynced |
+| `GET /api/check-manga/{id}` | `check_manga` | Chapter count (lightweight) |
+| `GET /api/check-chapter/{id}` | `check_chapter` | Page count (lightweight) |
+| `GET /api/sync-status` | `sync_status` | Loop progress + error drain |
+| `POST /api/sync-manga/{id}` | `sync_manga` | Trigger background manga sync |
+| `GET /api/progress-series` | `progress_series` | Series info for "Continue Reading" |
+| `GET /health` | `health` | Docker liveness probe |
 
-# 2. Sync a specific manga's chapters (optional — website can do this on demand)
-cargo run -p manga-scraper sync-manga 1
+### Client-side bits
 
-# 3. Start the web server
-cargo run -p website
+All state in `localStorage`. DOM built with `h(tag, props, ...children)`.
 
-# 4. Open http://localhost:3000
-```
-
-The website will automatically sync chapters and pages when you visit a series or chapter that has no data yet.
+- **Reading progress**: ○ unread, ▶ started, ✓ finished. Tracks pages via `IntersectionObserver`, saves on `beforeunload`
+- **Source filters**: Checkboxes above chapter list toggle visibility per source
+- **Reader**: Click left/right third of screen for prev/next. Arrow keys work too. Top bar shows page indicator when you scroll up.
+- **Bookmarks**: Page is a shell, JS reads from localStorage
+- **Continue Reading**: Cards on home page (170x227px, `background-size: cover`)
 
 ## Docker
 
 ```bash
-docker compose up --build
+docker compose up --build -d
+docker compose logs -f
+docker compose down
 ```
 
-Opens on http://localhost:3000. The SQLite database persists in a named volume.
+Requires chromium/chromedriver in the image. Container needs `SYS_ADMIN` capability and 2GB memory limit.
+
+**Environment variables** (set in docker-compose.yml):
+
+| Variable | Default | What it does |
+|----------|---------|-------------|
+| `MANGAREAD_DB` | `/app/data/mangaread.db` | SQLite path |
+| `CHROMIUM_FLAGS` | `--no-sandbox --disable-dev-shm-usage --disable-gpu --headless` | Chromium args |
+| `RUST_LOG` | `info` | Log level |
+| `SITE_TITLE` | `MangaRead` | Site title |
+| `SITE_COLOR` | `#a78bfa` | Accent color |
+| `SITE_BG` | `#1a1b2e` | Background color |
+
+## Running without Docker
+
+**Prerequisites**: Rust 1.82+, system chromedriver on `PATH`.
+
+```bash
+# 1. Scan sources for manga listings
+cargo run -p manga-scraper scan
+
+# 2. Sync one manga's chapters
+cargo run -p manga-scraper sync-manga 1
+
+# 3. Start the web server
+MANGAREAD_DB=./mangaread.db cargo run -p website
+
+# 4. Open http://localhost:3000
+```
 
 ## CLI Reference
 
 ### `cargo run -p manga-scraper scan`
-Visit the index page of every configured source site, discover manga listings, upsert into the database. Auto-links each manga to a series by normalized title.
+Visits each source's index page, finds manga listings, upserts to DB. Auto-links manga to series by normalized title.
 
 ### `cargo run -p manga-scraper sync-manga <id>`
-Visit a manga's detail page, extract chapter list, upsert chapters. Updates the series title with the clean detail-page title.
+Visits a manga's detail page, gets chapter list, upserts chapters. Updates series title from the detail page.
 
 ### `cargo run -p manga-scraper sync-chapter <id>`
-Visit a chapter's reader page, extract page image URLs, upsert pages.
+Visits a chapter's reader page, extracts page image URLs, upserts pages.
 
 ## Source Adapters
 
-| Adapter | Site | Coverage |
-|---------|------|----------|
+| Adapter | Site | What it handles |
+|---------|------|----------------|
 | `DemonicscansAdapter` | demonicscans.org | Chapters, pages |
 | `ManhuaplusAdapter` | manhuaplus.top | Chapters, pages |
 
-Adding a new source: implement `SiteAdapter` in `scraper/src/adapters/`, register it in `scraper_helper.rs`.
+New source: implement `SiteAdapter` in `scraper/src/adapters/`, register in `scraper_helper.rs` and `scraper/src/main.rs`.
 
 ## Project Structure
 
-```mermaid
-flowchart TB
-    subgraph ROOT["mangaread/"]
-        subgraph CORE["mangaread-core"]
-            CORE_SRC["src/"]
-            DOMAIN["domain/<br/>series.rs · manga.rs<br/>chapter.rs · page.rs<br/>source.rs · title.rs"]
-            DB["db.rs<br/>insert / get / list"]
-            SERVICE["service/<br/>series.rs"]
-            ERR["error.rs"]
-        end
-
-        subgraph SCRAPER["scraper"]
-            SCR_SRC["src/"]
-            ADAPTER["adapter.rs<br/>SiteAdapter trait"]
-            ENGINE["engine.rs<br/>ScraperEngine"]
-            ADAPT["adapters/<br/>demonicscans.rs<br/>manhuaplus.rs<br/>helpers.rs"]
-            MAIN["main.rs<br/>CLI entrypoint"]
-        end
-
-        subgraph WEB["website"]
-            WEB_SRC["src/"]
-            MAIN_RS["main.rs<br/>AppState · routes"]
-            SCR_HELPER["scraper_helper.rs<br/>bg sync threads"]
-            ROUTES["routes/<br/>home.rs · series.rs<br/>reader.rs · source.rs<br/>manga.rs · check.rs<br/>api.rs · health.rs"]
-            TEMPLATES["templates/<br/>layout.rs"]
-            STATIC["static/<br/>style.css · app.js"]
-        end
-
-        DOCS["docs/architecture/<br/>ADRs"]
-        DOCKER["Dockerfile<br/>docker-compose.yml"]
-    end
 ```
-
-## Client-side Features
-
-All state is stored in `localStorage` — no backend required.
-
-### Reading progress
-- Chapters show status icons: ○ unread, ▶ started, ✓ finished
-- The reader tracks which page the user is on via `IntersectionObserver`
-- Progress is saved on `beforeunload` and auto-restored on return
-- A chapter is marked "finished" when the last page scrolls into view
-
-### Source filters
-- When a series has chapters from multiple source sites, checkboxes appear above the chapter list
-- Toggling a source hides/shows chapters from that site
-- The preferred source (most chapters) is used for duplicate chapter numbers
-
-### Reader UX
-- Click the left third of the screen for previous page, right third for next page
-- Arrow keys: ← prev, → next
-- Scroll up or mouse near top to show the top bar with page indicator
-- Bottom nav after the last page links to prev/next chapters
+mangaread/
+├── mangaread-core/         # Domain models, DB, services
+│   └── src/
+│       ├── domain/         # series.rs, manga.rs, chapter.rs, page.rs, source.rs, title.rs
+│       ├── db.rs           # SQLite repository (one big file)
+│       └── service/        # series merging logic
+├── scraper/                # Scraping library + CLI
+│   └── src/
+│       ├── adapter.rs      # SiteAdapter trait
+│       ├── engine.rs       # ScraperEngine orchestrator
+│       ├── adapters/       # demonicscans.rs, manhuaplus.rs, helpers.rs
+│       └── main.rs         # CLI entrypoint
+├── website/                # Axum web server
+│   └── src/
+│       ├── main.rs         # AppState, routes, server startup
+│       ├── scraper_helper  # build_engine(), create_webdriver(), start_sync_loop()
+│       ├── routes/         # 10 route modules
+│       ├── templates/      # layout.rs (base_layout, reader_layout, error_layout)
+│       └── static/         # style.css, app.js, favicon.svg
+├── docs/architecture/      # ADRs
+├── Dockerfile
+└── docker-compose.yml
+```
 
 ## Database
 
-SQLite with WAL mode. Tables:
+SQLite with WAL mode. Four tables:
 
 - **series**: Unified title, groups manga from multiple sources
 - **manga**: Per-source entries linked to a series
-- **chapters**: Chapter metadata, linked to a manga entry
+- **chapters**: Chapter metadata, linked to a manga
 - **pages**: Page image URLs, linked to a chapter
 
-All inserts use `ON CONFLICT ... DO UPDATE` (upsert) — safe to re-run.
+All inserts use `ON CONFLICT ... DO UPDATE` (upsert). Safe to re-run.
 
 ## Architecture Decision Records
 
-See [docs/architecture/](docs/architecture/) for ADRs:
-- ADR-001: Domain model restructuring
-- ADR-002: Centralized adapter registry
-- ADR-003: Template extraction from route handlers
+In [docs/architecture/](docs/architecture/):
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| 001 | Domain model restructuring | Partially done — domain/service layers exist; `db/` subdirectory not built |
+| 002 | Centralized adapter registry | Not done — adapters registered in two places |
+| 003 | Template extraction from route handlers | Partially done — layouts extracted; page templates still in handlers |
 
 ## License
 
