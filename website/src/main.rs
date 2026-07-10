@@ -74,6 +74,10 @@ fn seed_data(conn: &rusqlite::Connection) {
     )
     .expect("insert manga");
 
+    // Link to a series so JOIN-based queries (home page, series list) can find it
+    mangaread_core::db::ensure_manga_in_series(conn, "One Piece", manga_id)
+        .expect("ensure series");
+
     let ch1_id = mangaread_core::db::insert_chapter(
         conn,
         &mangaread_core::NewChapter {
