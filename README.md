@@ -171,7 +171,7 @@ mangaread/
 │       ├── routes/         # 10 route modules
 │       ├── templates/      # layout.rs (base_layout, reader_layout, error_layout)
 │       └── static/         # style.css, app.js, favicon.svg
-├── docs/architecture/      # ADRs
+├── docs/architecture/      # Architecture documentation
 ├── Dockerfile
 └── docker-compose.yml
 ```
@@ -187,15 +187,9 @@ SQLite with WAL mode. Four tables:
 
 All inserts use `ON CONFLICT ... DO UPDATE` (upsert). Safe to re-run.
 
-## Architecture Decision Records
+## Architecture
 
-In [docs/architecture/](docs/architecture/):
-
-| ADR | Title | Status |
-|-----|-------|--------|
-| 001 | Domain model restructuring | Partially done — domain/service layers exist; `db/` subdirectory not built |
-| 002 | Centralized adapter registry | Not done — adapters registered in two places |
-| 003 | Template extraction from route handlers | Partially done — layouts extracted; page templates still in handlers |
+See [docs/architecture/README.md](docs/architecture/README.md) for a deep dive into the crate structure, data model, scraping pipeline, sync loop, and design rationale.
 
 ## License
 
