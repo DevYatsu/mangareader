@@ -205,7 +205,7 @@ impl SiteAdapter for DemonicscansAdapter {
 
         // Try multiple selector patterns for chapter images
         let img_sel = Selector::parse(
-            "img[class*='page-image'], .reader-img img, #reader img, .chapter-content img, img[alt*='page']"
+            ".imgholder, img[class*='page-image'], .reader-img img, #reader img, .chapter-content img, img[alt*='page']"
         ).unwrap();
 
         let mut pages: Vec<String> = Vec::new();
