@@ -1,25 +1,56 @@
 services:
   mangaread:
-    build: .
+    build:
+      context: .
+      # Cache Rust crate downloads between builds via a named volume.
+      # Speed up iteration: source-only changes skip the fetch+cargo layers.
+      cache_from:
+        - mangaread:latest
     container_name: mangaread
     ports:
       - "3000:3000"
     volumes:
-      # Persist the SQLite database between restarts (not /app — that shadows the binary)
+      # Persist the SQLite database between restarts.
       - mangaread_data:/app/data
+      # Share cargo registry so dependency downloads survive image rebuilds.
+      - cargo-cache:/usr/local/cargo/registry
     environment:
       - MANGAREAD_DB=/app/data/mangaread.db
       - CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage --disable-gpu
-      # If behind a proxy, uncomment and set:
-      # - http_proxy=http://proxy:port
-      # - https_proxy=http://proxy:port
+      - RUST_LOG=info
     restart: unless-stopped
-    # Chromium needs extra capabilities in Docker
+    init: true
+
+    # Chromium in Docker needs extra permissions for sandboxing.
+    # `SYS_ADMIN` is the simplest option; to tighten further use a
+    # Chrome-specific seccomp profile (see docs).
     cap_add:
       - SYS_ADMIN
-    # Or use --security-opt seccomp=unconfined (alternative to cap_add)
-    security_opt:
-      - seccomp:unconfined
+
+    # Health check — confirms the server is accepting requests.
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # Prevent runaway resource consumption (adjust to your host).
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2"
+        reservations:
+          memory: 512m
+          cpus: "0.5"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   mangaread_data:
+  cargo-cache:
