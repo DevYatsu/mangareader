@@ -228,10 +228,22 @@ pub async fn series_list(
         }
 
         @if all_series.is_empty() {
-            div class="empty-state" {
-                @if search.is_empty() {
-                    p { "No series found. Run the scraper first!" }
-                } @else {
+            @if search.is_empty() {
+                div class="skeleton-grid" {
+                    @for _ in 0..12 {
+                        div class="manga-card" {
+                            div class="cover-wrapper" {
+                                div class="skeleton skeleton-card" {}
+                            }
+                            div class="info" {
+                                div class="skeleton skeleton-text" {}
+                                div class="skeleton skeleton-text short" {}
+                            }
+                        }
+                    }
+                }
+            } @else {
+                div class="empty-state" {
                     p { "No series match \"" (search) "\"." }
                 }
             }

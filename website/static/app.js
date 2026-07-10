@@ -250,6 +250,29 @@
       }
     }
 
+    // Preload next images
+    var pageImages = Array.from(pages).map(function (p) {
+      var img = p.querySelector('img');
+      return img ? img.getAttribute('src') : null;
+    });
+
+    var preloadLinks = [];
+
+    function updatePreload() {
+      preloadLinks.forEach(function (l) { l.remove(); });
+      preloadLinks = [];
+      for (var i = currentPage; i < currentPage + 3 && i < pageImages.length; i++) {
+        var src = pageImages[i];
+        if (!src) continue;
+        var link = document.createElement('link');
+        link.rel = 'preload';
+        link.as = 'image';
+        link.href = src;
+        document.head.appendChild(link);
+        preloadLinks.push(link);
+      }
+    }
+
     // Track visible page on scroll
     const pageObserver = new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
@@ -258,6 +281,7 @@
           if (idx > 0) {
             currentPage = idx;
             updateIndicator();
+            updatePreload();
           }
         }
       });

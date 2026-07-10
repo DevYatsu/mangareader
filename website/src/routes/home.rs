@@ -67,8 +67,8 @@ pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
         // ── Recent Chapters ──
         h2 class="section-title" { "Recently Updated" }
         @if recent.is_empty() {
-            div class="empty-state" {
-                p { "No chapters scraped yet. Run the scraper or visit a series to trigger a sync." }
+            @for _ in 0..5 {
+                div class="skeleton skeleton-row" {}
             }
         } @else {
             ul class="chapter-list" {

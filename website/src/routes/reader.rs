@@ -113,10 +113,10 @@ if(++a>=20)clearInterval(iv)
 
         // ── Loading state ──
         @if syncing {
-            div class="loading-state reader-loading" {
-                div class="spinner" {}
-                p { "Fetching pages from the source…" }
-                p class="loading-hint" { "This page will reload automatically." }
+            div class="loading-state" {
+                div class="skeleton skeleton-page" {}
+                div class="skeleton skeleton-page" style="aspect-ratio:3/5" {}
+                div class="skeleton skeleton-page" style="aspect-ratio:3/4" {}
             }
         } @else {
             // Click zones for page navigation
