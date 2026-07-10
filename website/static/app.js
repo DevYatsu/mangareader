@@ -10,6 +10,28 @@
   'use strict';
 
   // ============================================================
+  //  TOAST SYSTEM
+  // ============================================================
+
+  function showToast(message, type) {
+    type = type || 'error';
+    var container = document.getElementById('toast-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toast-container';
+      document.body.appendChild(container);
+    }
+    var el = document.createElement('div');
+    el.className = 'toast ' + type;
+    el.textContent = message;
+    container.appendChild(el);
+    setTimeout(function () {
+      el.classList.add('removing');
+      setTimeout(function () { el.remove(); }, 300);
+    }, 4000);
+  }
+
+  // ============================================================
   //  SOURCE PREFERENCES
   // ============================================================
 
@@ -125,6 +147,70 @@
         li.classList.add('ch-finished');
       }
     });
+  }
+
+  // ============================================================
+  //  CONTINUE READING
+  // ============================================================
+
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function initContinueReading() {
+    var container = document.getElementById('continue-reading-container');
+    if (!container) return;
+
+    // Collect unique series IDs from localStorage
+    var inProgress = {};
+    for (var i = 0; i < localStorage.length; i++) {
+      var key = localStorage.key(i);
+      if (key && key.indexOf('mangaread_read_') === 0) {
+        var seriesId = key.replace('mangaread_read_', '');
+        try {
+          var state = JSON.parse(localStorage.getItem(key));
+          for (var chKey in state) {
+            if (state[chKey].status === 'started') {
+              inProgress[seriesId] = (inProgress[seriesId] || 0) + 1;
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    var ids = Object.keys(inProgress);
+    if (ids.length === 0) {
+      container.remove();
+      return;
+    }
+
+    fetch('/api/progress-series?ids=' + ids.join(','))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || data.length === 0) {
+          container.remove();
+          return;
+        }
+        var html = '<h2 class="section-title">Continue Reading</h2>';
+        html += '<div class="continue-scroll">';
+        data.forEach(function (item) {
+          var cover = item.cover_url || '';
+          var url = '/read/' + item.manga_id + '/' + item.chapter_id;
+          html += '<a href="' + url + '" class="continue-card">';
+          html += '<div class="cover-wrapper">';
+          if (cover) html += '<img src="' + cover + '" alt="" loading="lazy">';
+          html += '<div class="continue-overlay">';
+          html += '<span class="continue-ch">Ch. ' + item.chapter_number + '</span>';
+          html += '</div></div>';
+          html += '<h3>' + escapeHtml(item.title) + '</h3>';
+          html += '</a>';
+        });
+        html += '</div>';
+        container.innerHTML = html;
+      })
+      .catch(function () { container.remove(); });
   }
 
   // ============================================================
@@ -346,6 +432,43 @@
   document.addEventListener('DOMContentLoaded', function () {
     // Reader UX setup
     initReaderUX();
+
+    // Init continue reading
+    initContinueReading();
+
+    // Rescan button handler
+    var rescanBtn = document.getElementById('rescan-btn');
+    if (rescanBtn) {
+      rescanBtn.addEventListener('click', function () {
+        var mangaId = rescanBtn.getAttribute('data-manga-id');
+        rescanBtn.disabled = true;
+        rescanBtn.textContent = ' Syncing...';
+        fetch('/api/sync-manga/' + mangaId, { method: 'POST' })
+          .then(function () {
+            showToast('Sync started — page will refresh soon.', 'success');
+            setTimeout(function () { location.reload(); }, 5000);
+          })
+          .catch(function () {
+            showToast('Failed to start sync.');
+            rescanBtn.disabled = false;
+            rescanBtn.textContent = ' Refresh';
+          });
+      });
+    }
+
+    // Check for sync errors on series page
+    var syncCheck = document.querySelector('[data-series-id]');
+    if (syncCheck) {
+      fetch('/api/sync-status')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.last_error) {
+            showToast(data.last_error, 'error');
+          }
+        })
+        .catch(function () {});
+    }
+
     // --- Series detail page ---
     const chapterList = document.getElementById('chapter-list');
     if (chapterList) {

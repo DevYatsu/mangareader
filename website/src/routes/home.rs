@@ -64,6 +64,9 @@ pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
             }
         }
 
+        // ── Continue Reading ──
+        div id="continue-reading-container" class="continue-section" {}
+
         // ── Recent Chapters ──
         h2 class="section-title" { "Recently Updated" }
         @if recent.is_empty() {
