@@ -19,6 +19,13 @@ use crate::{auth::AuthUser, AppState};
 
 /// Last-write-wins guard: true = incoming row wins (string `>=` on ISO8601
 /// `updated_at`, which orders chronologically in this fixed-width format).
+///
+/// Contract mirror of the authoritative guard in
+/// `mangaread_core::db::upsert_progress` (`ON CONFLICT(user_id, chapter_id)
+/// DO UPDATE ... WHERE excluded.updated_at >= progress.updated_at`):
+/// `post_progress`/`post_migrate` write through that SQL, and this pure fn
+/// pins the same rule for unit tests. Both MUST use `>=` (ties win for the
+/// incoming row) — keep them in sync if either ever changes.
 pub fn merge_progress(existing: Option<&str>, incoming: &str) -> bool {
     match existing {
         None => true,
@@ -200,6 +207,10 @@ pub struct MigrateRequest {
 
 /// POST /api/migrate: union bookmarks (insert-or-ignore), upsert progress
 /// with the same last-write-wins rule as live writes.
+///
+/// All-or-nothing: the whole body runs in a single SQLite transaction, so a
+/// mid-batch failure (e.g. a bookmark FK on an unknown series) rolls back
+/// every row instead of leaving partial state.
 pub async fn post_migrate(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
@@ -207,20 +218,20 @@ pub async fn post_migrate(
 ) -> Response {
     let n_bookmarks = body.bookmarks.len();
     let n_progress = body.progress.len();
-    for series_id in &body.bookmarks {
-        let res = {
-            let conn = state.db.lock().await;
-            db::set_bookmark(&conn, user.id, *series_id, true)
-        };
-        if let Err(e) = res {
-            return db_error(e);
+    // One guard for the whole migrate (transaction requires it). Only fast
+    // local SQL runs under the guard — no hashing or slow work.
+    let mut conn = state.db.lock().await;
+    let tx = match conn.transaction() {
+        Ok(tx) => tx,
+        Err(e) => return db_error(e),
+    };
+    let applied: Result<(), mangaread_core::error::Error> = (|| {
+        for series_id in &body.bookmarks {
+            db::set_bookmark(&tx, user.id, *series_id, true)?;
         }
-    }
-    for p in &body.progress {
-        let res = {
-            let conn = state.db.lock().await;
+        for p in &body.progress {
             db::upsert_progress(
-                &conn,
+                &tx,
                 &Progress {
                     user_id: user.id,
                     chapter_id: p.chapter_id,
@@ -228,14 +239,21 @@ pub async fn post_migrate(
                     status: p.status.clone(),
                     updated_at: p.updated_at.clone(),
                 },
-            )
-        };
-        if let Err(e) = res {
-            return db_error(e);
+            )?;
         }
+        Ok(())
+    })();
+    // `tx` drops uncommitted on this path, rolling back partial rows.
+    if let Err(e) = applied {
+        return db_error(e);
     }
-    Json(serde_json::json!({"ok": true, "bookmarks": n_bookmarks, "progress": n_progress}))
-        .into_response()
+    match tx.commit() {
+        Ok(()) => Json(
+            serde_json::json!({"ok": true, "bookmarks": n_bookmarks, "progress": n_progress}),
+        )
+        .into_response(),
+        Err(e) => db_error(e),
+    }
 }
 
 #[cfg(test)]
