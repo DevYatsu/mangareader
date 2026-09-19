@@ -147,7 +147,10 @@ pub fn error_layout(heading: &str, message: &str) -> Markup {
 /// A minimal layout without the standard site header or footer, intended for
 /// the full-screen chapter reader view. Loads the reader stylesheet and the
 /// `app.js` script for page navigation and progress tracking.
-pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title: &str) -> Markup {
+///
+/// `user` sets `data-user-id` on `<body>` when logged in so the sync adapter
+/// (`auth.js`) can write reading progress through to the server.
+pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title: &str, user: Option<&AuthUser>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -158,7 +161,7 @@ pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title:
                 link rel="stylesheet" href="/static/style.css";
                 style { (PreEscaped(config_css.to_string())) }
             }
-            body class="reader-page" {
+            body class="reader-page" data-user-id=[user.map(|u| u.id.to_string())] {
                 (content)
                 script src="/static/app.js" {}
                 script src="/static/auth.js" {}

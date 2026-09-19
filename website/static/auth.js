@@ -123,9 +123,12 @@
      * @param {string} status
      */
     pushProgress: function (chapterId, page, status) {
+      var id;
       if (!currentUserId()) return;
+      id = parseInt(chapterId, 10);
+      if (!isFinite(id)) return;
       postJson('/api/progress', {
-        chapter_id: parseInt(chapterId, 10),
+        chapter_id: id,
         page: page || 1,
         status: status || 'started'
       });
