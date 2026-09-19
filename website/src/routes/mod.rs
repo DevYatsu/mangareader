@@ -20,3 +20,4 @@ pub mod manga;
 pub mod reader;
 pub mod series;
 pub mod source;
+pub mod sync;

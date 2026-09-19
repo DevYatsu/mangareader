@@ -2,7 +2,7 @@
 use axum::{
     extract::{FromRequestParts, OptionalFromRequestParts},
     http::{header::COOKIE, request::Parts, HeaderMap, StatusCode},
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Json, Redirect, Response},
 };
 use mangaread_core::{db, domain::Role, error::Error};
 use std::sync::Arc;
@@ -75,13 +75,32 @@ pub struct AuthUser {
     pub role: Role,
 }
 
+/// Rejection for missing/invalid auth: browsers (explicit `text/html` in
+/// `Accept`) get a redirect to `/login`; API clients get `401` JSON.
+fn unauthenticated(parts: &Parts) -> Response {
+    let wants_html = parts
+        .headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|a| a.contains("text/html"));
+    if wants_html {
+        Redirect::to("/login").into_response()
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"ok": false, "error": "login required"})),
+        )
+            .into_response()
+    }
+}
+
 async fn auth_with_db(
     parts: &mut Parts,
     db_mutex: &Mutex<rusqlite::Connection>,
 ) -> Result<AuthUser, Response> {
     let token = token_from_headers(&parts.headers);
     let Some(token) = token else {
-        return Err(Redirect::to("/login").into_response());
+        return Err(unauthenticated(parts));
     };
     let now = now_utc_string();
     let user = {
@@ -94,7 +113,7 @@ async fn auth_with_db(
             name: user.name,
             role: user.role,
         }),
-        Err(Error::NotFound(_)) => Err(Redirect::to("/login").into_response()),
+        Err(Error::NotFound(_)) => Err(unauthenticated(parts)),
         Err(e) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("session lookup failed: {e}"),

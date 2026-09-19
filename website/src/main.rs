@@ -129,6 +129,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sync-status", get(crate::routes::api::sync_status))
         .route("/api/sync-manga/{id}", post(crate::routes::api::sync_manga))
         .route("/api/progress-series", get(crate::routes::api::progress_series))
+        .route("/api/bookmarks", get(crate::routes::sync::get_bookmarks).post(crate::routes::sync::set_bookmark))
+        .route("/api/progress", get(crate::routes::sync::get_progress).post(crate::routes::sync::post_progress))
+        .route("/api/history", post(crate::routes::sync::post_history))
+        .route("/api/migrate", post(crate::routes::sync::post_migrate))
         .route("/health", get(crate::routes::health::health))
         .route("/favicon.ico", get(|| async { axum::response::Redirect::permanent("/static/favicon.svg") }))
         .nest_service(
