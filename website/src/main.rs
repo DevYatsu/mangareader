@@ -2,6 +2,7 @@
 //!
 //! This crate provides the web frontend using Axum and Maud templates.
 
+mod auth;
 mod config;
 mod routes;
 mod scraper_helper;
