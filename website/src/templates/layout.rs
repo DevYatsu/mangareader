@@ -90,6 +90,7 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                     }
                 }
                 script src="/static/app.js" {}
+                script src="/static/auth.js" {}
             }
         }
     }
@@ -160,6 +161,7 @@ pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title:
             body class="reader-page" {
                 (content)
                 script src="/static/app.js" {}
+                script src="/static/auth.js" {}
             }
         }
     }

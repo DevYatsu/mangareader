@@ -144,6 +144,13 @@
     const state = getReadState(seriesId);
     state['ch_' + chapterId] = { status, page: page || 1, updated: new Date().toISOString() };
     saveReadState(seriesId, state);
+    // Write-through to server when logged in; failures are swallowed
+    // (localStorage stays the source of truth offline).
+    try {
+      if (typeof window.MangaSync !== 'undefined') {
+        window.MangaSync.pushProgress(chapterId, page || 1, status);
+      }
+    } catch (_) { /* ignore */ }
   }
 
   /** @returns {{status:string, page:number}|null} */
@@ -608,7 +615,14 @@
       ids.push(seriesId);
     }
     setBookmarks(ids);
-    return idx === -1;
+    const added = idx === -1;
+    // Write-through to server when logged in; failures are swallowed.
+    try {
+      if (typeof window.MangaSync !== 'undefined') {
+        window.MangaSync.pushBookmark(seriesId, added);
+      }
+    } catch (_) { /* ignore */ }
+    return added;
   }
 
   function initBookmarkButtons() {
@@ -641,7 +655,36 @@
     const emptyEl = document.getElementById('bookmarks-empty');
     if (!container) return;
 
-    const ids = getBookmarks();
+    // When logged in, seed the grid from the server; fall back to
+    // localStorage on any fetch failure.
+    let loggedIn = false;
+    try {
+      loggedIn = !!(document.body && document.body.dataset && document.body.dataset.userId);
+    } catch (_) { /* ignore */ }
+
+    if (loggedIn) {
+      fetch('/api/bookmarks', { headers: { 'Accept': '*/*' } })
+        .then(function (r) {
+          if (!r.ok) throw new Error('bookmarks fetch failed');
+          return r.json();
+        })
+        .then(function (data) {
+          renderBookmarkIds(data && Array.isArray(data.series) ? data.series : getBookmarks());
+        })
+        .catch(function () {
+          renderBookmarkIds(getBookmarks());
+        });
+      return;
+    }
+
+    renderBookmarkIds(getBookmarks());
+  }
+
+  function renderBookmarkIds(ids) {
+    const container = document.getElementById('bookmarks-container');
+    const emptyEl = document.getElementById('bookmarks-empty');
+    if (!container) return;
+
     if (ids.length === 0) {
       container.style.display = 'none';
       if (emptyEl) emptyEl.style.display = '';
