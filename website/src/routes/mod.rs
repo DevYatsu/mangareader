@@ -11,6 +11,7 @@
 //! - `api`:     sync management, progress tracking
 //! - `bookmarks`: client-side bookmark page
 pub mod api;
+pub mod auth_pages;
 pub mod bookmarks;
 pub mod check;
 pub mod health;

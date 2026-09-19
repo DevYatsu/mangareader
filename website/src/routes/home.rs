@@ -3,7 +3,7 @@ use axum::response::Html;
 use maud::html;
 use std::sync::Arc;
 
-use crate::AppState;
+use crate::{auth::AuthUser, AppState};
 
 /// Convert a SQLite datetime string (e.g. "2026-07-09 12:00:00") into a
 /// human-friendly relative time like "5h ago", "2d ago".
@@ -61,7 +61,7 @@ fn relative_time(dt: &str) -> String {
 ///
 /// Queries series count, chapter count, unique sources, and the 30 most
 /// recently updated chapters, then renders them inside the `base_layout`.
-pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
+pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) -> Html<String> {
     let banner = {
         let p = state.auto_sync.lock().await;
         if p.running && p.total > 0 {
@@ -148,5 +148,5 @@ pub async fn home(State(state): State<Arc<AppState>>) -> Html<String> {
     };
 
     let css = state.config.css_overrides();
-    Html(crate::templates::layout::base_layout("Home", content, banner.as_deref(), &css, &state.config.site_title).0)
+    Html(crate::templates::layout::base_layout("Home", content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0)
 }

@@ -1,6 +1,6 @@
 // website/src/auth.rs
 use axum::{
-    extract::FromRequestParts,
+    extract::{FromRequestParts, OptionalFromRequestParts},
     http::{header::COOKIE, request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
 };
@@ -122,6 +122,19 @@ impl FromRequestParts<Arc<AppState>> for AuthUser {
         state: &Arc<AppState>,
     ) -> Result<Self, Self::Rejection> {
         auth_with_db(parts, &state.db).await
+    }
+}
+
+/// Allow `Option<AuthUser>` as an extractor (public pages render nav session
+/// state instead of redirecting): missing/invalid session yields `None`.
+impl OptionalFromRequestParts<Arc<AppState>> for AuthUser {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        Ok(auth_with_db(parts, &state.db).await.ok())
     }
 }
 

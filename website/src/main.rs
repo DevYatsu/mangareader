@@ -115,6 +115,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/series", get(crate::routes::series::series_list))
         .route("/series/{id}", get(crate::routes::series::series_detail))
         .route("/bookmarks", get(crate::routes::bookmarks::bookmarks_page))
+        .route("/login", get(crate::routes::auth_pages::login_page).post(crate::routes::auth_pages::login_submit))
+        .route("/register", get(crate::routes::auth_pages::register_page).post(crate::routes::auth_pages::register_submit))
+        .route("/logout", post(crate::routes::auth_pages::logout))
         .route("/source/{source}", get(crate::routes::source::source_list))
         .route("/manga/{id}", get(crate::routes::manga::manga_detail))
         .route(

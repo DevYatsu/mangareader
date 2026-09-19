@@ -4,7 +4,7 @@ use maud::html;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::AppState;
+use crate::{auth::AuthUser, AppState};
 
 /// GET `/series/{id}` — render the series detail page.
 ///
@@ -15,6 +15,7 @@ use crate::AppState;
 pub async fn series_detail(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
+    user: Option<AuthUser>,
 ) -> Html<String> {
     let banner = {
         let p = state.auto_sync.lock().await;
@@ -51,7 +52,7 @@ pub async fn series_detail(
             h2 class="page-title" { "Series not found" }
         };
         let css = state.config.css_overrides();
-        return Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref(), &css, &state.config.site_title).0);
+        return Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0);
     }
 
     // Use the new service layer for domain logic
@@ -214,7 +215,7 @@ pub async fn series_detail(
     };
 
     let css = state.config.css_overrides();
-    Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref(), &css, &state.config.site_title).0)
+    Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0)
 }
 
 /// GET `/series` — render the series listing page.
@@ -224,6 +225,7 @@ pub async fn series_detail(
 pub async fn series_list(
     State(state): State<Arc<AppState>>,
     query: Query<HashMap<String, String>>,
+    user: Option<AuthUser>,
 ) -> Html<String> {
     let banner = {
         let p = state.auto_sync.lock().await;
@@ -312,5 +314,5 @@ pub async fn series_list(
     };
 
     let css = state.config.css_overrides();
-    Html(crate::templates::layout::base_layout("Series", content, banner.as_deref(), &css, &state.config.site_title).0)
+    Html(crate::templates::layout::base_layout("Series", content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0)
 }

@@ -2316,3 +2316,40 @@ footer p {
     font-size: 0.8rem;
   }
 }
+/* ── Auth pages ── */
+.auth-section {
+  max-width: 420px;
+  margin: 3rem auto;
+  padding: 0 1rem;
+}
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+.auth-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-weight: 500;
+}
+.auth-form input {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+  font-size: 1rem;
+}
+.auth-error {
+  color: #b3261e;
+  background: #fdecea;
+  border: 1px solid #f5c6c0;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+}
+.logout-form {
+  display: inline;
+}
+.user-name {
+  font-weight: 600;
+}

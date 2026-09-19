@@ -3,7 +3,7 @@ use axum::response::Html;
 use maud::html;
 use std::sync::Arc;
 
-use crate::AppState;
+use crate::{auth::AuthUser, AppState};
 
 /// GET `/source/{source}` — list all manga from a given source.
 ///
@@ -12,6 +12,7 @@ use crate::AppState;
 pub async fn source_list(
     State(state): State<Arc<AppState>>,
     Path(source): Path<String>,
+    user: Option<AuthUser>,
 ) -> Html<String> {
     let banner = {
         let p = state.auto_sync.lock().await;
@@ -104,5 +105,5 @@ pub async fn source_list(
     };
 
     let css = state.config.css_overrides();
-    Html(crate::templates::layout::base_layout(&source, content, banner.as_deref(), &css, &state.config.site_title).0)
+    Html(crate::templates::layout::base_layout(&source, content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0)
 }

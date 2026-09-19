@@ -3,9 +3,9 @@ use axum::response::Html;
 use maud::html;
 use std::sync::Arc;
 
-use crate::AppState;
+use crate::{auth::AuthUser, AppState};
 
-pub async fn bookmarks_page(State(state): State<Arc<AppState>>) -> Html<String> {
+pub async fn bookmarks_page(State(state): State<Arc<AppState>>, user: Option<AuthUser>) -> Html<String> {
     let banner = {
         let p = state.auto_sync.lock().await;
         if p.running && p.total > 0 {
@@ -27,5 +27,5 @@ pub async fn bookmarks_page(State(state): State<Arc<AppState>>) -> Html<String> 
         }
     };
 
-    Html(crate::templates::layout::base_layout("Bookmarks", content, banner.as_deref(), &css, &state.config.site_title).0)
+    Html(crate::templates::layout::base_layout("Bookmarks", content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0)
 }
