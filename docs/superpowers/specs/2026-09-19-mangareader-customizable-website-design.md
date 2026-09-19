@@ -24,24 +24,25 @@ Constraints kept:
 
 - Any reader customizes reading without code.
 - Any owner customizes branding, homepage, nav, SEO, legal without code and without restart.
-- All data syncs across devices when logged in. Anonymous mode keeps working with localStorage with one-click import.
+- All data syncs across devices when logged in. Anonymous mode keeps working with localStorage. On signup the browser's local data merges into the new account automatically. No manual import UI exists. No export UI exists.
 - All admin tasks happen in `/admin` with logs. All user tasks happen in `/settings`.
+- Quality bar: production-tier like the famous Webtoon apps, or better. Vertical-scroll excellence, instant chapter transitions, polished series pages. No scraper jargon anywhere reader-facing.
 - Performance stays fast on Raspberry Pi class hardware for 1-20 users.
 
 Non-goals:
 - No third-party plugin marketplace.
 - No multi-tenant SaaS billing.
 - No native mobile apps (PWA covers offline).
+- No user data import/export integrations (MyAnimeList, AniList, Kavita, Komga, manual files). Only automatic localStorage merge on signup.
+- No reader-visible scraping concepts (sources, adapters, sync state, origin URLs).
 
 ## 3. Identity, accounts, sync
 
 - Auth: password + OAuth (Google, GitHub, Discord). Sessions in DB with `tower-sessions`. Remember-me. Password reset via mail or admin reset link.
 - Roles: `anon`, `member`, `editor`, `admin`. Middleware per route.
-- Server tables: `users`, `sessions`, `bookmarks`, `progress (user_id, chapter_id, page, updated_at)`, `history`, `notes`, `profiles`.
-- Migration path: anonymous localStorage -> account import button. Export JSON at any time.
-- Profiles: multiple profiles per account (e.g. family server). Each profile has own shelves and progress.
+- Server tables: `users`, `sessions`, `bookmarks`, `progress (user_id, chapter_id, page, updated_at)`, `history`, `notes`. One account = one reader identity. No profiles.
+- Migration path: on account creation the current browser's localStorage (bookmarks, progress, history, shelf placement) merges into the account automatically, once. No manual import button exists. No export exists.
 - Stats: pages/day, streak, time read, completion %. Private by default, shareable toggle.
-- Import/export: MyAnimeList, AniList, Kavita, Komga, localStorage JSON, CBZ sidecar.
 
 ## 4. Reader 2.0 (built-in, per-user + per-series overrides)
 
@@ -56,9 +57,9 @@ Non-goals:
 ## 5. Library, discovery, CMS (built-in)
 
 - Search: SQLite FTS5 over title, alt titles, author, genres, synopsis. Typo-tolerant fallback. Saved searches.
-- Filters: source, status (ongoing/completed/hiatus), genre tags, year, rating, progress (unread/started/finished), language.
+- Filters: status (ongoing/completed/hiatus), genre tags, year, rating, progress (unread/started/finished), language. No source filter exists for readers. Readers never see where a series comes from.
 - Sort: recently updated, recently added, rating, popularity, random, last read.
-- Series page tabs: Chapters | Details | Related | Comments. Stale badge + manual resync button.
+- Series page tabs: Chapters | Details | Related | Comments. No sync badges, no resync buttons, no source labels. Origin and freshness stay invisible to readers.
 - Shelves: built-in (Reading, Completed, On Hold, Dropped, Plan to Read) + unlimited custom shelves. Drag to reorder. Public/private toggle.
 - Bulk actions: mark read/unread, download, retag, move shelf.
 - Notifications: in-app bell + mail + RSS per series + webhook (Discord/Slack URL in settings). Digest frequency control.
@@ -71,7 +72,7 @@ Non-goals:
 - Homepage: toggle hero, shelf order (continue, subscriptions, new chapters, stats), grid density (2-8 columns), show/hide NSFW.
 - Reader defaults: mode, fit, gap, background, auto-next, prefetch on/off. Per-series override editor lists exceptions.
 - Language: UI locale picker, content language filter, RTL auto-switch.
-- Data: export all, delete history, per-device sessions list with revoke.
+- Data: delete history, per-device sessions list with revoke. No export. No import.
 
 ## 7. Owner customization (`/admin`, no restart, no code)
 
@@ -85,13 +86,16 @@ Non-goals:
 - Multi-library: one binary can serve 2+ libraries (e.g. Manga + Manhwa) each with own slug, theme override, nav. Shared users table.
 - White-label: hide MangaRead footer, custom powered-by text.
 
-## 8. Sources (built-in only, since plugins out of scope)
+## 8. Catalog management (admin/editor only, invisible to readers)
 
-- Keep `SiteAdapter` trait in Rust. Add 6-10 built-in adapters prioritized by user vote. Each adapter ships compiled.
-- Source manager UI: enable/disable, priority drag, rate limit (req/min), timeout, test-fetch button with last-error display.
-- Scheduler UI: global 6h default + per-source cron override, manual Run Now, failure log with retry, backoff display.
-- Dedup tool: normalized-title merge preview, split/merge buttons, cover picker when 2 sources disagree.
-- Importer: MangaDx API key field, local folder watcher (CBZ/CBR/PDF) with auto-scan, ComicInfo.xml parsing.
+- Readers never see sources, adapters, sync state, or origin URLs. No `/source/*` public route. No source labels, badges, or filters anywhere in reader-facing UI or APIs.
+- Keep `SiteAdapter` trait in Rust. Add built-in adapters prioritized by owner need. Each adapter ships compiled.
+- Source manager UI (admin only): enable/disable, priority drag, rate limit (req/min), timeout, test-fetch button with last-error display.
+- Scheduler UI (admin only): global 6h default + per-source cron override, manual Run Now, failure log with retry, backoff display.
+- Dedup tool (editor+): normalized-title merge preview, split/merge buttons, cover picker when 2 origins disagree.
+- Full series management (editor+): create series from scratch, edit title/synopsis/authors/artists/genres/status/cover, delete or hide series, reorder chapters.
+- Manual chapters (editor+): add a chapter by hand with page image uploads (JPG/PNG/WebP), reorder or replace pages, set chapter number/title/publish date, publish or keep as draft. Manual chapters behave exactly like scraped ones for readers.
+- Local ingest (admin only): folder watcher (CBZ/CBR/PDF) with auto-scan, ComicInfo.xml parsing.
 
 ## 9. Social (built-in, moderated)
 
@@ -126,21 +130,22 @@ Non-goals:
 
 - `users(id, name, email unique, hash, role, locale, created_at)`
 - `sessions(id, user_id, token, expires_at, device)`
-- `profiles(id, user_id, name)`
-- `bookmarks(user_id/profile_id, series_id, created_at)`
-- `progress(user_id/profile_id, chapter_id, page, updated_at)`
+- `bookmarks(user_id, series_id, created_at)`
+- `progress(user_id, chapter_id, page, updated_at)`
 - `shelves(id, owner_id, name, visibility, sort)` + `shelf_items(shelf_id, series_id, sort)`
 - `site_settings(key primary, value, updated_by, updated_at)`
 - `themes(id, name, tokens JSON, is_public, owner)`
 - `pages(slug, title, body_md, visibility, updated_at)`
 - `jobs(id, type, payload JSON, status, log, run_at)`
 - `notifications(user_id, type, ref_id, read_at)`
+- `chapters` carry a nullable admin-only `origin` plus a `manual` flag. `pages` accept uploaded files under `uploads/` alongside the scraped cache. Origin columns never serialize to reader-facing responses or APIs.
 - Indexes on `progress(updated_at)`, `chapters(series_id, num)`, FTS on `series(title, synopsis)`.
 
 ## 14. Routes deltas
 
-- New: `/settings`, `/settings/*`, `/u/{name}`, `/shelves`, `/shelf/{id}`, `/admin`, `/admin/*`, `/login`, `/register`, `/logout`, `/oauth/*`, `/api/v1/*`, `/opds/*`, `/rss/*`.
+- New: `/settings`, `/settings/*`, `/u/{name}`, `/shelves`, `/shelf/{id}`, `/admin`, `/admin/*` (includes series/chapter editor, source manager, scheduler, jobs), `/login`, `/register`, `/logout`, `/oauth/*`, `/api/v1/*`, `/opds/*`, `/rss/*`.
 - Keep: `/`, `/series`, `/read`, `/bookmarks` (becomes redirect to shelf when logged in).
+- Removed from public: `/source/{source}` grid disappears. Source/sync APIs move under `/admin/api/*` with role check. Reader-facing APIs never expose origin fields.
 
 ## 15. Rollout order (no plugins)
 
@@ -155,7 +160,9 @@ Non-goals:
 
 - Owner changes logo/accent/homepage in admin, sees it live with no restart and no code edit.
 - Reader changes width/gap/background/mode and it persists across devices when logged in.
-- Anonymous reader still works, then imports localStorage to account in one click.
+- Anonymous reader still works, then on signup the browser data merges into the account automatically with no manual step.
+- Reader-facing pages and APIs contain no source names, URLs, sync badges, or resync buttons.
+- Editor creates a series and adds a manual chapter with uploads without touching code.
 - Admin publishes announcement + custom page without deploy.
 - Lighthouse mobile >= 90 on home and reader with 3G throttling (excludingacker images).
 - Backup + restore documented and tested from admin with one download file.
