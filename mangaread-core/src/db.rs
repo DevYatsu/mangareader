@@ -62,6 +62,54 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
             downloaded      INTEGER NOT NULL DEFAULT 0,
             UNIQUE(chapter_id, page_index)
         );
+
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            locale TEXT NOT NULL DEFAULT 'en',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            device TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(user_id, series_id)
+        );
+        CREATE TABLE IF NOT EXISTS progress (
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+            page INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'started',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(user_id, chapter_id)
+        );
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+            read_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+            page INTEGER NOT NULL DEFAULT 1,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_progress_user_updated ON progress(user_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_history_user ON history(user_id, read_at);
         ",
     )?;
     // Migrations for existing DBs (safe no-ops if column already exists)
@@ -554,4 +602,239 @@ fn map_page_row(row: &rusqlite::Row) -> rusqlite::Result<Page> {
         image_url: row.get(3)?,
         downloaded: row.get::<_, i32>(4)? != 0,
     })
+}
+
+// ── Identity (users, sessions, bookmarks, progress, history, notes) ──
+
+fn map_user_row(row: &rusqlite::Row) -> rusqlite::Result<User> {
+    Ok(User {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        email: row.get(2)?,
+        password_hash: row.get(3)?,
+        role: Role::from_str(&row.get::<_, String>(4)?),
+        locale: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+/// Insert a new user. Fails on duplicate email.
+pub fn create_user(conn: &Connection, u: &NewUser) -> Result<i64, Error> {
+    conn.execute(
+        "INSERT INTO users (name, email, password_hash, role) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![u.name, u.email, u.password_hash, u.role.as_str()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Find a user by email. `NotFound` when missing.
+pub fn find_user_by_email(conn: &Connection, email: &str) -> Result<User, Error> {
+    conn.query_row(
+        "SELECT id, name, email, password_hash, role, locale, created_at FROM users WHERE email = ?1",
+        rusqlite::params![email],
+        map_user_row,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => {
+            Error::NotFound(format!("user email={}", email))
+        }
+        other => other.into(),
+    })
+}
+
+/// Count all users.
+pub fn count_users(conn: &Connection) -> Result<i64, Error> {
+    let n: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
+    Ok(n)
+}
+
+/// Insert a session token for a user.
+pub fn insert_session(
+    conn: &Connection,
+    user_id: i64,
+    token: &str,
+    expires_at: &str,
+    device: &str,
+) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO sessions (user_id, token, expires_at, device) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![user_id, token, expires_at, device],
+    )?;
+    Ok(())
+}
+
+/// Find the user owning a live session token (`expires_at > now`).
+pub fn find_user_by_session(conn: &Connection, token: &str, now: &str) -> Result<User, Error> {
+    conn.query_row(
+        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.created_at
+         FROM users u JOIN sessions s ON s.user_id = u.id
+         WHERE s.token = ?1 AND s.expires_at > ?2",
+        rusqlite::params![token, now],
+        map_user_row,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => {
+            Error::NotFound(format!("session token={}", token))
+        }
+        other => other.into(),
+    })
+}
+
+/// Delete a session token (logout). No-op when missing.
+pub fn delete_session(conn: &Connection, token: &str) -> Result<(), Error> {
+    conn.execute(
+        "DELETE FROM sessions WHERE token = ?1",
+        rusqlite::params![token],
+    )?;
+    Ok(())
+}
+
+/// Set or clear a bookmark.
+pub fn set_bookmark(
+    conn: &Connection,
+    user_id: i64,
+    series_id: i64,
+    bookmarked: bool,
+) -> Result<(), Error> {
+    if bookmarked {
+        conn.execute(
+            "INSERT INTO bookmarks (user_id, series_id) VALUES (?1, ?2) ON CONFLICT(user_id, series_id) DO NOTHING",
+            rusqlite::params![user_id, series_id],
+        )?;
+    } else {
+        conn.execute(
+            "DELETE FROM bookmarks WHERE user_id = ?1 AND series_id = ?2",
+            rusqlite::params![user_id, series_id],
+        )?;
+    }
+    Ok(())
+}
+
+/// List bookmarked series ids for a user.
+pub fn list_bookmarks(conn: &Connection, user_id: i64) -> Result<Vec<i64>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT series_id FROM bookmarks WHERE user_id = ?1 ORDER BY series_id",
+    )?;
+    let ids = stmt.query_map(rusqlite::params![user_id], |row| row.get::<_, i64>(0))?;
+    ids.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
+/// Upsert progress with server-side last-write-wins guard.
+pub fn upsert_progress(conn: &Connection, p: &Progress) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO progress (user_id, chapter_id, page, status, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(user_id, chapter_id) DO UPDATE SET
+             page = CASE WHEN excluded.updated_at >= progress.updated_at THEN excluded.page ELSE progress.page END,
+             status = CASE WHEN excluded.updated_at >= progress.updated_at THEN excluded.status ELSE progress.status END,
+             updated_at = CASE WHEN excluded.updated_at >= progress.updated_at THEN excluded.updated_at ELSE progress.updated_at END",
+        rusqlite::params![p.user_id, p.chapter_id, p.page, p.status, p.updated_at],
+    )?;
+    Ok(())
+}
+
+/// List a user's progress rows for chapters in a series.
+pub fn list_progress_by_series(
+    conn: &Connection,
+    user_id: i64,
+    series_id: i64,
+) -> Result<Vec<Progress>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT p.user_id, p.chapter_id, p.page, p.status, p.updated_at
+         FROM progress p
+         JOIN chapters c ON c.id = p.chapter_id
+         JOIN manga m ON m.id = c.manga_id
+         WHERE p.user_id = ?1 AND m.series_id = ?2
+         ORDER BY p.chapter_id",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![user_id, series_id], |row| {
+        Ok(Progress {
+            user_id: row.get(0)?,
+            chapter_id: row.get(1)?,
+            page: row.get(2)?,
+            status: row.get(3)?,
+            updated_at: row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
+/// Record a chapter read in history.
+pub fn add_history(
+    conn: &Connection,
+    user_id: i64,
+    chapter_id: i64,
+    at: &str,
+) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO history (user_id, chapter_id, read_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![user_id, chapter_id, at],
+    )?;
+    Ok(())
+}
+
+/// Insert a note, returning its id.
+pub fn insert_note(
+    conn: &Connection,
+    user_id: i64,
+    chapter_id: i64,
+    page: i64,
+    body: &str,
+) -> Result<i64, Error> {
+    conn.execute(
+        "INSERT INTO notes (user_id, chapter_id, page, body) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![user_id, chapter_id, page, body],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// List a user's notes on a chapter.
+pub fn list_notes(
+    conn: &Connection,
+    user_id: i64,
+    chapter_id: i64,
+) -> Result<Vec<Note>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, user_id, chapter_id, page, body, created_at FROM notes
+         WHERE user_id = ?1 AND chapter_id = ?2 ORDER BY id",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![user_id, chapter_id], |row| {
+        Ok(Note {
+            id: row.get(0)?,
+            user_id: row.get(1)?,
+            chapter_id: row.get(2)?,
+            page: row.get(3)?,
+            body: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn user_roundtrip_and_session_lookup() {
+        let conn = mem();
+        let id = create_user(&conn, &NewUser {
+            name: "r".into(), email: "r@x.io".into(),
+            password_hash: "h".into(), role: Role::Member,
+        }).unwrap();
+        assert!(id > 0);
+        insert_session(&conn, id, "tok123", "2099-01-01 00:00:00", "test").unwrap();
+        let u = find_user_by_session(&conn, "tok123", "2026-01-01 00:00:00").unwrap();
+        assert_eq!(u.email, "r@x.io");
+    }
 }
