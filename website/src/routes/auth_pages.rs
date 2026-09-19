@@ -123,20 +123,27 @@ pub async fn login_submit(
             .into_response()
     };
 
-    let db = state.db.lock().await;
-    let found = match mangaread_core::db::find_user_by_email(&db, form.email.trim()) {
-        Ok(u) => u,
-        // Identical message for unknown email — no user enumeration.
-        Err(_) => return render_401(&state, user.as_ref()),
+    // Lock only for the lookup; bcrypt verification runs without the guard so
+    // concurrent requests are not serialized behind hashing.
+    let found = {
+        let db = state.db.lock().await;
+        match mangaread_core::db::find_user_by_email(&db, form.email.trim()) {
+            Ok(u) => (u.id, u.password_hash),
+            // Identical message for unknown email — no user enumeration.
+            Err(_) => return render_401(&state, user.as_ref()),
+        }
     };
-    if !verify_password(&form.password, &found.password_hash) {
+    if !verify_password(&form.password, &found.1) {
         return render_401(&state, user.as_ref());
     }
     let token = new_token();
-    if mangaread_core::db::insert_session(&db, found.id, &token, &session_expires_at(), "web")
-        .is_err()
     {
-        return render_401(&state, user.as_ref());
+        let db = state.db.lock().await;
+        if mangaread_core::db::insert_session(&db, found.0, &token, &session_expires_at(), "web")
+            .is_err()
+        {
+            return render_401(&state, user.as_ref());
+        }
     }
     redirect_with_cookie("/", set_cookie_value(&token))
 }
@@ -190,34 +197,41 @@ pub async fn register_submit(
             .into_response()
     };
 
-    let db = state.db.lock().await;
-    let role = match mangaread_core::db::count_users(&db) {
-        Ok(0) => Role::Admin,
-        Ok(_) => Role::Member,
-        Err(_) => return render_failed(&state, user.as_ref()),
+    // Lock only for the count; bcrypt hashing runs without the guard so
+    // concurrent requests are not serialized behind hashing.
+    let role = {
+        let db = state.db.lock().await;
+        match mangaread_core::db::count_users(&db) {
+            Ok(0) => Role::Admin,
+            Ok(_) => Role::Member,
+            Err(_) => return render_failed(&state, user.as_ref()),
+        }
     };
     let password_hash = match hash_password(&form.password) {
         Ok(h) => h,
         Err(_) => return render_failed(&state, user.as_ref()),
     };
-    let id = match mangaread_core::db::create_user(
-        &db,
-        &NewUser {
-            name: name.clone(),
-            email: email.clone(),
-            password_hash,
-            role,
-        },
-    ) {
-        Ok(id) => id,
-        Err(_) => return render_failed(&state, user.as_ref()),
-    };
-    if id == 1 {
-        tracing::warn!("first registered user bootstrapped as admin: {email}");
-    }
     let token = new_token();
-    if mangaread_core::db::insert_session(&db, id, &token, &session_expires_at(), "web").is_err() {
-        return render_failed(&state, user.as_ref());
+    {
+        let db = state.db.lock().await;
+        let id = match mangaread_core::db::create_user(
+            &db,
+            &NewUser {
+                name: name.clone(),
+                email: email.clone(),
+                password_hash,
+                role,
+            },
+        ) {
+            Ok(id) => id,
+            Err(_) => return render_failed(&state, user.as_ref()),
+        };
+        if id == 1 {
+            tracing::warn!("first registered user bootstrapped as admin: {email}");
+        }
+        if mangaread_core::db::insert_session(&db, id, &token, &session_expires_at(), "web").is_err() {
+            return render_failed(&state, user.as_ref());
+        }
     }
     redirect_with_cookie("/", set_cookie_value(&token))
 }
