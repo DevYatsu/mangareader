@@ -37,9 +37,9 @@ fn provider_label(p: &Provider) -> &'static str {
 fn oauth_buttons(providers: &[Provider]) -> maud::Markup {
     html! {
         @if !providers.is_empty() {
-            div class="oauth-buttons" {
+            div class="buttons mt-5" {
                 @for p in providers {
-                    a class="oauth-btn" href=(format!("/auth/{}", p.key())) { "Continue with " (provider_label(p)) }
+                    a class="button is-fullwidth" href=(format!("/auth/{}", p.key())) { "Continue with " (provider_label(p)) }
                 }
             }
         }
@@ -86,39 +86,91 @@ fn page(
 
 fn login_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
     html! {
-        section class="auth-section" {
-            h1 class="page-title" { "Login" }
-            @if let Some(msg) = error {
-                p class="auth-error" { (msg) }
+        div class="columns is-centered" {
+            div class="column is-5-desktop is-6-tablet" {
+                div class="box" {
+                    h1 class="title is-3" { "Login" }
+                    @if let Some(msg) = error {
+                        div class="notification is-danger is-light" { (msg) }
+                    }
+                    form method="post" action="/login" {
+                        div class="field" {
+                            label class="label" { "Email" }
+                            div class="control" {
+                                input class="input" type="email" name="email" required="";
+                            }
+                        }
+                        div class="field" {
+                            label class="label" { "Password" }
+                            div class="control" {
+                                input class="input" type="password" name="password" required="";
+                            }
+                        }
+                        div class="field" {
+                            div class="control" {
+                                label class="checkbox" {
+                                    input type="checkbox" name="remember" value="on";
+                                    " Remember me (30 days)"
+                                }
+                            }
+                        }
+                        div class="field" {
+                            div class="control" {
+                                button type="submit" class="button is-primary is-fullwidth" { "Login" }
+                            }
+                        }
+                    }
+                    (oauth_buttons(providers))
+                    div class="is-size-7 has-text-grey mt-5" {
+                        p { a href="/register" { "Create an account" } }
+                        p { a href="/forgot" { "Forgot password?" } }
+                    }
+                }
             }
-            form method="post" action="/login" class="auth-form" {
-                label { "Email" input type="email" name="email" required=""; }
-                label { "Password" input type="password" name="password" required=""; }
-                label { input type="checkbox" name="remember" value="on"; " Remember me (30 days)" }
-                button type="submit" { "Login" }
-            }
-            (oauth_buttons(providers))
-            p { a href="/register" { "Create an account" } }
-            p { a href="/forgot" { "Forgot password?" } }
         }
     }
 }
 
 fn register_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
     html! {
-        section class="auth-section" {
-            h1 class="page-title" { "Register" }
-            @if let Some(msg) = error {
-                p class="auth-error" { (msg) }
+        div class="columns is-centered" {
+            div class="column is-5-desktop is-6-tablet" {
+                div class="box" {
+                    h1 class="title is-3" { "Register" }
+                    @if let Some(msg) = error {
+                        div class="notification is-danger is-light" { (msg) }
+                    }
+                    form method="post" action="/register" {
+                        div class="field" {
+                            label class="label" { "Name" }
+                            div class="control" {
+                                input class="input" type="text" name="name" maxlength="32" required="";
+                            }
+                        }
+                        div class="field" {
+                            label class="label" { "Email" }
+                            div class="control" {
+                                input class="input" type="email" name="email" required="";
+                            }
+                        }
+                        div class="field" {
+                            label class="label" { "Password (min 8 chars)" }
+                            div class="control" {
+                                input class="input" type="password" name="password" required="";
+                            }
+                        }
+                        div class="field" {
+                            div class="control" {
+                                button type="submit" class="button is-primary is-fullwidth" { "Register" }
+                            }
+                        }
+                    }
+                    (oauth_buttons(providers))
+                    div class="is-size-7 has-text-grey mt-5" {
+                        p { a href="/login" { "Already have an account? Login" } }
+                    }
+                }
             }
-            form method="post" action="/register" class="auth-form" {
-                label { "Name" input type="text" name="name" maxlength="32" required=""; }
-                label { "Email" input type="email" name="email" required=""; }
-                label { "Password (min 8 chars)" input type="password" name="password" required=""; }
-                button type="submit" { "Register" }
-            }
-            (oauth_buttons(providers))
-            p { a href="/login" { "Already have an account? Login" } }
         }
     }
 }
