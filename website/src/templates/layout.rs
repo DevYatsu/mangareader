@@ -94,7 +94,7 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                                 "Bookmarks"
                             }
                             @if let Some(u) = user {
-                                a href="/bookmarks" class="user-name" { (u.name) }
+                                a href="/settings" class="user-name" { (u.name) }
                                 form method="post" action="/logout" class="logout-form" {
                                     button type="submit" class="logout-btn" { "Logout" }
                                 }

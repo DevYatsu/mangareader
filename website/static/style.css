@@ -2353,3 +2353,31 @@ footer p {
 .user-name {
   font-weight: 600;
 }
+
+/* ── Settings page ── */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  max-width: 32rem;
+}
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+.settings-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-weight: 500;
+}
+.settings-form input,
+.settings-form select {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+  font-size: 1rem;
+}

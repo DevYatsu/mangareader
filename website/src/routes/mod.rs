@@ -10,6 +10,7 @@
 //! - `health`:   liveness probe for Docker
 //! - `api`:     sync management, progress tracking
 //! - `bookmarks`: client-side bookmark page
+//! - `settings`:  user settings (profile, appearance, password)
 pub mod api;
 pub mod auth_pages;
 pub mod bookmarks;
@@ -19,5 +20,6 @@ pub mod home;
 pub mod manga;
 pub mod reader;
 pub mod series;
+pub mod settings;
 pub mod source;
 pub mod sync;
