@@ -20,8 +20,31 @@ use crate::{
         hash_password, lifetime_for_remember, new_token, session_expires_at, set_cookie_value,
         token_from_headers, verify_password, AuthUser, REMEMBER_SESSION_MAX_AGE,
     },
+    oauth::Provider,
     AppState,
 };
+
+/// Human-readable provider name for the login-page buttons.
+fn provider_label(p: &Provider) -> &'static str {
+    match p {
+        Provider::Google => "Google",
+        Provider::Github => "GitHub",
+        Provider::Discord => "Discord",
+    }
+}
+
+/// "Continue with X" links for the configured providers; empty when none.
+fn oauth_buttons(providers: &[Provider]) -> maud::Markup {
+    html! {
+        @if !providers.is_empty() {
+            div class="oauth-buttons" {
+                @for p in providers {
+                    a class="oauth-btn" href=(format!("/auth/{}", p.key())) { "Continue with " (provider_label(p)) }
+                }
+            }
+        }
+    }
+}
 
 #[derive(Deserialize)]
 pub struct RegisterForm {
@@ -62,7 +85,7 @@ fn page(
     )
 }
 
-fn login_form(error: Option<&str>) -> maud::Markup {
+fn login_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
     html! {
         section class="auth-section" {
             h1 class="page-title" { "Login" }
@@ -75,12 +98,13 @@ fn login_form(error: Option<&str>) -> maud::Markup {
                 label { input type="checkbox" name="remember" value="on"; " Remember me (30 days)" }
                 button type="submit" { "Login" }
             }
+            (oauth_buttons(providers))
             p { a href="/register" { "Create an account" } }
         }
     }
 }
 
-fn register_form(error: Option<&str>) -> maud::Markup {
+fn register_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
     html! {
         section class="auth-section" {
             h1 class="page-title" { "Register" }
@@ -93,6 +117,7 @@ fn register_form(error: Option<&str>) -> maud::Markup {
                 label { "Password (min 8 chars)" input type="password" name="password" required=""; }
                 button type="submit" { "Register" }
             }
+            (oauth_buttons(providers))
             p { a href="/login" { "Already have an account? Login" } }
         }
     }
@@ -122,7 +147,7 @@ pub async fn login_page(
             crate::config::resolve_theme(&db, user.as_ref()),
         )
     };
-    page(&cfg, &theme, "Login", login_form(None), user.as_ref())
+    page(&cfg, &theme, "Login", login_form(None, &crate::oauth::configured_providers()), user.as_ref())
 }
 
 /// POST `/login` — verify credentials, open a session, redirect home.
@@ -141,7 +166,7 @@ pub async fn login_submit(
     let render_401 = |user: Option<&AuthUser>| {
         (
             StatusCode::UNAUTHORIZED,
-            page(&cfg, &theme, "Login", login_form(Some("Invalid email or password")), user),
+            page(&cfg, &theme, "Login", login_form(Some("Invalid email or password"), &crate::oauth::configured_providers()), user),
         )
             .into_response()
     };
@@ -184,7 +209,7 @@ pub async fn register_page(
             crate::config::resolve_theme(&db, user.as_ref()),
         )
     };
-    page(&cfg, &theme, "Register", register_form(None), user.as_ref())
+    page(&cfg, &theme, "Register", register_form(None, &crate::oauth::configured_providers()), user.as_ref())
 }
 
 /// POST `/register` — validate, create the user, open a session, redirect home.
@@ -215,7 +240,7 @@ pub async fn register_submit(
     if let Some(msg) = invalid {
         return (
             StatusCode::BAD_REQUEST,
-            page(&cfg, &theme, "Register", register_form(Some(msg)), user.as_ref()),
+            page(&cfg, &theme, "Register", register_form(Some(msg), &crate::oauth::configured_providers()), user.as_ref()),
         )
             .into_response();
     }
@@ -229,7 +254,7 @@ pub async fn register_submit(
                 &cfg,
                 &theme,
                 "Register",
-                register_form(Some("could not create account")),
+                register_form(Some("could not create account"), &crate::oauth::configured_providers()),
                 user,
             ),
         )
