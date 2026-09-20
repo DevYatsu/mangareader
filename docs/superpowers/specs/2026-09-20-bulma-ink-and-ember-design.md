@@ -165,10 +165,26 @@ being listed here first.
 |---|---|---|
 | `m-nav-active` | Bulma has no navbar current-page state | navbar |
 | `m-empty` | No empty-state component | home, series, bookmarks, source |
+| `m-empty-icon` | No muted icon slot inside an empty state | empty states |
 | `m-chapter-row` | No data-row primitive for a dense chapter list | series detail |
 | `m-cover` | Fixed 2:3 cover frame with placeholder fallback | grids, series hero |
 | `m-range` | Bulma does not style `input[type=range]` | reader width/gap, zone editor |
 | `m-reader-*` | Fullscreen surface, HUD, click zones, dim, offline, next-up, countdown, sheet geometry, note pins | reader only (§7.1) |
+| `m-display` | Bulma emits no font-family for `.title` (`--bulma-title-family` is false), so the display face needs an explicit hook | display headings |
+| `m-wordmark` | No site-chrome wordmark component | navbar brand |
+| `m-footer` | No footer-spacing primitive | footer |
+| `m-text-muted` | Bulma's `has-text-grey*` utilities emit hardcoded cool hex: `--bulma-grey*` is a literal **no rule consumes**, so the tokens are dead. `has-text-grey` measures 3.99:1 on `scheme-main` and 3.81:1 on `scheme-main-bis`, below WCAG AA 4.5:1. `m-text-muted` binds `var(--bulma-text-weak)`, the token the `config.rs` contrast guard models (5.02:1 on `--bulma-background-l`) | footer, auth link blocks |
+
+The four Slice-A additions `m-display`, `m-wordmark`, `m-footer`, and `m-empty-icon`
+exist in `theme.css` but were absent from the original list above; they are recorded
+here retroactively so the closed-class rule stays true.
+
+**Bulma's `has-text-grey*` utilities are hardcoded hex and must not be used on
+identity surfaces.** `--bulma-grey*` tokens are dead (defined, never consumed), so
+repointing the token does not move these utilities. On warm Ink & Ember surfaces they
+fail WCAG AA. Use `m-text-muted` instead. Do not substitute `has-text-text-*`: those
+resolve through Bulma literals (`--bulma-text-NN-l`) that `theme.css` does not bind,
+so the `config.rs` contrast guard does not model them.
 
 Grid, card, hero, stat, and list-row markup are rebuilt using Bulma components, so
 the old `manga-grid` / `manga-card` / `recent-list` / `hero-*` / `empty-state`
