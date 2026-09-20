@@ -1,94 +1,2181 @@
-// Immersive manga reader — tap to toggle controls
+/**
+ * MangaRead — Reader 2.0 client module.
+ *
+ * Owns the reader surface end to end: preference resolution and persistence,
+ * the controls sheet, page navigation, input (zones / keybinds / swipe /
+ * auto-next), comfort chrome, notes, and page states.
+ *
+ * Contract: docs/superpowers/specs/2026-09-20-reader2-design-contract.md
+ *
+ * Interfaces produced (later work depends on these exact names):
+ *   window.MangaReader = { prefs, save, openSheet, closeSheet, goToPage, currentPage }
+ *
+ * Interfaces consumed:
+ *   - the Task 4 DOM in website/src/routes/reader.rs
+ *   - window.MangaReadState  (app.js) — the single progress write path
+ *   - window.MangaSync       (auth.js) — pushProgress / loggedIn
+ *   - GET/POST /api/reader-prefs, GET/POST /api/notes
+ *
+ * Reader-facing surfaces expose no scraping concepts.
+ */
 (function () {
-  var nav = document.getElementById("reader-nav");
-  var hint = document.getElementById("reader-hint");
-  var images = document.getElementById("reader-images");
-  var hideTimer = null;
+  'use strict';
 
-  function showNav() {
-    nav.classList.add("visible");
-    clearTimeout(hideTimer);
-    hideTimer = setTimeout(hideNav, 3500);
+  // ============================================================
+  //  CONSTANTS
+  // ============================================================
+
+  var LS_PREFS = 'mangaread_reader_prefs';
+  var LS_SERIES_PREFIX = 'mangaread_series_prefs_';
+  var LS_LOCAL = 'mangaread_reader_local';
+  var SS_DRAFT_PREFIX = 'mangaread_note_draft_';
+  var SS_AUTONEXT_PREFIX = 'mangaread_autonext_cancel_';
+  var SS_OPEN_LAST = 'mangaread_reader_open_last';
+
+  var LAYOUTS = ['single', 'double', 'strip', 'vertical'];
+  var DIRECTIONS = ['ltr', 'rtl'];
+  var FITS = ['', 'height', 'screen'];
+  var BGS = ['black', 'white', 'sepia', 'custom'];
+  var DIM_DELAYS = [0, 15, 30, 60];
+
+  var ACTION_IDS = [
+    'page.next', 'page.prev', 'chapter.next', 'chapter.prev',
+    'ui.toggle', 'ui.focus', 'ui.fitCycle', 'layout.cycle', 'note.add'
+  ];
+
+  var DEFAULT_KEYBINDS = {
+    'page.next': ['ArrowRight', 'ArrowDown', 'Space', 'PageDown'],
+    'page.prev': ['ArrowLeft', 'ArrowUp', 'PageUp'],
+    'chapter.next': ['Shift+ArrowRight', 'KeyN'],
+    'chapter.prev': ['Shift+ArrowLeft', 'KeyP'],
+    'ui.toggle': ['KeyS', 'Escape'],
+    'ui.focus': ['KeyF'],
+    'ui.fitCycle': ['KeyW'],
+    'layout.cycle': ['KeyL'],
+    'note.add': ['KeyM']
+  };
+
+  /** Boolean prefs rendered as an on/off segmented control. */
+  var BOOL_PREFS = { frame: 1, doubleCover: 1, autoNext: 1, autoPrev: 1, showNotes: 1 };
+  /** Slider output unit suffix, matching the server-rendered `output`. */
+  var UNITS = { maxW: 'px', gap: 'px', hideDelay: 's', dimOpacity: '', swipeThreshold: 'px' };
+
+  // ============================================================
+  //  SMALL UTILITIES
+  // ============================================================
+
+  /** @returns {Element|null} */
+  function $(sel, root) {
+    return (root || document).querySelector(sel);
   }
 
-  function hideNav() {
-    nav.classList.remove("visible");
+  /** @returns {Element[]} a real Array (NodeList has no `.map` in old engines) */
+  function $$(sel, root) {
+    return Array.prototype.slice.call((root || document).querySelectorAll(sel));
   }
 
-  // Tap on images area toggles nav
-  images.addEventListener("click", function (e) {
-    // Don't toggle when clicking a link
-    if (e.target.closest("a")) return;
-    if (nav.classList.contains("visible")) {
-      hideNav();
+  function clampInt(v, lo, hi, fallback) {
+    var n = parseInt(v, 10);
+    if (!isFinite(n)) return fallback;
+    return n < lo ? lo : (n > hi ? hi : n);
+  }
+
+  function clampNum(v, lo, hi, fallback) {
+    var n = parseFloat(v);
+    if (!isFinite(n)) return fallback;
+    return n < lo ? lo : (n > hi ? hi : n);
+  }
+
+  /** Keep `value` when it is in `allowed`, otherwise use `fallback`. */
+  function allowed(value, list, fallback) {
+    return list.indexOf(value) >= 0 ? value : fallback;
+  }
+
+  function isHexColor(v) {
+    return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v);
+  }
+
+  function readJSON(storage, key, fallback) {
+    try {
+      var raw = storage.getItem(key);
+      if (raw) return JSON.parse(raw);
+    } catch (_) { /* ignore malformed / unavailable storage */ }
+    return fallback;
+  }
+
+  function writeJSON(storage, key, value) {
+    try {
+      storage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function readString(storage, key) {
+    try { return storage.getItem(key); } catch (_) { return null; }
+  }
+
+  function writeString(storage, key, value) {
+    try { storage.setItem(key, value); } catch (_) { /* ignore */ }
+  }
+
+  function removeKey(storage, key) {
+    try { storage.removeItem(key); } catch (_) { /* ignore */ }
+  }
+
+  // ============================================================
+  //  PREFS SHAPE (client mirror of ReaderPrefs::normalized)
+  // ============================================================
+
+  /** Two physical boundaries from the left, 10..90, at least 10 apart. */
+  function normalizeZones(zones) {
+    var a = clampInt(zones && zones[0], 10, 80, 30);
+    var b = clampInt(zones && zones[1], a + 10, 90, 70);
+    if (b < a + 10) b = a + 10;
+    if (b > 90) { b = 90; a = Math.min(a, 80); if (b < a + 10) a = b - 10; }
+    return [a, b];
+  }
+
+  function normalizeKeybinds(kb) {
+    var out = {};
+    for (var i = 0; i < ACTION_IDS.length; i++) {
+      var action = ACTION_IDS[i];
+      var raw = kb && kb[action];
+      var keys = [];
+      if (Object.prototype.toString.call(raw) === '[object Array]') {
+        for (var j = 0; j < raw.length; j++) {
+          var k = raw[j];
+          if (typeof k !== 'string') continue;
+          k = k.trim();
+          if (!k || k.length > 32) continue;
+          if (keys.indexOf(k) >= 0) continue;
+          keys.push(k);
+          if (keys.length >= 4) break;
+        }
+      }
+      if (keys.length === 0) keys = DEFAULT_KEYBINDS[action].slice();
+      out[action] = keys;
+    }
+    return out;
+  }
+
+  function defaultPrefs() {
+    return normalizePrefs({});
+  }
+
+  function normalizePrefs(p) {
+    p = p || {};
+    var o = {};
+    o.layout = allowed(p.layout, LAYOUTS, 'strip');
+    o.direction = allowed(p.direction, DIRECTIONS, 'ltr');
+    o.fit = allowed(p.fit, FITS, '');
+    o.maxW = clampInt(p.maxW, 400, 1400, 700);
+    o.gap = clampInt(p.gap, 0, 64, 0);
+    o.bg = allowed(p.bg, BGS, 'black');
+    o.bgCustom = isHexColor(p.bgCustom) ? p.bgCustom.toLowerCase() : '#0a0a0a';
+    o.frame = !!p.frame;
+    o.doubleCover = !!p.doubleCover;
+    o.autoNext = !!p.autoNext;
+    o.autoPrev = !!p.autoPrev;
+    o.hideDelay = clampInt(p.hideDelay, 0, 10, 3);
+    o.dimDelay = DIM_DELAYS.indexOf(Number(p.dimDelay)) >= 0 ? Number(p.dimDelay) : 0;
+    o.dimOpacity = clampNum(p.dimOpacity, 0.2, 0.8, 0.5);
+    o.swipeThreshold = clampInt(p.swipeThreshold, 40, 160, 70);
+    o.clickZones = normalizeZones(p.clickZones);
+    o.keybinds = normalizeKeybinds(p.keybinds);
+    o.showNotes = p.showNotes === undefined ? true : !!p.showNotes;
+    return o;
+  }
+
+  function clonePrefs(p) {
+    return normalizePrefs(JSON.parse(JSON.stringify(p)));
+  }
+
+  // ============================================================
+  //  STATE
+  // ============================================================
+
+  var state = {
+    isReader: false,
+    track: null,
+    seriesId: 0,
+    chapterId: 0,
+    totalPages: 0,
+    currentPage: 1,
+    primeIdx: 0,
+    loggedIn: false,
+    basePrefs: null,       // server blob (logged in) or local blob (anon)
+    seriesPrefs: null,     // full per-series override, or null
+    local: null,           // device-local state (mangaread_reader_local)
+    notes: [],
+    sheetOpen: false,
+    capture: null,         // { action, index, button }
+    keymap: null,          // combo -> action
+    hideTimer: null,
+    dimTimer: null,
+    dimmed: false,
+    progressTimer: null,
+    prefsSaveTimer: null,
+    writeFailures: 0,
+    offlineHooked: false,
+    finished: false,
+    autoNextTimer: null,
+    countdownValue: 3,
+    lastStripEndAt: 0,
+    resumePage: 0,
+    scrollTimer: null,
+    longPressTimer: null,
+    retried: {},
+    navigated: false
+  };
+
+  function isLoggedIn() {
+    if (state.loggedIn) return true;
+    try {
+      if (window.MangaSync && typeof window.MangaSync.loggedIn === 'function') {
+        return window.MangaSync.loggedIn();
+      }
+    } catch (_) { /* ignore */ }
+    return !!(document.body && document.body.dataset && document.body.dataset.userId);
+  }
+
+  function seriesKey() {
+    return LS_SERIES_PREFIX + state.seriesId;
+  }
+
+  /** Effective prefs = series override (full replacement) or the base blob. */
+  function effectivePrefs() {
+    return state.seriesPrefs || state.basePrefs || defaultPrefs();
+  }
+
+  function loadDeviceLocal() {
+    var d = readJSON(localStorage, LS_LOCAL, {}) || {};
+    if (!d || typeof d !== 'object') d = {};
+    if (typeof d.scrollPositions !== 'object' || !d.scrollPositions) d.scrollPositions = {};
+    if (typeof d.zoom !== 'number' || !isFinite(d.zoom) || d.zoom <= 0) d.zoom = 1;
+    d.resumeBadgeSeen = !!d.resumeBadgeSeen;
+    d.hintSeen = !!d.hintSeen;
+    d.lastUsedLayout = typeof d.lastUsedLayout === 'string' ? d.lastUsedLayout : '';
+    state.local = d;
+    return d;
+  }
+
+  function saveDeviceLocal() {
+    if (state.local) writeJSON(localStorage, LS_LOCAL, state.local);
+  }
+
+  // ============================================================
+  //  PREF RESOLUTION (contract §2.3 / §3.4)
+  // ============================================================
+
+  /** The `#reader-prefs` JSON island is the pre-first-paint server blob. */
+  function serverIslandPrefs() {
+    var el = document.getElementById('reader-prefs');
+    if (!el) return null;
+    var parsed = null;
+    try { parsed = JSON.parse(el.textContent || '{}'); } catch (_) { parsed = null; }
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  }
+
+  /**
+   * Resolution order: series override (local) > server blob (logged in) >
+   * local (anon) > defaults. The island seeds the first paint synchronously;
+   * a logged-in session then re-reads the server blob so a change made on
+   * another device is not masked by a stale render.
+   */
+  function resolvePrefs() {
+    var island = serverIslandPrefs();
+    if (isLoggedIn()) {
+      state.basePrefs = normalizePrefs(island || {});
     } else {
-      showNav();
+      var localBlob = readJSON(localStorage, LS_PREFS, null);
+      // Anon: local blob wins over the island (the island is defaults for anon).
+      state.basePrefs = normalizePrefs(localBlob || island || {});
     }
-  });
 
-  // Keep nav visible while hovering over it with mouse
-  nav.addEventListener("mouseenter", function () {
-    clearTimeout(hideTimer);
-  });
-
-  nav.addEventListener("mouseleave", function () {
-    if (nav.classList.contains("visible")) {
-      hideTimer = setTimeout(hideNav, 3500);
+    var override = readJSON(localStorage, seriesKey(), null);
+    if (override && typeof override === 'object') {
+      state.seriesPrefs = normalizePrefs(override);
+    } else {
+      state.seriesPrefs = null;
     }
-  });
 
-  // Auto-show nav on scroll up, hide on scroll down
-  var lastScrollY = 0;
-  window.addEventListener("scroll", function () {
-    var sy = window.scrollY;
-    if (sy < lastScrollY && sy > 100) {
-      // Scrolled up — show nav briefly
-      showNav();
-    } else if (sy > lastScrollY && sy > 200) {
-      // Scrolled down — hide nav
-      hideNav();
-    }
-    lastScrollY = sy;
-  });
+    var remember = $('#reader-remember-series');
+    if (remember) remember.checked = !!state.seriesPrefs;
 
-  // Fade out hint after first interaction
-  function dismissHint() {
-    if (hint) {
-      hint.classList.add("hidden");
-    }
-    document.removeEventListener("click", dismissHint);
-    document.removeEventListener("scroll", dismissHint);
+    if (isLoggedIn()) fetchServerPrefs();
   }
-  document.addEventListener("click", dismissHint);
-  document.addEventListener("scroll", dismissHint);
 
-  // Show nav briefly on first load for discoverability
-  setTimeout(function () {
-    showNav();
-    // Auto-hide after initial display
-    setTimeout(hideNav, 2500);
-  }, 400);
+  /** Logged-in only: the server blob is authoritative. */
+  function fetchServerPrefs() {
+    try {
+      fetch('/api/reader-prefs', { headers: { 'Accept': '*/*' }, credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data || !data.prefs) return;
+          state.basePrefs = normalizePrefs(data.prefs);
+          applyPrefs();
+        })
+        .catch(function () { /* localStorage/island fallback stands */ });
+    } catch (_) { /* ignore */ }
+  }
 
-  // Keyboard navigation
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "ArrowLeft" || e.key === "a") {
-      let prev = document.querySelector('.reader-nav a[href*="/read/"]');
-      if (prev && !prev.classList.contains("disabled")) {
-        window.location.href = prev.getAttribute("href");
+  // ============================================================
+  //  APPLYING PREFS TO THE DOM
+  // ============================================================
+
+  function applyPrefs() {
+    var p = effectivePrefs();
+    var b = document.body;
+
+    b.setAttribute('data-r-layout', p.layout);
+    b.setAttribute('data-r-direction', p.direction);
+    if (p.fit) b.setAttribute('data-r-fit', p.fit);
+    else b.removeAttribute('data-r-fit');
+    b.setAttribute('data-r-bg', p.bg);
+    if (p.bg === 'custom') b.style.setProperty('--r-bg-custom', p.bgCustom);
+    if (p.frame) b.setAttribute('data-r-frame', 'on');
+    else b.removeAttribute('data-r-frame');
+
+    b.style.setProperty('--r-gap', p.gap + 'px');
+    b.style.setProperty('--r-zoom', String((state.local && state.local.zoom) || 1));
+    b.style.setProperty('--r-dim', String(state.dimmed ? p.dimOpacity : 0));
+    // Fit wins over width but the stored width is never cleared (contract §2.2).
+    b.style.setProperty('--r-max-w', p.fit ? '100%' : p.maxW + 'px');
+
+    syncControls();
+    applyZoneWidths();
+    renderKeybinds();
+    renderLayout();
+  }
+
+  /** Two-way bind every `[data-pref]` control to the effective prefs. */
+  function syncControls() {
+    var p = effectivePrefs();
+
+    // Segmented controls (strings + booleans).
+    var segKeys = ['layout', 'direction', 'fit', 'bg', 'dimDelay', 'frame', 'doubleCover', 'autoNext', 'autoPrev', 'showNotes'];
+    for (var s = 0; s < segKeys.length; s++) {
+      var key = segKeys[s];
+      var value = BOOL_PREFS[key] ? (p[key] ? 'on' : 'off') : String(p[key]);
+      setSegment(key, value);
+    }
+
+    // Sliders.
+    setSlider('maxW', p.maxW);
+    setSlider('gap', p.gap);
+    setSlider('hideDelay', p.hideDelay);
+    setSlider('dimOpacity', p.dimOpacity);
+    setSlider('swipeThreshold', p.swipeThreshold);
+
+    // Fit precedence disables the width slider (stored value is preserved).
+    var widthSlider = $('input.reader-slider[data-pref="maxW"]');
+    if (widthSlider) {
+      var disabled = !!p.fit;
+      widthSlider.disabled = disabled;
+      widthSlider.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    }
+
+    // The double layout is disallowed on phone widths (§8.1).
+    var doubleBtn = $('.reader-seg-btn[data-pref="layout"][data-value="double"]');
+    if (doubleBtn) {
+      var narrow = window.innerWidth < 768;
+      doubleBtn.disabled = narrow;
+      doubleBtn.setAttribute('aria-disabled', narrow ? 'true' : 'false');
+      if (narrow) doubleBtn.setAttribute('title', 'Double page needs a wider screen');
+      else doubleBtn.removeAttribute('title');
+    }
+
+    // Zone editor handles.
+    setHandle('left', p.clickZones[0]);
+    setHandle('right', p.clickZones[1]);
+
+    // Notes toggle keeps `aria-pressed` (reader.css:939 keys on it).
+    var notesToggle = document.getElementById('reader-notes-toggle');
+    if (notesToggle) notesToggle.setAttribute('aria-pressed', p.showNotes ? 'true' : 'false');
+  }
+
+  function setSegment(pref, value) {
+    var btns = $$('.reader-seg-btn[data-pref="' + pref + '"]');
+    for (var i = 0; i < btns.length; i++) {
+      var pressed = btns[i].getAttribute('data-value') === value;
+      btns[i].setAttribute('aria-pressed', pressed ? 'true' : 'false');
+    }
+  }
+
+  function setSlider(pref, value) {
+    var el = $('input.reader-slider[data-pref="' + pref + '"]');
+    if (!el) return;
+    var out = el.parentNode ? $('output.reader-slider-value', el.parentNode) : null;
+    // `hideDelay` 0 means "never" and the slider cannot express it (min=1).
+    // Do not clobber the stored 0; show it as "Never" instead.
+    if (pref === 'hideDelay' && value === 0) {
+      el.value = String(clampInt(el.min, 1, 10, 1));
+      if (out) out.textContent = 'Never';
+      return;
+    }
+    el.value = String(value);
+    if (out) out.textContent = String(value) + (UNITS[pref] || '');
+  }
+
+  function setHandle(edge, value) {
+    var handle = $('.reader-zone-handle[data-edge="' + edge + '"]');
+    if (!handle) return;
+    handle.style.left = value + '%';
+    handle.setAttribute('aria-valuenow', String(value));
+  }
+
+  /** Map the stored physical boundaries onto the three zone buttons. */
+  function applyZoneWidths() {
+    var zones = document.getElementById('reader-zones');
+    if (!zones) return;
+    var z = effectivePrefs().clickZones;
+    var prev = $('.reader-zone[data-zone="prev"]', zones);
+    var menu = $('.reader-zone[data-zone="menu"]', zones);
+    var next = $('.reader-zone[data-zone="next"]', zones);
+    if (prev) { prev.style.left = '0%'; prev.style.width = z[0] + '%'; }
+    if (menu) { menu.style.left = z[0] + '%'; menu.style.width = (z[1] - z[0]) + '%'; }
+    if (next) { next.style.left = z[1] + '%'; next.style.width = (100 - z[1]) + '%'; }
+  }
+
+  // ============================================================
+  //  PREF WRITE PATH
+  // ============================================================
+
+  /**
+   * Apply a change to the effective prefs object and persist it.
+   *
+   * With "Remember for this series" checked the change lands in the series
+   * override (a full replacement); otherwise it lands in the base blob.
+   * Logged-in users additionally write through to `POST /api/reader-prefs`.
+   *
+   * @param {Object} patch one or more prefs keys in wire (camelCase) shape
+   */
+  function applyPrefPatch(patch) {
+    var prefs = clonePrefs(effectivePrefs());
+    for (var key in patch) {
+      if (Object.prototype.hasOwnProperty.call(patch, key)) prefs[key] = patch[key];
+    }
+    prefs = normalizePrefs(prefs);
+
+    if (state.seriesPrefs) {
+      // The per-series override is device-local for everyone (§3.4); it has no
+      // server key, so only localStorage carries it.
+      state.seriesPrefs = prefs;
+      writeJSON(localStorage, seriesKey(), prefs);
+    } else {
+      state.basePrefs = prefs;
+      if (isLoggedIn()) {
+        // Contract §9: `mangaread_reader_prefs` is the anonymous blob; when
+        // logged in the server blob is authoritative, so write through only.
+        queueServerSave(prefs);
+      } else {
+        writeJSON(localStorage, LS_PREFS, prefs);
       }
     }
-    if (e.key === "ArrowRight" || e.key === "d") {
-      let links = document.querySelectorAll('.reader-nav a[href*="/read/"]');
-      let next = links[links.length - 1];
-      if (next && !next.classList.contains("disabled")) {
-        window.location.href = next.getAttribute("href");
+
+    applyPrefs();
+    if (state.local && state.local.lastUsedLayout !== prefs.layout) {
+      state.local.lastUsedLayout = prefs.layout;
+      saveDeviceLocal();
+    }
+    // A pref change is user input: re-arm the idle timers against the new
+    // delays and reveal the chrome (contract §5.1/§5.2).
+    resetDimTimer();
+    showChrome();
+  }
+
+  function queueServerSave(prefs) {
+    if (state.prefsSaveTimer) clearTimeout(state.prefsSaveTimer);
+    state.prefsSaveTimer = setTimeout(function () {
+      state.prefsSaveTimer = null;
+      try {
+        fetch('/api/reader-prefs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': '*/*' },
+          credentials: 'same-origin',
+          body: JSON.stringify(prefs)
+        })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            if (!data || !data.prefs) return;
+            // The server echoes the normalized blob; adopt it only when no
+            // series override is active, so a local override still wins.
+            if (!state.seriesPrefs) {
+              state.basePrefs = normalizePrefs(data.prefs);
+              applyPrefs();
+            }
+          })
+          .catch(function () { /* localStorage stays authoritative */ });
+      } catch (_) { /* ignore */ }
+    }, 400);
+  }
+
+  /** Public `save` alias; merges when called with no argument. */
+  function savePrefs(patch) {
+    if (patch && typeof patch === 'object') applyPrefPatch(patch);
+    else applyPrefPatch({});
+  }
+
+  /** `#reader-remember-series` writes or deletes the per-series override. */
+  function setRememberSeries(on) {
+    var remember = $('#reader-remember-series');
+    if (on) {
+      var snapshot = clonePrefs(effectivePrefs());
+      state.seriesPrefs = snapshot;
+      writeJSON(localStorage, seriesKey(), snapshot);
+      saveDeviceLocal();
+    } else {
+      state.seriesPrefs = null;
+      removeKey(localStorage, seriesKey());
+    }
+    if (remember) remember.checked = !!on;
+    revealRememberNote(!!on);
+    applyPrefs();
+  }
+
+  /**
+   * Contract §3.4: the "Remembering for <title>" note shows only while the
+   * checkbox is checked. The server renders it unconditionally. `hidden`
+   * cannot be used here: `reader.css:524` sets `display: block`, which
+   * outranks the UA `[hidden] { display: none }` rule, so the inline
+   * `display` is toggled instead.
+   */
+  function revealRememberNote(on) {
+    var note = $('.reader-series-remember-note');
+    if (note) note.style.display = on ? '' : 'none';
+  }
+
+  // ============================================================
+  //  CONTROLS SHEET (contract §3)
+  // ============================================================
+
+  var FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]),' +
+    ' select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  function openSheet() {
+    state.sheetOpen = true;
+    showChrome();
+    var sheet = document.getElementById('reader-sheet');
+    if (sheet) sheet.hidden = false;
+    var btn = document.getElementById('reader-settings-btn');
+    if (btn) btn.setAttribute('aria-expanded', 'true');
+    // Move focus into the dialog so the trap is engaged and the reader lands
+    // on a control, not on the page behind it.
+    var close = $('.reader-sheet-close');
+    if (close) close.focus();
+    syncControls();
+  }
+
+  function closeSheet() {
+    state.sheetOpen = false;
+    var sheet = document.getElementById('reader-sheet');
+    if (sheet) sheet.hidden = true;
+    var btn = document.getElementById('reader-settings-btn');
+    if (btn) {
+      btn.setAttribute('aria-expanded', 'false');
+      // Contract §8.2: focus returns to the settings button on close.
+      btn.focus();
+    }
+    // The idle timers were suppressed while the sheet was open; re-arm them.
+    resetDimTimer();
+  }
+
+  function toggleSheet() {
+    if (state.sheetOpen) closeSheet();
+    else openSheet();
+  }
+
+  /** Keep Tab inside `.reader-sheet-panel` while the sheet is open (§8.2). */
+  function trapFocus(e) {
+    if (!state.sheetOpen) return;
+    var panel = $('.reader-sheet-panel');
+    if (!panel) return;
+    var items = $$(FOCUSABLE, panel).filter(function (el) {
+      return el.offsetParent !== null || el === document.activeElement;
+    });
+    if (items.length === 0) return;
+    var first = items[0];
+    var last = items[items.length - 1];
+    if (e.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  function selectSheetGroup(group) {
+    var tabs = $$('.reader-sheet-tab');
+    var groups = $$('.reader-sheet-group');
+    var i;
+    for (i = 0; i < tabs.length; i++) {
+      tabs[i].setAttribute('aria-selected', tabs[i].getAttribute('data-group') === group ? 'true' : 'false');
+    }
+    for (i = 0; i < groups.length; i++) {
+      groups[i].hidden = window.innerWidth < 768 && groups[i].getAttribute('data-group') !== group;
+    }
+  }
+
+  /**
+   * Wire one `[data-pref]` control to the prefs write path.
+   * Every control carrying `data-pref` is handled here; that is the test.
+   */
+  function bindPrefControl(el) {
+    var pref = el.getAttribute('data-pref');
+    if (!pref) return;
+
+    if (el.classList.contains('reader-seg-btn')) {
+      el.addEventListener('click', function () {
+        if (el.disabled) return;
+        var value = el.getAttribute('data-value');
+        var patch = {};
+        patch[pref] = BOOL_PREFS[pref] ? (value === 'on') : value;
+        if (pref === 'dimDelay') patch[pref] = parseInt(value, 10) || 0;
+        if (pref === 'layout' && value === 'double' && window.innerWidth < 768) return;
+        if (el.getAttribute('aria-pressed') === 'true' && !BOOL_PREFS[pref]) return;
+        applyPrefPatch(patch);
+      });
+      return;
+    }
+
+    if (el.classList.contains('reader-slider')) {
+      el.addEventListener('input', function () {
+        var value = parseFloat(el.value);
+        var patch = {};
+        patch[pref] = pref === 'dimOpacity' ? value : Math.round(value);
+        applyPrefPatch(patch);
+      });
+      return;
+    }
+  }
+
+  function bindPrefControls() {
+    var controls = $$('[data-pref]');
+    for (var i = 0; i < controls.length; i++) {
+      if (controls[i].id === 'reader-zone-editor') continue; // handled by the zone editor
+      if (controls[i].classList.contains('reader-keybind-row')) continue; // handled by the keymap UI
+      bindPrefControl(controls[i]);
+    }
+  }
+
+  function initSheet() {
+    var btn = document.getElementById('reader-settings-btn');
+    if (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        toggleSheet();
+      });
+    }
+
+    var focusBtn = document.getElementById('reader-focus-btn');
+    if (focusBtn) {
+      focusBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        toggleFocus();
+      });
+    }
+
+    // Backdrop, close button, and any `[data-r-close]` close the surface it
+    // belongs to (sheet by default; the notes panel/composer handle their own).
+    var closers = $$('[data-r-close]');
+    for (var i = 0; i < closers.length; i++) {
+      closers[i].addEventListener('click', function (e) {
+        e.stopPropagation();
+        var host = e.currentTarget.closest('#reader-notes-panel');
+        if (host) { closeNotesPanel(); return; }
+        if (e.currentTarget.closest('#reader-note-composer')) { closeComposer(false); return; }
+        closeSheet();
+      });
+    }
+
+    var tabs = $$('.reader-sheet-tab');
+    for (var t = 0; t < tabs.length; t++) {
+      tabs[t].addEventListener('click', function (e) {
+        selectSheetGroup(e.currentTarget.getAttribute('data-group'));
+      });
+    }
+    selectSheetGroup('layout');
+
+    var remember = $('#reader-remember-series');
+    if (remember) {
+      remember.addEventListener('change', function () { setRememberSeries(remember.checked); });
+    }
+
+    // Trap Tab inside the dialog and route the sheet's own `[data-action]`
+    // affordance (the focus-mode toggle) through the action dispatch.
+    // `.reader-keybind-row` also carries `data-action`, but it is a remap
+    // row, not a command — clicking it must never run the action.
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Tab') trapFocus(e);
+    });
+    var actionEls = $$('.reader-sheet-group [data-action]');
+    for (var ai = 0; ai < actionEls.length; ai++) {
+      if (actionEls[ai].classList.contains('reader-keybind-row')) continue;
+      actionEls[ai].addEventListener('click', function (e) {
+        e.stopPropagation();
+        runAction(e.currentTarget.getAttribute('data-action'));
+      });
+    }
+
+    revealRememberNote(!!state.seriesPrefs);
+    bindPrefControls();
+  }
+
+  // ============================================================
+  //  NAVIGATOR (contract §1)
+  // ============================================================
+
+  state.pageEls = [];
+  state.pageByIndex = {};
+
+  function indexPages() {
+    state.pageEls = $$('.reader-page[data-page-idx]');
+    state.pageEls.sort(function (a, b) {
+      return parseInt(a.getAttribute('data-page-idx'), 10) - parseInt(b.getAttribute('data-page-idx'), 10);
+    });
+    state.pageByIndex = {};
+    for (var i = 0; i < state.pageEls.length; i++) {
+      state.pageByIndex[state.pageEls[i].getAttribute('data-page-idx')] = state.pageEls[i];
+    }
+    if (!state.totalPages) state.totalPages = state.pageEls.length;
+  }
+
+  function pageElByIndex(idx) {
+    return state.pageByIndex[String(idx)] || null;
+  }
+
+  /** First page index of the spread containing `idx` (contract §1.1). */
+  function spreadStart(idx, p) {
+    if (p.layout !== 'double') return idx;
+    if (p.doubleCover) {
+      if (idx <= 1) return 1;
+      return idx - ((idx - 2) % 2);
+    }
+    return idx - ((idx - 1) % 2);
+  }
+
+  function lastSpreadIndex(p) {
+    var last = state.totalPages;
+    if (p.layout !== 'double' || last <= 1) return last;
+    return spreadStart(last, p);
+  }
+
+  function visibleIndexes(p) {
+    if (p.layout === 'single' || p.layout === 'vertical') return [state.currentPage];
+    if (p.layout === 'double') {
+      var start = spreadStart(state.currentPage, p);
+      // The cover (page 1 when `doubleCover` is set) renders alone (§1.1).
+      if (p.doubleCover && start === 1) return [1];
+      var out = [start];
+      if (start + 1 <= state.totalPages) out.push(start + 1);
+      return out;
+    }
+    return null; // strip: everything is visible
+  }
+
+  function renderLayout() {
+    if (!state.isReader) return;
+    var p = effectivePrefs();
+    syncZoneMode(p.layout);
+
+    if (p.layout === 'strip') {
+      for (var s = 0; s < state.pageEls.length; s++) state.pageEls[s].hidden = false;
+      updateIndicator();
+      return;
+    }
+
+    var visible = visibleIndexes(p);
+    for (var i = 0; i < state.pageEls.length; i++) {
+      var idx = parseInt(state.pageEls[i].getAttribute('data-page-idx'), 10);
+      state.pageEls[i].hidden = visible.indexOf(idx) < 0;
+    }
+    updateIndicator();
+  }
+
+  /** `#reader-zones[data-r-zone-mode]` — strip has no tap zones (§4.1). */
+  function syncZoneMode(layout) {
+    var zones = document.getElementById('reader-zones');
+    if (!zones) return;
+    zones.setAttribute('data-r-zone-mode', layout === 'strip' ? 'off' : 'three');
+    var prev = $('.reader-zone[data-zone="prev"]', zones);
+    var next = $('.reader-zone[data-zone="next"]', zones);
+    var rtl = effectivePrefs().direction === 'rtl';
+    if (prev) prev.setAttribute('aria-label', rtl ? 'Next page' : 'Previous page');
+    if (next) next.setAttribute('aria-label', rtl ? 'Previous page' : 'Next page');
+  }
+
+  function scrollPageIntoView(el, block) {
+    if (!el) return;
+    var p = effectivePrefs();
+    if (p.layout === 'vertical') {
+      var container = document.getElementById('reader-images');
+      if (container && container.scrollTo) {
+        // Snap container: scroll within `#reader-images`, not the document.
+        container.scrollTo({ top: el.offsetTop, behavior: 'auto' });
+        return;
       }
     }
-    if (e.key === "Escape" || e.key === "t") {
-      nav.classList.toggle("visible");
-      if (nav.classList.contains("visible")) {
-        clearTimeout(hideTimer);
+    try {
+      el.scrollIntoView({ behavior: 'auto', block: block || 'start' });
+    } catch (_) {
+      el.scrollIntoView();
+    }
+  }
+
+  function updateIndicator() {
+    var text = state.currentPage + ' / ' + state.totalPages;
+    var indicator = document.getElementById('reader-page-indicator');
+    if (indicator) indicator.textContent = text;
+    var hud = document.getElementById('reader-hud');
+    if (hud) hud.textContent = text;
+  }
+
+  /**
+   * Move to a page. In `strip` this only scrolls; in the paged layouts it also
+   * swaps which pages are unhidden (contract §1.1).
+   */
+  function goToPage(idx) {
+    if (!state.isReader) return;
+    var total = state.totalPages || state.pageEls.length;
+    if (total < 1) return;
+    idx = clampInt(idx, 1, total, state.currentPage);
+    // Any `goToPage` call is an explicit position: a resume target or a user
+    // step, either of which is a legitimate place to persist on unload.
+    state.navigated = true;
+    state.currentPage = idx;
+
+    var p = effectivePrefs();
+    if (p.layout !== 'strip') renderLayout();
+    scrollPageIntoView(pageElByIndex(idx) || pageElByIndex(spreadStart(idx, p)), 'start');
+    updateIndicator();
+    rememberScrollPosition();
+    maybeEndOfChapter();
+    prefetchAround(idx);
+    // A page step is a progress change; the debounced write path keeps
+    // `MangaSync.pushProgress` firing from exactly one place.
+    scheduleProgress();
+  }
+
+  /** Contract §1.1 "current page" for the scroll-driven strip. */
+  function computeStripPage() {
+    var vh = window.innerHeight || 1;
+    var best = state.currentPage;
+    var bestTop = Infinity;
+    for (var i = 0; i < state.pageEls.length; i++) {
+      var rect = state.pageEls[i].getBoundingClientRect();
+      var visible = Math.min(rect.bottom, vh) - Math.max(rect.top, 0);
+      if (visible >= vh * 0.5 && rect.top < bestTop) {
+        bestTop = rect.top;
+        best = parseInt(state.pageEls[i].getAttribute('data-page-idx'), 10);
       }
     }
-  });
+    return best;
+  }
+
+  function syncStripPosition() {
+    state.currentPage = computeStripPage();
+    state.navigated = true;
+    updateIndicator();
+    maybeAutoNextStrip();
+  }
+
+  /** Advance/retreat by one page-step, honouring the chapter boundaries. */
+  function step(delta) {
+    var p = effectivePrefs();
+    var size = p.layout === 'double' ? 2 : 1;
+    var target = state.currentPage + (delta > 0 ? size : -size);
+    if (p.layout === 'double') target = spreadStart(target, p);
+    navigateTo(target, delta > 0);
+  }
+
+  function navigateTo(target, forward) {
+    var p = effectivePrefs();
+    var total = state.totalPages;
+
+    if (target < 1) {
+      // Prev at page 1 → previous chapter at its LAST page, auto-prev only.
+      // The cross-page handoff rides sessionStorage because the destination is
+      // a server-rendered document; `location.assign` never mutates history.
+      if (p.autoPrev && state.prevUrl) {
+        writeString(sessionStorage, SS_OPEN_LAST, '1');
+        location.assign(state.prevUrl);
+        return;
+      }
+      nudge('prev');
+      return;
+    }
+
+    if (target > total || (p.layout === 'double' && target > lastSpreadIndex(p))) {
+      if (forward) {
+        // Contract §1.1: the end-of-chapter behaviour is the nav overlay
+        // (§5.4), and it is revealed the moment the last page is reached.
+        // Chapter advance is "automatic only when auto-next is on" (§1.2);
+        // the explicit path is the overlay's next button or `chapter.next`.
+        if (state.nextUrl && p.autoNext) startCountdown();
+        revealChapterNav();
+      } else {
+        nudge();
+      }
+      return;
+    }
+
+    goToPage(target);
+  }
+
+  /**
+   * Boundary no-op. Contract §1.2 asks for a "nudge animation"; the shipped
+   * stylesheet defines no hook for it and animation is outside this module's
+   * scope, so the action is correctly suppressed with no visual. Reported as a
+   * contract gap rather than inventing a class name.
+   */
+  function nudge() {
+    /* intentionally empty */
+  }
+
+  function prefetchAround(idx) {
+    var images = [];
+    for (var i = idx; i < idx + 3 && i <= state.totalPages; i++) {
+      var el = pageElByIndex(i);
+      var img = el ? $('img', el) : null;
+      if (img && img.getAttribute('src')) images.push(img.getAttribute('src'));
+    }
+    for (var j = 0; j < images.length; j++) {
+      try { fetch(images[j], { mode: 'no-cors' }); } catch (_) { /* warm-up only */ }
+    }
+  }
+
+  // ============================================================
+  //  TAP ZONES (contract §4.1)
+  // ============================================================
+
+  function initZones() {
+    var zones = document.getElementById('reader-zones');
+    if (!zones) return;
+    var btns = $$('.reader-zone', zones);
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].addEventListener('click', function (e) {
+        e.stopPropagation();
+        // A long-press that opened the composer must not also toggle the sheet.
+        if (state.longPressFired) { state.longPressFired = false; return; }
+        var zone = e.currentTarget.getAttribute('data-zone');
+        if (zone === 'menu') { toggleSheet(); return; }
+        var rtl = effectivePrefs().direction === 'rtl';
+        // Physical zone → semantic action; `data-zone` is a side, the action
+        // is derived from direction so RTL mirrors automatically (§1.2).
+        var forward = rtl ? (zone === 'prev') : (zone === 'next');
+        step(forward ? 1 : -1);
+        showChrome();
+      });
+    }
+  }
+
+  // ============================================================
+  //  ZONE EDITOR (contract §4.2)
+  // ============================================================
+
+  function initZoneEditor() {
+    var editor = document.getElementById('reader-zone-editor');
+    if (!editor) return;
+    var handles = $$('.reader-zone-handle', editor);
+    var dragging = null;
+
+    function boundaries() {
+      return effectivePrefs().clickZones.slice();
+    }
+
+    function commit(a, b, edge) {
+      a = clampInt(a, 10, 90, 30);
+      b = clampInt(b, 10, 90, 70);
+      if (edge === 'left') { if (b - a < 10) a = b - 10; }
+      else { if (b - a < 10) b = a + 10; }
+      a = clampInt(a, 10, 80, 10);
+      b = clampInt(b, a + 10, 90, 20);
+      applyPrefPatch({ clickZones: [a, b] });
+      setHandle('left', a);
+      setHandle('right', b);
+    }
+
+    function percentFromEvent(e) {
+      var rect = editor.getBoundingClientRect();
+      if (!rect.width) return 0;
+      return Math.round(((e.clientX - rect.left) / rect.width) * 100);
+    }
+
+    for (var i = 0; i < handles.length; i++) {
+      (function (handle) {
+        var edge = handle.getAttribute('data-edge');
+
+        handle.addEventListener('pointerdown', function (e) {
+          dragging = edge;
+          handle.setPointerCapture && handle.setPointerCapture(e.pointerId);
+          e.preventDefault();
+        });
+        handle.addEventListener('pointermove', function (e) {
+          if (dragging !== edge) return;
+          var z = boundaries();
+          var v = percentFromEvent(e);
+          if (edge === 'left') commit(v, z[1], 'left');
+          else commit(z[0], v, 'right');
+        });
+        handle.addEventListener('pointerup', function () { dragging = null; });
+        handle.addEventListener('pointercancel', function () { dragging = null; });
+
+        handle.addEventListener('keydown', function (e) {
+          var z = boundaries();
+          var a = z[0];
+          var b = z[1];
+          if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+            var d = e.key === 'ArrowLeft' ? -2 : 2;
+            if (edge === 'left') commit(a + d, b, 'left');
+            else commit(a, b + d, 'right');
+          } else if (e.key === 'Home') {
+            commit(15, b, 'left');
+          } else if (e.key === 'End') {
+            commit(a, 85, 'right');
+          } else {
+            return;
+          }
+          e.preventDefault();
+        });
+      })(handles[i]);
+    }
+  }
+
+  // ============================================================
+  //  KEYBINDS + REMAP (contract §4.3)
+  // ============================================================
+
+  function comboFromEvent(e) {
+    var parts = [];
+    if (e.ctrlKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    if (e.metaKey) parts.push('Meta');
+    parts.push(e.code || e.key);
+    return parts.join('+');
+  }
+
+  function rebuildKeymap() {
+    var kb = effectivePrefs().keybinds;
+    var map = {};
+    for (var a = 0; a < ACTION_IDS.length; a++) {
+      var action = ACTION_IDS[a];
+      var keys = kb[action] || [];
+      for (var k = 0; k < keys.length; k++) map[keys[k]] = action;
+    }
+    state.keymap = map;
+  }
+
+  function isEditable(el) {
+    if (!el) return false;
+    var tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
+  }
+
+  function findCollision(combo, exceptAction, exceptIndex) {
+    var kb = effectivePrefs().keybinds;
+    for (var a = 0; a < ACTION_IDS.length; a++) {
+      var action = ACTION_IDS[a];
+      var keys = kb[action] || [];
+      for (var k = 0; k < keys.length; k++) {
+        if (keys[k] !== combo) continue;
+        if (action === exceptAction && k === exceptIndex) continue;
+        return action;
+      }
+    }
+    return null;
+  }
+
+  function updateKeybindRow(action) {
+    var row = $('.reader-keybind-row[data-action="' + action + '"]');
+    if (!row) return;
+    var keys = effectivePrefs().keybinds[action] || [];
+    var existing = $$('.reader-keybind-key', row);
+    // A key button may be in capture mode; keep its label until capture ends.
+    for (var i = 0; i < existing.length; i++) {
+      if (existing[i].getAttribute('data-capture-key') === '1') continue;
+      if (i < keys.length) {
+        existing[i].textContent = keys[i];
+        existing[i].setAttribute('data-key-value', keys[i]);
+        existing[i].setAttribute('data-key-index', String(i));
+        // `hidden` is not enough: `.reader-keybind-key` sets
+        // `display: inline-flex`, which outranks the UA `[hidden]` rule.
+        existing[i].style.display = '';
+      } else {
+        existing[i].style.display = 'none';
+      }
+    }
+  }
+
+  function renderKeybinds() {
+    for (var i = 0; i < ACTION_IDS.length; i++) updateKeybindRow(ACTION_IDS[i]);
+    rebuildKeymap();
+  }
+
+  function setKeybindError(action, message) {
+    var row = $('.reader-keybind-row[data-action="' + action + '"]');
+    if (!row) return;
+    var msg = $('.reader-keybind-error', row);
+    if (!msg) {
+      msg = document.createElement('span');
+      msg.className = 'reader-keybind-error';
+      msg.setAttribute('role', 'alert');
+      row.appendChild(msg);
+    }
+    msg.textContent = message || '';
+    msg.hidden = !message;
+  }
+
+  function captureKey(action, index, button) {
+    // Cancel any other capture first.
+    if (state.capture) endCapture(false);
+    state.capture = { action: action, index: index, button: button };
+    button.setAttribute('data-capture-key', '1');
+    button.textContent = 'Press a key…';
+    var row = button.closest('.reader-keybind-row');
+    if (row) row.setAttribute('data-capture', '1');
+  }
+
+  function endCapture(restore) {
+    if (!state.capture) return;
+    var c = state.capture;
+    var row = c.button.closest('.reader-keybind-row');
+    if (row) row.removeAttribute('data-capture');
+    c.button.removeAttribute('data-capture-key');
+    if (restore) updateKeybindRow(c.action);
+    state.capture = null;
+  }
+
+  function commitCapture(combo) {
+    var c = state.capture;
+    if (!c) return;
+    var collision = findCollision(combo, c.action, c.index);
+    if (collision) {
+      setKeybindError(c.action, 'Already used by ' + collision + '.');
+      endCapture(true);
+      return;
+    }
+    setKeybindError(c.action, '');
+    var kb = cloneKeybinds();
+    kb[c.action][c.index] = combo;
+    endCapture(false);
+    applyPrefPatch({ keybinds: kb });
+  }
+
+  function cloneKeybinds() {
+    var src = effectivePrefs().keybinds;
+    var out = {};
+    for (var a = 0; a < ACTION_IDS.length; a++) out[ACTION_IDS[a]] = (src[ACTION_IDS[a]] || []).slice();
+    return out;
+  }
+
+  /** Capture-mode keys: Escape cancels, Backspace deletes, anything binds. */
+  function handleCaptureKey(e) {
+    var c = state.capture;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setKeybindError(c.action, '');
+      endCapture(true);
+      return;
+    }
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      var kb = cloneKeybinds();
+      if (kb[c.action].length > 1) {
+        kb[c.action].splice(c.index, 1);
+        endCapture(false);
+        applyPrefPatch({ keybinds: kb });
+      } else {
+        setKeybindError(c.action, 'Keep at least one binding.');
+        endCapture(true);
+      }
+      return;
+    }
+    if (e.key === 'Tab') return; // let focus move; do not bind Tab
+    e.preventDefault();
+    e.stopPropagation();
+    commitCapture(comboFromEvent(e));
+  }
+
+  function initKeybinds() {
+    var rows = $$('.reader-keybind-row');
+    for (var i = 0; i < rows.length; i++) {
+      (function (row) {
+        var action = row.getAttribute('data-action');
+        var keys = $$('.reader-keybind-key', row);
+        for (var k = 0; k < keys.length; k++) {
+          (function (btn, ki) {
+            btn.addEventListener('click', function () {
+              captureKey(action, ki, btn);
+            });
+          })(keys[k], k);
+        }
+        var reset = $('.reader-keybind-reset', row);
+        if (reset) {
+          reset.addEventListener('click', function () {
+            var kb = cloneKeybinds();
+            kb[action] = DEFAULT_KEYBINDS[action].slice();
+            setKeybindError(action, '');
+            applyPrefPatch({ keybinds: kb });
+          });
+        }
+      })(rows[i]);
+    }
+    rebuildKeymap();
+  }
+
+  // ============================================================
+  //  INPUT (keyboard handler, swipe, auto-next) — contract §4
+  // ============================================================
+
+  function runAction(action) {
+    switch (action) {
+      case 'page.next': step(1); break;
+      case 'page.prev': step(-1); break;
+      case 'chapter.next': if (state.nextUrl) location.assign(state.nextUrl); break;
+      case 'chapter.prev': if (state.prevUrl) location.assign(state.prevUrl); break;
+      case 'ui.toggle': toggleSheet(); break;
+      case 'ui.focus': toggleFocus(); break;
+      case 'ui.fitCycle': cycleFit(); break;
+      case 'layout.cycle': cycleLayout(); break;
+      case 'note.add': openComposer(); break;
+      default: break;
+    }
+  }
+
+  /** Cycle fit: none → height → screen (contract §4.3). */
+  function cycleFit() {
+    var order = ['', 'height', 'screen'];
+    var next = order[(order.indexOf(effectivePrefs().fit) + 1) % order.length];
+    applyPrefPatch({ fit: next });
+  }
+
+  function cycleLayout() {
+    var next = LAYOUTS[(LAYOUTS.indexOf(effectivePrefs().layout) + 1) % LAYOUTS.length];
+    if (next === 'double' && window.innerWidth < 768) {
+      next = LAYOUTS[(LAYOUTS.indexOf(next) + 1) % LAYOUTS.length];
+    }
+    applyPrefPatch({ layout: next });
+  }
+
+  function onKeydown(e) {
+    if (state.capture) { handleCaptureKey(e); return; }
+    if (isEditable(e.target)) return;
+
+    if (e.key === 'Escape') {
+      if (state.composerOpen) { e.preventDefault(); closeComposer(false); return; }
+      if (notesPanelOpen()) { e.preventDefault(); closeNotesPanel(); return; }
+      if (state.sheetOpen) { e.preventDefault(); closeSheet(); return; }
+      return;
+    }
+
+    // The keymap lookup is by `code` (contract §4.3): layout-independent.
+    var combo = comboFromEvent(e);
+    var action = state.keymap && state.keymap[combo];
+    // A few legacy bindings are stored by `key` (e.g. "Space" parses as
+    // `code: "Space"`, but "PageUp"/"PageDown" also work either way); fall back
+    // to the raw key so a remap typed as a key name still fires.
+    if (!action && state.keymap && state.keymap[e.key]) action = state.keymap[e.key];
+    if (!action) return;
+    e.preventDefault();
+    runAction(action);
+    showChrome();
+  }
+
+  function initSwipe() {
+    var startX = 0;
+    var startY = 0;
+    var tracking = false;
+
+    document.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 1) { tracking = false; return; }
+      if (state.sheetOpen || state.composerOpen || notesPanelOpen()) { tracking = false; return; }
+      if (isEditable(e.target)) { tracking = false; return; }
+      // Vertical layouts are scroll-driven; a horizontal swipe has no page to
+      // step (§4.4).
+      var layout = effectivePrefs().layout;
+      if (layout === 'strip' || layout === 'vertical') { tracking = false; return; }
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      tracking = true;
+    }, { passive: true });
+
+    document.addEventListener('touchend', function (e) {
+      if (!tracking || !e.changedTouches.length) return;
+      tracking = false;
+      var dx = e.changedTouches[0].clientX - startX;
+      var dy = e.changedTouches[0].clientY - startY;
+      var threshold = effectivePrefs().swipeThreshold;
+      // Distance only, never velocity (§4.4), and never on a vertical gesture.
+      if (Math.abs(dx) < threshold || Math.abs(dx) < Math.abs(dy)) return;
+      var rtl = effectivePrefs().direction === 'rtl';
+      var forward = rtl ? dx > 0 : dx < 0;
+      step(forward ? 1 : -1);
+      showChrome();
+    }, { passive: true });
+  }
+
+  function autoNextCancelled() {
+    return readString(sessionStorage, SS_AUTONEXT_PREFIX + state.chapterId) === '1';
+  }
+
+  function startCountdown() {
+    if (state.autoNextTimer || autoNextCancelled()) return;
+    var el = document.getElementById('reader-countdown');
+    if (!el || !state.nextUrl) return;
+    el.hidden = false;
+    state.countdownValue = 3;
+    var secs = $('.reader-countdown-secs', el);
+    if (secs) secs.textContent = '3';
+    state.autoNextTimer = setInterval(function () {
+      state.countdownValue -= 1;
+      if (state.countdownValue <= 0) {
+        clearInterval(state.autoNextTimer);
+        state.autoNextTimer = null;
+        location.assign(state.nextUrl);
+        return;
+      }
+      if (secs) secs.textContent = String(state.countdownValue);
+    }, 1000);
+  }
+
+  function cancelAutoNext() {
+    if (state.autoNextTimer) {
+      clearInterval(state.autoNextTimer);
+      state.autoNextTimer = null;
+    }
+    var el = document.getElementById('reader-countdown');
+    if (el) el.hidden = true;
+    writeString(sessionStorage, SS_AUTONEXT_PREFIX + state.chapterId, '1');
+  }
+
+  function maybeAutoNextStrip() {
+    var p = effectivePrefs();
+    if (!p.autoNext || !state.nextUrl) return;
+    if (autoNextCancelled()) return;
+    var last = pageElByIndex(state.totalPages);
+    if (!last) return;
+    var rect = last.getBoundingClientRect();
+    var vh = window.innerHeight || 1;
+    var fullyVisible = rect.top >= 0 && rect.bottom <= vh + 1;
+    if (fullyVisible) {
+      if (!state.lastStripEndAt) state.lastStripEndAt = Date.now();
+      else if (Date.now() - state.lastStripEndAt >= 1500) startCountdown();
+    } else {
+      state.lastStripEndAt = 0;
+    }
+  }
+
+  function maybeEndOfChapter() {
+    var p = effectivePrefs();
+    var boundary = p.layout === 'double' ? lastSpreadIndex(p) : state.totalPages;
+    if (state.currentPage >= boundary) {
+      if (p.layout !== 'strip') revealChapterNav();
+    } else if (p.layout !== 'strip') {
+      hideChapterNav();
+    }
+  }
+
+  function revealChapterNav() {
+    var nav = document.getElementById('reader-chapter-nav');
+    if (nav) nav.hidden = false;
+  }
+
+  function hideChapterNav() {
+    var nav = document.getElementById('reader-chapter-nav');
+    if (nav) nav.hidden = true;
+  }
+
+  function initChapterNav() {
+    var nav = document.getElementById('reader-chapter-nav');
+    if (!nav) return;
+    var nextBtn = $('.reader-nav-btn[data-action="next"]', nav);
+    if (nextBtn) {
+      nextBtn.addEventListener('click', function () {
+        if (state.nextUrl) location.assign(state.nextUrl);
+      });
+    }
+  }
+
+  function initPrefetch() {
+    var items = $$('.reader-nextup-prefetch');
+    for (var i = 0; i < items.length; i++) {
+      (function (btn) {
+        btn.addEventListener('click', function () {
+          if (btn.getAttribute('data-prefetch-state') === 'prefetching') return;
+          btn.setAttribute('data-prefetch-state', 'prefetching');
+          // Warm the browser cache; no proxy exists, so this is honest about
+          // being a warm-up, not an offline copy (contract §5.5).
+          setTimeout(function () { btn.setAttribute('data-prefetch-state', 'ready'); }, 600);
+        });
+      })(items[i]);
+    }
+  }
+
+  // ============================================================
+  //  COMFORT (contract §5)
+  // ============================================================
+
+  function showChrome() {
+    var topbar = document.getElementById('reader-topbar');
+    var hud = document.getElementById('reader-hud');
+    if (topbar) topbar.classList.add('visible');
+    if (hud) hud.classList.add('visible');
+    if (state.hideTimer) clearTimeout(state.hideTimer);
+    var delay = effectivePrefs().hideDelay;
+    if (delay === 0) return; // 0 = keep the chrome permanently visible
+    state.hideTimer = setTimeout(hideChrome, delay * 1000);
+  }
+
+  function hideChrome() {
+    var topbar = document.getElementById('reader-topbar');
+    var hud = document.getElementById('reader-hud');
+    if (topbar) topbar.classList.remove('visible');
+    if (hud) hud.classList.remove('visible');
+  }
+
+  /**
+   * Apply the idle dim state. `--r-dim` is the overlay's opacity target
+   * (contract §2.1) and the stylesheet reads it unconditionally, so it is
+   * zeroed on restore or the overlay would stay tinted.
+   */
+  function setDim(on) {
+    var body = document.body;
+    if (!body) return;
+    state.dimmed = !!on;
+    if (on) {
+      body.style.setProperty('--r-dim', String(effectivePrefs().dimOpacity));
+      body.setAttribute('data-r-dim', '1');
+    } else {
+      body.style.setProperty('--r-dim', '0');
+      body.removeAttribute('data-r-dim');
+    }
+  }
+
+  function resetDimTimer() {
+    if (state.dimTimer) clearTimeout(state.dimTimer);
+    if (state.dimmed) setDim(false);
+    var p = effectivePrefs();
+    if (!p.dimDelay) return; // 0 = off
+    if (state.sheetOpen || state.composerOpen || notesPanelOpen()) return;
+    state.dimTimer = setTimeout(function () {
+      setDim(true);
+    }, p.dimDelay * 1000);
+  }
+
+  function toggleFocus() {
+    if (!document.body) return;
+    var on = document.body.getAttribute('data-r-focus') !== '1';
+    if (on) document.body.setAttribute('data-r-focus', '1');
+    else document.body.removeAttribute('data-r-focus');
+    showChrome();
+  }
+
+  /**
+   * Resume badge (§5.5). The server renders it hidden; JS reveals it when the
+   * resume page is past page 1. The page comes from `data-prime-idx` / the
+   * server `#resume-target`, falling back to the local read state — the store
+   * `app.js`'s former scroll-to-resume read, so resume survives a reload.
+   *
+   * `data-prime-idx` (0 = none) is an explicit jump-on-load; the badge is the
+   * affordance for the implicit local resume.
+   */
+  function initResumeBadge() {
+    var badge = document.getElementById('reader-resume-badge');
+    if (!badge) return;
+
+    var resumeTarget = document.getElementById('resume-target');
+    var serverPage = resumeTarget ? parseInt(resumeTarget.getAttribute('data-page') || '0', 10) : 0;
+    if (resumeTarget && serverPage > 0) resumeTarget.setAttribute('data-page', String(serverPage));
+
+    // Explicit prime wins and jumps immediately; no badge is shown because the
+    // reader is already at the requested page.
+    if (state.primeIdx > 1 && state.primeIdx <= state.totalPages) {
+      state.resumePage = state.primeIdx;
+      goToPage(state.primeIdx);
+      return;
+    }
+
+    var saved = serverPage > 1 ? serverPage : 0;
+    if (!saved && window.MangaReadState && state.seriesId) {
+      var savedState = window.MangaReadState.getChapterStatus(state.seriesId, state.chapterId);
+      if (savedState && savedState.page > 1) saved = parseInt(savedState.page, 10) || 0;
+    }
+    if (saved > state.totalPages) saved = state.totalPages;
+    if (saved <= 1) { hideResumeBadge(); return; }
+
+    state.resumePage = saved;
+    badge.style.display = '';
+    badge.hidden = false;
+    badge.setAttribute('data-page', String(saved));
+    badge.textContent = 'Resume p. ' + saved + suffixForLastLayout();
+    badge.addEventListener('click', function (e) {
+      e.stopPropagation();
+      badge.hidden = true;
+      // `.reader-resume-badge` sets `display: inline-flex` (reader.css:1012),
+      // which outranks the UA `[hidden]` rule, so hide it explicitly.
+      badge.style.display = 'none';
+      if (state.local) { state.local.resumeBadgeSeen = true; saveDeviceLocal(); }
+      goToPage(saved);
+    });
+  }
+
+  /** Hide the server-rendered resume badge when there is nothing to resume. */
+  function hideResumeBadge() {
+    var badge = document.getElementById('reader-resume-badge');
+    if (badge) badge.style.display = 'none';
+  }
+
+  /**
+   * A one-shot flag set before an auto-prev chapter hop. It lands the reader
+   * on the destination chapter's last page, which is the whole point of
+   * "prev at page 1" (contract §1.2).
+   */
+  function consumeOpenLast() {
+    if (readString(sessionStorage, SS_OPEN_LAST) !== '1') return;
+    removeKey(sessionStorage, SS_OPEN_LAST);
+    goToPage(state.totalPages);
+  }
+
+  /** The anon → logged-in merge hint from contract §5.5. */
+  function suffixForLastLayout() {
+    var last = state.local && state.local.lastUsedLayout;
+    if (last && LAYOUTS.indexOf(last) >= 0 && !state.seriesPrefs && last !== effectivePrefs().layout) {
+      return ' · last read in ' + last;
+    }
+    return '';
+  }
+
+  function initHint() {
+    var hint = document.getElementById('reader-hint');
+    if (!hint) return;
+    if (state.local && state.local.hintSeen) {
+      hint.classList.add('hidden');
+      return;
+    }
+    function dismiss() {
+      hint.classList.add('hidden');
+      if (state.local) { state.local.hintSeen = true; saveDeviceLocal(); }
+      document.removeEventListener('click', dismiss);
+      document.removeEventListener('keydown', dismiss);
+    }
+    document.addEventListener('click', dismiss);
+    document.addEventListener('keydown', dismiss);
+  }
+
+  function bindComfortKeys() {
+    // Any interaction resets the hide/dim timers and reveals chrome.
+    document.addEventListener('click', function () { showChrome(); resetDimTimer(); });
+    document.addEventListener('keydown', function () { showChrome(); resetDimTimer(); });
+    window.addEventListener('mousemove', function () { showChrome(); resetDimTimer(); });
+  }
+
+  function initCountdownCancel() {
+    var el = document.getElementById('reader-countdown');
+    if (!el) return;
+    var btn = $('button', el);
+    if (btn) btn.addEventListener('click', function (e) { e.stopPropagation(); cancelAutoNext(); });
+  }
+
+  // ============================================================
+  //  NOTES (contract §6)
+  // ============================================================
+
+  state.composerOpen = false;
+
+  function notesPanelOpen() {
+    var panel = document.getElementById('reader-notes-panel');
+    return !!panel && !panel.hidden;
+  }
+
+  function openNotesPanel() {
+    var panel = document.getElementById('reader-notes-panel');
+    if (!panel) return;
+    panel.hidden = false;
+    renderNotesPanel();
+    showChrome();
+    var close = $('.reader-notes-close', panel);
+    if (close) close.focus();
+  }
+
+  function closeNotesPanel() {
+    var panel = document.getElementById('reader-notes-panel');
+    if (panel) panel.hidden = true;
+    resetDimTimer();
+  }
+
+  function notesForPage(idx) {
+    var out = [];
+    for (var i = 0; i < state.notes.length; i++) {
+      if (state.notes[i].page === idx) out.push(state.notes[i]);
+    }
+    return out;
+  }
+
+  function renderNotePins() {
+    for (var i = 0; i < state.pageEls.length; i++) {
+      var el = state.pageEls[i];
+      var idx = parseInt(el.getAttribute('data-page-idx'), 10);
+      var list = notesForPage(idx);
+      var pin = $('.reader-note-pin', el);
+      if (list.length === 0) {
+        if (pin) pin.parentNode.removeChild(pin);
+        continue;
+      }
+      if (!pin) {
+        pin = document.createElement('button');
+        pin.type = 'button';
+        pin.className = 'reader-note-pin';
+        el.appendChild(pin);
+      }
+      pin.setAttribute('data-page-idx', String(idx));
+      pin.setAttribute('data-count', String(list.length));
+      pin.setAttribute('data-note-id', String(list[0].id));
+      pin.setAttribute('aria-label', 'Note on page ' + idx);
+      pin.textContent = String(list.length);
+    }
+  }
+
+  function renderNotesPanel() {
+    var panel = document.getElementById('reader-notes-panel');
+    if (!panel) return;
+    var count = $('.reader-notes-count', panel);
+    if (count) count.textContent = String(state.notes.length);
+
+    var list = $('.reader-notes-list', panel);
+    var empty = $('.reader-notes-empty', panel);
+
+    if (state.notes.length === 0) {
+      if (list) list.hidden = true;
+      if (empty) empty.hidden = false;
+      return;
+    }
+    if (empty) empty.hidden = true;
+    if (!list) {
+      list = document.createElement('ul');
+      list.className = 'reader-notes-list';
+      panel.appendChild(list);
+    }
+    list.hidden = false;
+    list.innerHTML = '';
+    for (var i = 0; i < state.notes.length; i++) {
+      list.appendChild(noteListItem(state.notes[i]));
+    }
+  }
+
+  function noteListItem(note) {
+    var li = document.createElement('li');
+    li.className = 'reader-note-item';
+    li.setAttribute('data-note-id', String(note.id));
+    li.setAttribute('data-page-idx', String(note.page));
+
+    var jump = document.createElement('button');
+    jump.type = 'button';
+    jump.className = 'reader-note-jump';
+    jump.textContent = 'p. ' + note.page;
+    jump.addEventListener('click', function (e) {
+      e.stopPropagation();
+      goToPage(note.page);
+      closeNotesPanel();
+    });
+
+    var time = document.createElement('time');
+    time.className = 'reader-note-time';
+    if (note.created_at) time.setAttribute('datetime', String(note.created_at).replace(' ', 'T'));
+    time.textContent = note.created_at || '';
+
+    var text = document.createElement('p');
+    text.className = 'reader-note-text';
+    text.textContent = note.body;
+    text.addEventListener('click', function () {
+      // Contract §6.3: clamped to four lines, expands on click.
+      var clamped = text.style.webkitLineClamp;
+      text.style.webkitLineClamp = clamped === 'unset' ? '4' : 'unset';
+      text.style.overflow = text.style.webkitLineClamp === 'unset' ? 'visible' : '';
+    });
+
+    li.appendChild(jump);
+    li.appendChild(time);
+    li.appendChild(text);
+    return li;
+  }
+
+  function fetchNotes() {
+    if (!isLoggedIn()) { state.notes = []; return; }
+    try {
+      fetch('/api/notes?chapter_id=' + state.chapterId, {
+        headers: { 'Accept': '*/*' },
+        credentials: 'same-origin'
+      })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          state.notes = data && Object.prototype.toString.call(data.notes) === '[object Array]'
+            ? data.notes : [];
+          renderNotePins();
+          if (notesPanelOpen()) renderNotesPanel();
+        })
+        .catch(function () { /* pins simply do not appear */ });
+    } catch (_) { /* ignore */ }
+  }
+
+  function upsertNote(note) {
+    if (!note) return;
+    for (var i = 0; i < state.notes.length; i++) {
+      if (state.notes[i].id === note.id) return;
+    }
+    state.notes.push({ id: note.id, page: note.page, body: note.body, created_at: note.created_at || '' });
+  }
+
+  function draftKey() {
+    return SS_DRAFT_PREFIX + state.chapterId;
+  }
+
+  function openComposer() {
+    var composer = document.getElementById('reader-note-composer');
+    if (!composer) return;
+    state.composerOpen = true;
+    var pageInput = document.getElementById('reader-note-page');
+    var body = document.getElementById('reader-note-body');
+    var error = $('.reader-note-error', composer);
+    if (error) { error.hidden = true; error.textContent = ''; }
+    if (pageInput) pageInput.value = String(state.currentPage);
+    if (body) {
+      if (!body.value) {
+        var draft = readString(sessionStorage, draftKey());
+        if (draft) body.value = draft;
+      }
+      body.focus();
+    }
+    composer.hidden = false;
+    showChrome();
+  }
+
+  function closeComposer(force) {
+    var composer = document.getElementById('reader-note-composer');
+    if (!composer) return;
+    var body = document.getElementById('reader-note-body');
+    var text = body ? body.value : '';
+    if (!force && text.trim() && !window.confirm('Discard note?')) return;
+    composer.hidden = true;
+    state.composerOpen = false;
+    if (force && text.trim()) writeString(sessionStorage, draftKey(), text);
+    resetDimTimer();
+    var settings = document.getElementById('reader-settings-btn');
+    if (settings) settings.focus();
+  }
+
+  function saveNote(e) {
+    e.preventDefault();
+    var composer = document.getElementById('reader-note-composer');
+    var body = document.getElementById('reader-note-body');
+    var pageInput = document.getElementById('reader-note-page');
+    var error = composer ? $('.reader-note-error', composer) : null;
+    var text = body ? body.value.trim() : '';
+    var page = pageInput ? parseInt(pageInput.value, 10) : state.currentPage;
+
+    function fail(message) {
+      if (!error) return;
+      error.textContent = message;
+      error.hidden = false;
+    }
+
+    if (!text) { fail('Write something first.'); return; }
+    if (text.length > 2000) { fail('Note must be 1-2000 characters.'); return; }
+    if (!(page >= 1)) page = state.currentPage;
+
+    if (!isLoggedIn()) {
+      // No anonymous note writes (contract §6.1): keep the text and ask the
+      // reader to sign in, then offer the draft back after login.
+      writeString(sessionStorage, draftKey(), text);
+      fail('Sign in to save notes — your draft is kept.');
+      return;
+    }
+
+    try {
+      fetch('/api/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': '*/*' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ chapter_id: state.chapterId, page: page, body: text })
+      })
+        .then(function (r) {
+          if (r.ok) return r.json();
+          // axum's Json extractor rejects before the handler: 415 for a bad
+          // Content-Type, 400 for a syntax error, 422 for a missing field or
+          // wrong type. Treat 400/415/422 alike.
+          if (r.status === 400 || r.status === 415 || r.status === 422) {
+            fail('Could not save the note. Check the text and try again.');
+          } else {
+            fail('Could not save the note.');
+          }
+          return null;
+        })
+        .then(function (data) {
+          if (!data || !data.note) return;
+          upsertNote(data.note);
+          removeKey(sessionStorage, draftKey());
+          if (body) body.value = '';
+          renderNotePins();
+          if (notesPanelOpen()) renderNotesPanel();
+          closeComposer(true);
+        })
+        .catch(function () { fail('Could not save the note.'); });
+    } catch (_) {
+      fail('Could not save the note.');
+    }
+  }
+
+  function initNotes() {
+    var form = document.getElementById('reader-note-form');
+    if (form) form.addEventListener('submit', saveNote);
+
+    // Pins are delegated from `#reader-images`: the server renders pins for
+    // existing notes before this module runs, so a per-pin listener would miss
+    // them; delegation also covers pins this module creates later.
+    var images = document.getElementById('reader-images');
+    if (images) {
+      images.addEventListener('click', function (e) {
+        var pin = e.target.closest && e.target.closest('.reader-note-pin');
+        if (!pin) return;
+        e.stopPropagation();
+        openNotesPanel();
+      });
+    }
+
+    var body = document.getElementById('reader-note-body');
+    if (body) {
+      body.addEventListener('input', function () {
+        if (body.value.trim()) writeString(sessionStorage, draftKey(), body.value);
+        else removeKey(sessionStorage, draftKey());
+      });
+    }
+
+    var composer = document.getElementById('reader-note-composer');
+    if (composer) {
+      composer.addEventListener('click', function (e) { e.stopPropagation(); });
+    }
+
+    // Long-press (400ms) opens the composer anchored to the current page
+    // (§6.1). In the paged layouts the fixed tap zones sit over the pages, so
+    // the center zone is the surface a long-press actually lands on; the
+    // `.reader-page` branch covers strip, where the zones are hidden.
+    document.addEventListener('pointerdown', function (e) {
+      if (state.sheetOpen || state.composerOpen) return;
+      var target = e.target;
+      var onPage = target.closest && target.closest('.reader-page');
+      var onMenuZone = target.closest && target.closest('.reader-zone[data-zone="menu"]');
+      if (!onPage && !onMenuZone) return;
+      state.longPressFired = false;
+      state.longPressTimer = setTimeout(function () {
+        // Suppress the click that follows the release; this was a press.
+        state.longPressFired = true;
+        if (onPage) {
+          state.currentPage = parseInt(onPage.getAttribute('data-page-idx'), 10) || state.currentPage;
+        }
+        openComposer();
+      }, 400);
+    });
+    ['pointerup', 'pointercancel', 'pointermove', 'scroll'].forEach(function (evt) {
+      document.addEventListener(evt, function () {
+        if (state.longPressTimer) { clearTimeout(state.longPressTimer); state.longPressTimer = null; }
+      }, { passive: true });
+    });
+
+    // Sheet button that opens the composer (the server markup has none today;
+    // the lookup is null-safe so a later template change lights it up).
+    var addBtn = $('.reader-sheet-group [data-action="note.add"]');
+    if (addBtn) addBtn.addEventListener('click', function (e) { e.stopPropagation(); openComposer(); });
+  }
+
+  // ============================================================
+  //  PROGRESS PERSISTENCE (single write path)
+  // ============================================================
+
+  function rememberScrollPosition() {
+    if (!state.local) return;
+    var p = effectivePrefs();
+    if (p.layout === 'strip' || p.layout === 'vertical') {
+      state.local.scrollPositions[String(state.chapterId)] = window.scrollY || 0;
+    } else {
+      state.local.scrollPositions[String(state.chapterId)] = state.currentPage;
+    }
+    saveDeviceLocal();
+  }
+
+  /**
+   * Progress flows exclusively through `MangaReadState.setChapterStatus`,
+   * which owns the `MangaSync.pushProgress` write-through. There is no second
+   * write path (the review focus for this task).
+   *
+   * `page` defaults to the current page; callers that merely mark the chapter
+   * as started pass the resume page so a load does not clobber a saved
+   * position before the reader navigates.
+   */
+  function saveProgress(status, page) {
+    if (!state.seriesId || !state.chapterId) return;
+    if (!window.MangaReadState) return;
+    var p = page === undefined ? state.currentPage : page;
+    window.MangaReadState.setChapterStatus(
+      state.seriesId,
+      state.chapterId,
+      status,
+      p
+    );
+  }
+
+  function scheduleProgress() {
+    if (state.progressTimer) return;
+    state.progressTimer = setTimeout(function () {
+      state.progressTimer = null;
+      saveProgress(state.finished ? 'finished' : 'started');
+    }, 400);
+  }
+
+  function initProgress() {
+    if (!window.MangaReadState) return;
+    // Mark the chapter as started WITHOUT moving the stored position: a plain
+    // page load must not reset a page-5 resume to page 1. `state.resumePage`
+    // carries the saved page when one was found (see `initResumeBadge`).
+    saveProgress('started', state.resumePage > 0 ? state.resumePage : state.currentPage);
+
+    var last = state.pageEls.length ? state.pageEls[state.pageEls.length - 1] : null;
+    if (last && window.IntersectionObserver) {
+      var observer = new IntersectionObserver(function (entries) {
+        for (var i = 0; i < entries.length; i++) {
+          if (entries[i].isIntersecting && !state.finished) {
+            state.finished = true;
+            // Do NOT move `currentPage`: in `double` the current page is the
+            // first index of the visible spread (contract §1.1), and the last
+            // page becoming visible must not shift that anchor.
+            saveProgress('finished');
+            markReadBadge();
+            observer.disconnect();
+            if (effectivePrefs().autoNext) startCountdown();
+          }
+        }
+      }, { threshold: 0.5 });
+      observer.observe(last);
+    }
+  }
+
+  function markReadBadge() {
+    var target = $('.reader-topbar-chapter');
+    if (!target || $('.completed-badge', target)) return;
+    var badge = document.createElement('span');
+    badge.className = 'completed-badge';
+    badge.textContent = '\u2713 Read';
+    target.appendChild(badge);
+  }
+
+  function initWriteThroughFailures() {
+    // Observe the fire-and-forget progress write to raise the offline notice
+    // after repeated failures (contract §7). The wrapper delegates to the
+    // original `MangaSync.pushProgress`, so the transport stays auth.js's and
+    // there is still exactly one write per progress change.
+    if (state.offlineHooked || !window.MangaSync) return;
+    state.offlineHooked = true;
+    var original = window.MangaSync.pushProgress;
+    if (typeof original !== 'function') return;
+    window.MangaSync.pushProgress = function (chapterId, page, status) {
+      original.call(window.MangaSync, chapterId, page, status);
+      // auth.js swallows failures, so the only observable signal is the
+      // browser's own connectivity state.
+      if (navigator.onLine === false) noteWriteFailure();
+      else state.writeFailures = 0;
+    };
+    window.addEventListener('online', function () { state.writeFailures = 0; });
+  }
+
+  function noteWriteFailure() {
+    state.writeFailures += 1;
+    if (state.writeFailures >= 3) {
+      var banner = document.getElementById('reader-offline');
+      if (banner) banner.hidden = false;
+    }
+  }
+
+  // ============================================================
+  //  PAGE STATES (contract §7)
+  // ============================================================
+
+  function setPageState(page, value) {
+    page.setAttribute('data-page-state', value);
+    var error = $('.reader-page-error', page);
+    if (error) error.hidden = value !== 'error';
+  }
+
+  function retryImage(page) {
+    var img = $('img', page);
+    if (!img) return;
+    setPageState(page, 'loading');
+    // Re-assign the same src to force a refetch (contract §7).
+    var src = img.getAttribute('src');
+    img.setAttribute('src', '');
+    img.setAttribute('src', src);
+  }
+
+  function initPageStates() {
+    for (var i = 0; i < state.pageEls.length; i++) {
+      (function (page) {
+        var img = $('img', page);
+        if (!img) return;
+        setPageState(page, img.complete && img.naturalWidth > 0 ? 'ready' : 'loading');
+
+        img.addEventListener('load', function () {
+          setPageState(page, 'ready');
+        });
+        img.addEventListener('error', function () {
+          setPageState(page, 'error');
+          // One auto-retry after 2000ms (contract §7).
+          if (!state.retried[page.getAttribute('data-page-idx')]) {
+            state.retried[page.getAttribute('data-page-idx')] = true;
+            setTimeout(function () { retryImage(page); }, 2000);
+          }
+        });
+
+        var retry = $('.reader-retry-btn', page);
+        if (retry) retry.addEventListener('click', function (e) { e.stopPropagation(); retryImage(page); });
+      })(state.pageEls[i]);
+    }
+  }
+
+  function initResumeFromScroll() {
+    var chapterId = state.chapterId;
+    var p = effectivePrefs();
+    var saved = state.local && state.local.scrollPositions ? state.local.scrollPositions[String(chapterId)] : 0;
+    if (!saved) return;
+    // Prime index (server-provided resume) wins; local scroll position is the
+    // device-local complement (contract §2.3).
+    if (state.resumePage > 1) return;
+    if (p.layout === 'strip' || p.layout === 'vertical') {
+      if (typeof saved === 'number' && saved > 0) window.scrollTo(0, saved);
+    } else if (typeof saved === 'number' && saved > 1) {
+      goToPage(saved);
+    }
+  }
+
+  // ============================================================
+  //  INIT
+  // ============================================================
+
+  function buildApi() {
+    window.MangaReader = {
+      get prefs() { return clonePrefs(effectivePrefs()); },
+      save: savePrefs,
+      openSheet: openSheet,
+      closeSheet: closeSheet,
+      goToPage: goToPage,
+      get currentPage() { return state.currentPage; }
+    };
+  }
+
+  function init() {
+    state.track = document.getElementById('reader-track');
+    if (!state.track) return; // not the reader page
+
+    state.isReader = true;
+    state.loggedIn = isLoggedIn();
+    state.seriesId = state.track.getAttribute('data-series-id') || 0;
+    state.chapterId = parseInt(state.track.getAttribute('data-chapter-id') || '0', 10) || 0;
+    state.totalPages = parseInt(state.track.getAttribute('data-total-pages') || '0', 10) || 0;
+    state.primeIdx = parseInt(state.track.getAttribute('data-prime-idx') || '0', 10) || 0;
+    state.prevUrl = state.track.getAttribute('data-prev-chapter') || '';
+    state.nextUrl = state.track.getAttribute('data-next-chapter') || '';
+
+    loadDeviceLocal();
+    resolvePrefs();
+    indexPages();
+    applyPrefs();
+    initSheet();
+    initZones();
+    initZoneEditor();
+    initKeybinds();
+    initChapterNav();
+    initPrefetch();
+    initNotes();
+    initCountdownCancel();
+    initPageStates();
+    initHint();
+    bindComfortKeys();
+
+    // Navigation and input.
+    window.addEventListener('scroll', function () {
+      if (effectivePrefs().layout === 'strip') {
+        if (state.scrollTimer) return;
+        state.scrollTimer = setTimeout(function () {
+          state.scrollTimer = null;
+          syncStripPosition();
+        }, 120);
+      }
+      scheduleProgress();
+      if (!state.dimmed) showChrome();
+      resetDimTimer();
+    }, { passive: true });
+
+    // `vertical` scrolls inside `#reader-images` (a y-snap container), not the
+    // window, so its position is tracked on that element. The listener is
+    // attached unconditionally and guards on the layout, because a sheet
+    // change can switch to `vertical` after init.
+    var snapContainer = document.getElementById('reader-images');
+    if (snapContainer) {
+      snapContainer.addEventListener('scroll', function () {
+        if (effectivePrefs().layout !== 'vertical') return;
+        state.currentPage = computeStripPage() || state.currentPage;
+        state.navigated = true;
+        updateIndicator();
+        scheduleProgress();
+        showChrome();
+        resetDimTimer();
+      }, { passive: true });
+    }
+
+    document.addEventListener('keydown', onKeydown);
+    initSwipe();
+    window.addEventListener('resize', function () {
+      applyPrefs();
+      selectSheetGroup(currentGroup());
+    });
+    window.addEventListener('beforeunload', function () {
+      // Preserve a resume page the reader never navigated away from; only a
+      // real page step updates the stored position.
+      var page = state.navigated ? state.currentPage : (state.resumePage || state.currentPage);
+      saveProgress(state.finished ? 'finished' : 'started', page);
+      rememberScrollPosition();
+    });
+
+    // Resume must be resolved BEFORE `initProgress` writes page 1 as the
+    // "started" marker, or it would read back its own write.
+    initResumeBadge();
+    initResumeFromScroll();
+    consumeOpenLast();
+    initProgress();
+    renderLayout();
+    resetDimTimer();
+    showChrome();
+    fetchNotes();
+    initWriteThroughFailures();
+
+    // An anonymous reader's layout choice becomes the merge hint if they later
+    // sign in (contract §5.5); the `/api/migrate` path itself is untouched.
+    if (state.local && state.local.lastUsedLayout !== effectivePrefs().layout) {
+      state.local.lastUsedLayout = effectivePrefs().layout;
+      saveDeviceLocal();
+    }
+  }
+
+  function currentGroup() {
+    var selected = $('.reader-sheet-tab[aria-selected="true"]');
+    return selected ? selected.getAttribute('data-group') : 'layout';
+  }
+
+  buildApi();
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();
