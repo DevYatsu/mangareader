@@ -74,6 +74,14 @@
   --bulma-radius: 0.5rem;
   --bulma-radius-medium: 0.625rem;
   --bulma-radius-large: 0.875rem;
+
+  /* transitional: reader.css still reads the legacy names until Slice D.
+     `style.css` was the only definer of these, and it is no longer linked,
+     so without this bridge reader.css's `var(--font-display, …)` calls all
+     fall back to inherited body type. Bound, not copied: an admin rebrand
+     moves the faces with the Bulma family tokens. */
+  --font-display: var(--m-font-display);
+  --font-body: var(--bulma-family-primary);
 }
 
 /* --------------------------------------------------------------------------
