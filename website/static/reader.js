@@ -1975,16 +1975,34 @@
     // after repeated failures (contract §7). The wrapper delegates to the
     // original `MangaSync.pushProgress`, so the transport stays auth.js's and
     // there is still exactly one write per progress change.
+    //
+    // `pushProgress` returns the request promise (auth.js). A resolved `null`
+    // is a network failure (fetch rejected), and a non-ok `Response` is a
+    // server rejection — both are write-through failures. A resolved ok
+    // response clears the count. This is the only way to detect a failure in
+    // an online browser that cannot reach the server, which `navigator.onLine`
+    // cannot see.
     if (state.offlineHooked || !window.MangaSync) return;
     state.offlineHooked = true;
     var original = window.MangaSync.pushProgress;
     if (typeof original !== 'function') return;
     window.MangaSync.pushProgress = function (chapterId, page, status) {
-      original.call(window.MangaSync, chapterId, page, status);
-      // auth.js swallows failures, so the only observable signal is the
-      // browser's own connectivity state.
-      if (navigator.onLine === false) noteWriteFailure();
-      else state.writeFailures = 0;
+      var result = original.call(window.MangaSync, chapterId, page, status);
+      if (result && typeof result.then === 'function') {
+        result.then(function (res) {
+          if (res && res.ok) state.writeFailures = 0;
+          else noteWriteFailure();
+        });
+      } else if (navigator.onLine === false) {
+        // No promise (no session / older auth.js): fall back to the browser's
+        // connectivity signal, as before.
+        noteWriteFailure();
+      } else {
+        state.writeFailures = 0;
+      }
+      // Forward the original return value so the wrapper preserves auth.js's
+      // signature for any other observer.
+      return result;
     };
     window.addEventListener('online', function () { state.writeFailures = 0; });
   }
