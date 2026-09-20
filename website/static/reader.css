@@ -1,0 +1,1811 @@
+/* ============================================
+   MangaRead — Reader 2.0
+   Contract: docs/superpowers/specs/2026-09-20-reader2-design-contract.md
+   Layers on top of style.css (base layer). Every custom property is
+   consumed with a fallback: theme files supply none of them.
+   ============================================ */
+
+/* ── 2.1 Tokens ──
+   Declared on :root with the contract defaults; the prefs layer writes
+   --r-max-w / --r-gap / --r-bg / --r-dim etc. inline as the user changes them. */
+:root {
+  --r-max-w: 700px;
+  --r-gap: 0px;
+  --r-zoom: 1;
+  --r-bg: #0a0a0a;
+  --r-chrome-bg: rgba(10, 10, 10, 0.92);
+  --r-chrome-fg: #ffffff;
+  --r-chrome-border: rgba(255, 255, 255, 0.06);
+  --r-page-shadow: none;
+  --r-radius: 0px;
+  --r-dim: 0;
+  --r-controls-offset: 0px;
+}
+
+/* ── 2.2 Background presets ──
+   Light presets MUST flip chrome fg/bg, or the fixed top bar (white text)
+   disappears on a white page. */
+body.reader-page {
+  background: var(--r-bg, #0a0a0a);
+  background-image: none;
+  color: var(--r-chrome-fg, #ffffff);
+}
+
+body[data-r-bg="black"] {
+  --r-bg: #0a0a0a;
+  --r-chrome-bg: rgba(10, 10, 10, 0.92);
+  --r-chrome-fg: #ffffff;
+  --r-chrome-border: rgba(255, 255, 255, 0.06);
+}
+
+body[data-r-bg="white"] {
+  --r-bg: #ffffff;
+  --r-chrome-bg: rgba(255, 255, 255, 0.92);
+  --r-chrome-fg: #111111;
+  --r-chrome-border: rgba(0, 0, 0, 0.08);
+}
+
+body[data-r-bg="sepia"] {
+  --r-bg: #f4ecd8;
+  --r-chrome-bg: rgba(244, 236, 216, 0.92);
+  --r-chrome-fg: #1f1a12;
+  --r-chrome-border: rgba(31, 26, 18, 0.1);
+}
+
+body[data-r-bg="custom"] {
+  --r-bg: var(--r-bg-custom, #0a0a0a);
+}
+
+/* Every page box: radius and shadow come from the prefs layer.
+   Scoped to `.reader-images` because `<body>` also carries the `.reader-page`
+   class — a bare `.reader-page` rule would put the frame shadow on the body. */
+.reader-images .reader-page {
+  border-radius: var(--r-radius, 0px);
+  box-shadow: var(--r-page-shadow, none);
+  overflow: hidden;
+  position: relative;
+}
+/* §2.2 Border/shadow toggle. The attribute alone applies the shadow, so the
+   frame works before (and without) the JS inline write. */
+body[data-r-frame="on"] {
+  --r-page-shadow: 0 0 0 1px var(--r-chrome-border, rgba(255, 255, 255, 0.06)),
+    0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* A rendered page clips its own frame; the strip resets both to keep the
+   webtoon seam seamless. */
+.reader-images .reader-page img {
+  background: var(--r-bg, #0a0a0a);
+}
+.reader-page-placeholder {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--r-bg, #0a0a0a) 88%, var(--r-chrome-fg, #ffffff));
+  opacity: 1;
+  transition: opacity 220ms ease;
+  pointer-events: none;
+}
+
+/* `data-page-state` lives on the page wrapper; the placeholder is scoped to
+   page wrappers so it never matches anything else. */
+.reader-images .reader-page[data-page-state="ready"] .reader-page-placeholder {
+  opacity: 0;
+}
+
+/* ── 1.1 Layout modes ──
+
+/* `single`/`vertical`/`double` reveal one page (or one spread) at a time; the
+   client module hides the rest with the `hidden` attribute. The specificity
+   here (0,4,1) deliberately outranks every layout/fit `display` below
+   (the strongest is `body[data-r-fit="height"]:not([data-r-layout="strip"])
+   .reader-page` at 0,3,1) — otherwise a fit mode resurrects hidden pages. */
+body.reader-page .reader-images .reader-page[hidden] {
+  display: none;
+}
+
+/* single — one page centred in the viewport, page-stepped by JS. */
+body[data-r-layout="single"] #reader-images,
+body[data-r-layout="vertical"] #reader-images {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  width: 100%;
+  max-width: 100%;
+  min-height: 100dvh;
+  margin: 0 auto;
+}
+
+/* `single`/`vertical` are height-fitted by default (contract §1.1): the
+   artwork sits at its natural size, capped by the column width and by the
+   viewport height. `width: auto` (not `100%`) is load-bearing — with
+   `width: 100%` the box becomes (column-width x clamped-height) and
+   `object-fit: fill` stretches the page. A replaced element shrinks both
+   dimensions proportionally when `max-height` bites, so the ratio survives. */
+body[data-r-layout="single"] .reader-page,
+body[data-r-layout="vertical"] .reader-page {
+  width: 100%;
+  max-width: var(--r-max-w, 700px);
+  flex: 0 0 auto;
+}
+
+body[data-r-layout="single"] .reader-page img,
+body[data-r-layout="vertical"] .reader-page img {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: calc(100dvh * var(--r-zoom, 1));
+  margin: 0 auto;
+}
+
+/* vertical — same as single, but the pages live in a y-snap scroll
+   container so wheel/tap/keyboard snap exactly one page. */
+body[data-r-layout="vertical"] #reader-images {
+  justify-content: flex-start;
+  min-height: 100dvh;
+  max-height: 100dvh;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scroll-snap-type: y mandatory;
+  scrollbar-width: none;
+}
+
+body[data-r-layout="vertical"] .reader-page {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  scroll-snap-align: center;
+  scroll-snap-stop: always;
+}
+
+/* double — two pages per row. Reading order inside a row follows
+   direction; the LTR/RTL swap is row-reverse, so the DOM order stays
+   [n, n+1] and JS only decides pairing parity. */
+body[data-r-layout="double"] #reader-images {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: center;
+  align-content: flex-start;
+  gap: 0;
+  width: 100%;
+  max-width: calc(var(--r-max-w, 700px) * 2);
+  margin: 0 auto;
+}
+
+body[data-r-layout="double"] .reader-page {
+  flex: 0 0 50%;
+  width: 50%;
+  max-width: none;
+}
+
+body[data-r-direction="rtl"][data-r-layout="double"] #reader-images {
+  flex-direction: row-reverse;
+}
+
+body[data-r-layout="double"] .reader-page img {
+  max-height: calc(100dvh * var(--r-zoom, 1));
+  width: auto;
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+/* strip — continuous vertical stack. This generalises style.css:1311-1333. */
+body[data-r-layout="strip"] #reader-images {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--r-gap, 0px);
+  width: 100%;
+  max-width: var(--r-max-w, 700px);
+  margin: 0 auto;
+  padding: 0;
+}
+
+body[data-r-layout="strip"] .reader-page {
+  width: 100%;
+  /* Seamless joins: no radius, no shadow, no rounding artefacts. */
+  --r-radius: 0px;
+  --r-page-shadow: none;
+}
+
+body[data-r-layout="strip"] .reader-page img {
+  width: 100%;
+  height: auto;
+  max-height: none;
+}
+
+/* Strip is scroll-driven: the tap zones are not the navigation model. */
+body[data-r-layout="strip"] #reader-zones {
+  display: none;
+}
+
+/* ── 2. Fit system ──
+   Precedence: a fit mode wins over the width slider. `[data-r-fit]` forces
+   --r-max-w to 100%; the stored width is never cleared and reapplies on
+   toggle-off. The slider is `aria-disabled` in the UI while a fit is active.
+   Applied to every layout: on `strip` a fit simply constrains each page in
+   the stack, which is the same rule the contract states globally in §2.2. */
+body[data-r-fit] {
+  --r-max-w: 100%;
+}
+
+body[data-r-fit] #reader-images {
+  max-width: 100%;
+  justify-content: center;
+}
+
+/* The paged layouts are one screen tall; `strip` keeps its natural document
+   height so the stack still scrolls. */
+body:not([data-r-layout="strip"])[data-r-fit] #reader-images {
+  height: 100dvh;
+  min-height: 100dvh;
+}
+
+/* Page boxes accept the fit-mode layout; the image inside is what gets sized,
+   so the box stays a centred flex item. */
+body[data-r-fit="height"] .reader-page,
+body[data-r-fit="screen"] .reader-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+body[data-r-fit="height"] .reader-page {
+  width: auto;
+  max-width: none;
+}
+
+body[data-r-fit="height"] .reader-page img {
+  max-height: calc(100dvh * var(--r-zoom, 1));
+  width: auto;
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+body[data-r-fit="screen"] .reader-page {
+  width: calc(100dvw * var(--r-zoom, 1));
+  height: calc(100dvh * var(--r-zoom, 1));
+  max-width: calc(100dvw * var(--r-zoom, 1));
+  max-height: calc(100dvh * var(--r-zoom, 1));
+}
+
+body[data-r-fit="screen"] .reader-page img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  margin: 0 auto;
+}
+
+/* The double spread keeps its pairing width so both pages stay side by side. */
+body[data-r-fit][data-r-layout="double"] .reader-page {
+  flex: 0 0 50%;
+  width: 50%;
+  height: auto;
+  max-width: none;
+}
+
+/* ============================================
+   3. Controls surface
+   ============================================ */
+
+/* ── 3.1 Top bar ── */
+.reader-topbar {
+  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  border-bottom: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  color: var(--r-chrome-fg, #ffffff);
+  will-change: transform;
+}
+
+.reader-topbar-inner {
+  max-width: var(--r-max-w, 700px);
+  gap: 0.5rem;
+}
+
+/* 44px minimum touch target: the 36px rule at style.css:1246 fails §8.2. */
+.reader-back-btn {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  border-radius: 10px;
+}
+
+.reader-back-btn:hover {
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  color: var(--r-chrome-fg, #ffffff);
+}
+
+.reader-topbar-title {
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+}
+
+.reader-topbar-chapter {
+  color: var(--r-chrome-fg, #ffffff);
+}
+
+/* Contrast: the base value is 0.4 alpha on #0a0a0a, ~2.9:1, under the bar.
+   The literal 0.72 is the contract value; the second declaration derives the
+   same alpha from --r-chrome-fg so white/sepia presets mirror automatically.
+   The literal first means a browser without color-mix still clears 4.5:1. */
+.reader-page-indicator {
+  color: rgba(255, 255, 255, 0.72);
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+}
+
+/* ── 3.2 Icon buttons ── */
+.reader-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.reader-icon-btn:hover {
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  color: var(--r-chrome-fg, #ffffff);
+}
+
+.reader-icon-btn[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  color: var(--accent, #f59e0b);
+}
+
+/* ── 3.3 HUD — floating counter, shown while strip scrolls ── */
+.reader-hud {
+  position: fixed;
+  inset-inline-end: 1rem;
+  bottom: calc(1rem + var(--r-controls-offset, 0px));
+  z-index: 90;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 44px;
+  padding: 0.5rem 0.85rem;
+  border-radius: 999px;
+  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  color: var(--r-chrome-fg, #ffffff);
+  font-size: 0.8rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  opacity: 0;
+  transform: translateY(0.5rem);
+  pointer-events: none;
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.reader-hud.visible {
+  opacity: 1;
+  transform: translateY(0);
+  /* The HUD carries the strip menu trigger (§4.1), so it must accept input
+     once it is actually on screen. */
+  pointer-events: auto;
+}
+
+/* ── 3.4 Sheet shell ── */
+.reader-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+
+.reader-sheet[hidden] {
+  display: none;
+}
+
+.reader-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+
+.reader-sheet-panel {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  max-height: 80dvh;
+  overflow: hidden;
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  color: var(--r-chrome-fg, #ffffff);
+  border-top: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  border-start-start-radius: 18px;
+  border-start-end-radius: 18px;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  transition: transform 260ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#reader-sheet-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Real markup carries only `.reader-sheet-close`, so it needs its own 44px
+   box rather than inheriting `.reader-icon-btn`. */
+.reader-sheet-close {
+  position: absolute;
+  inset-inline-end: 0.35rem;
+  top: 0.35rem;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.reader-sheet-close:hover {
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  color: var(--r-chrome-fg, #ffffff);
+}
+
+/* ── 3.4.1 "Remember for this series" ──
+   Sits above the tabs so it applies to whatever follows. */
+.reader-series-remember {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 44px;
+  /* Clear the absolutely positioned `.reader-sheet-close`, which sits on the
+     panel's top-right corner and would otherwise overlap this label. */
+  padding: 0.7rem 3.5rem 0.4rem 1rem;
+  font-size: 0.85rem;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  cursor: pointer;
+}
+
+/* §3.4.1: the only checkbox in the reader. A native checkbox is 13-20px, a
+   fail under §8.2, so the indicator is drawn at 44x44. */
+.reader-series-remember input#reader-remember-series {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  flex-shrink: 0;
+  margin: 0;
+  cursor: pointer;
+  border: 0;
+  border-radius: 10px;
+  background-color: transparent;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 20px 20px;
+  box-shadow: inset 0 0 0 1px var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  transition: background-color 160ms ease, box-shadow 160ms ease;
+}
+
+/* The 20px indicator: an inset outline, filled with the accent on :checked
+   plus a tick drawn as an SVG data URI (no icon asset, no font dependency). */
+.reader-series-remember input#reader-remember-series:checked {
+  background-color: var(--accent, #f59e0b);
+  box-shadow: inset 0 0 0 1px var(--accent, #f59e0b);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M2.5 8.5l3.5 3.5 7-8' fill='none' stroke='%23111111' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+.reader-series-remember-note {
+  display: block;
+  padding: 0 1rem;
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 66%, transparent);
+}
+
+/* ── 3.4.2 Tabs (phones) — horizontal snap strip, no scrollbar ── */
+.reader-sheet-tabs {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.6rem 1rem;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  border-bottom: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+}
+
+.reader-sheet-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.reader-sheet-tab {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0.5rem 0.9rem;
+  scroll-snap-align: start;
+  font-family: var(--font-display, inherit);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  background: transparent;
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+
+.reader-sheet-tab[aria-selected="true"] {
+  background: var(--accent, #f59e0b);
+  border-color: var(--accent, #f59e0b);
+  color: #111111;
+}
+
+/* ── 3.4.3 Groups ──
+   Only the `>=768px` rail needs a scroll container: it turns the panel into
+   a flex column without a scroll of its own. Below 768px the panel keeps
+   `flex-direction: column` on purpose so the group is the scroller and the
+   tab strip stays pinned above it. */
+.reader-sheet-group {
+  padding: 0.9rem 1rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-bottom: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+}
+
+.reader-sheet-group:last-of-type {
+  border-bottom: 0;
+}
+
+.reader-sheet-group > h3 {
+  margin-bottom: 0.7rem;
+  font-family: var(--font-display, inherit);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 66%, transparent);
+}
+
+/* A generic row inside a group. Element selectors only: the contract names
+   no row class, so none is invented.
+
+   This selector is (0,1,1) and would out-specify the single-class rules for
+   `.reader-keybind-row` further down, so rows that WRAP a control — the
+   keybind list and the zone-editor row — are excluded here. `:not(:has())`
+   would not match the keybind row itself (it contains keys, not another row),
+   hence the direct class exclusion plus the `:has()` for the editor row. */
+.reader-sheet-group > label,
+.reader-sheet-group > div:not(.reader-keybind-row):not(:has(#reader-zone-editor)) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 44px;
+  font-size: 0.85rem;
+}
+
+.reader-sheet-group > label > span:first-child,
+.reader-sheet-group > div > span:first-child {
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+}
+
+/* ── 3.5 Segmented control ── */
+.reader-seg {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+}
+
+.reader-seg-btn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.45rem 0.85rem;
+  font-family: var(--font-display, inherit);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.reader-seg-btn[aria-pressed="true"] {
+  background: var(--accent, #f59e0b);
+  color: #111111;
+}
+
+.reader-seg-btn[disabled],
+.reader-seg-btn[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── 3.6 Sliders ── */
+.reader-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 44px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  accent-color: var(--accent, #f59e0b);
+  touch-action: pan-y;
+}
+
+/* `min-width: 0` above is load-bearing, not cosmetic: a range input has a
+   native min-content width (~129px in Chrome). At <480px that plus its label
+   can overflow the sheet row into horizontal scroll. */
+
+.reader-slider[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.reader-slider-value {
+  flex: 0 0 auto;
+  min-width: 3.5ch;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 66%, transparent);
+}
+
+/* ── 3.7 Zone editor (§4.2) ──
+   Boundaries are physical (from the left), so the editor stays WYSIWYG in
+   RTL. Handle positions arrive as inline `left` from JS; no property is
+   invented for them. Declared after the generic group-row rule, which is
+   (0,1,1) and would otherwise make the editor a flex item. */
+.reader-sheet-group > div:has(#reader-zone-editor) {
+  display: block;
+  min-height: 44px;
+}
+
+.reader-zone-editor {
+  position: relative;
+  width: 100%;
+  height: 80px;
+  margin: 0.4rem 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  /* Static sketch of the 30/40/30 default; JS moves the real handles. */
+  background-image: repeating-linear-gradient(to right,
+      transparent 0,
+      transparent calc(30% - 1px),
+      var(--r-chrome-border, rgba(255, 255, 255, 0.06)) calc(30% - 1px),
+      var(--r-chrome-border, rgba(255, 255, 255, 0.06)) 30%,
+      transparent 30%,
+      transparent calc(70% - 1px),
+      var(--r-chrome-border, rgba(255, 255, 255, 0.06)) calc(70% - 1px),
+      var(--r-chrome-border, rgba(255, 255, 255, 0.06)) 70%,
+      transparent 70%);
+  touch-action: none;
+}
+
+.reader-zone-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 44px;
+  margin-inline-start: -22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.reader-zone-handle::before {
+  content: "";
+  width: 4px;
+  height: 56px;
+  border-radius: 999px;
+  background: var(--accent, #f59e0b);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent, #f59e0b) 22%, transparent);
+}
+
+.reader-zone-handle:focus-visible::before {
+  outline: 2px solid var(--accent, #f59e0b);
+  outline-offset: 2px;
+}
+
+/* ── 3.8 Key remap (§4.3) ──
+   Declared after the generic group-row rule, whose (0,1,1) selector would
+   otherwise force this row to `justify-content: space-between`. */
+.reader-keybind-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  min-height: 44px;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+}
+
+/* The action name leads the row; element selector only, since §9 names no
+   class for it. It takes the free space so the keys and Reset align right. */
+.reader-keybind-row > span:first-child {
+  flex: 1 1 6rem;
+  min-width: 0;
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-keybind-row[data-capture="1"] {
+  background: color-mix(in srgb, var(--accent, #f59e0b) 12%, transparent);
+  border-radius: 10px;
+}
+
+.reader-keybind-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.35rem 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  color: var(--r-chrome-fg, #ffffff);
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 160ms ease, color 160ms ease;
+}
+
+.reader-keybind-key:hover {
+  border-color: var(--accent, #f59e0b);
+}
+
+.reader-keybind-row[data-capture="1"] .reader-keybind-key {
+  border-color: var(--accent, #f59e0b);
+  color: var(--accent, #f59e0b);
+}
+
+.reader-keybind-reset {
+  min-height: 44px;
+  min-width: 44px;
+  margin-inline-start: auto;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.72rem;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 66%, transparent);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.reader-keybind-reset:hover {
+  color: var(--r-chrome-fg, #ffffff);
+  border-color: var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+}
+
+/* ── 3.9 Zones (§4.1) ──
+   Real buttons sitting between the pages and the chrome. Gone on strip,
+   where scrolling owns the gesture. */
+.reader-zone {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.reader-zone[data-zone="prev"] {
+  left: 0;
+  width: 30%;
+}
+
+.reader-zone[data-zone="menu"] {
+  left: 30%;
+  width: 40%;
+}
+
+.reader-zone[data-zone="next"] {
+  left: 70%;
+  width: 30%;
+}
+
+#reader-zones[data-r-zone-mode="two"] .reader-zone[data-zone="prev"] {
+  width: 50%;
+}
+
+#reader-zones[data-r-zone-mode="two"] .reader-zone[data-zone="menu"] {
+  display: none;
+}
+
+#reader-zones[data-r-zone-mode="two"] .reader-zone[data-zone="next"] {
+  left: 50%;
+  width: 50%;
+}
+
+#reader-zones[data-r-zone-mode="off"] {
+  display: none;
+}
+
+/* The sheet owns the screen while open; a zone must not steal the tap. */
+body:has(.reader-sheet:not([hidden])) .reader-zone {
+  pointer-events: none;
+}
+
+/* ── 3.10 Bottom nav + nav buttons in reader chrome ──
+   The base rules at style.css:1352-1394 assume a black page. Reader 2.0
+   can be white or sepia, so chrome fg/bg come from the preset variables. */
+.reader-page .reader-bottom-nav {
+  max-width: var(--r-max-w, 700px);
+  padding-bottom: calc(4rem + var(--r-controls-offset, 0px));
+}
+
+.reader-page .reader-nav-btn {
+  min-height: 44px;
+  color: var(--r-chrome-fg, #ffffff);
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  border-color: var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+}
+
+.reader-page .reader-nav-btn:hover {
+  color: var(--r-chrome-fg, #ffffff);
+  border-color: var(--accent, #f59e0b);
+}
+
+.reader-page .reader-nav-btn.secondary {
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 66%, transparent);
+  background: transparent;
+}
+
+.reader-page .reader-nav-btn.secondary:hover {
+  color: var(--r-chrome-fg, #ffffff);
+  border-color: var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+}
+
+/* ============================================
+   5. Comfort and chrome
+   ============================================ */
+
+/* ── 5.2 Auto-dim ──
+   A full-screen overlay, never a filter on #reader-images: filtering would
+   repaint the whole strip on a low-end device. `pointer-events: none` is
+   load-bearing — otherwise the overlay eats the tap that should wake it. */
+#reader-dim.reader-dim {
+  position: fixed;
+  inset: 0;
+  z-index: 80; /* above pages (0) and zones (50), below hud (90) and top bar (100) */
+  background: #000000;
+  opacity: var(--r-dim, 0);
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+body[data-r-dim="1"] #reader-dim.reader-dim {
+  transition: opacity 120ms ease;
+}
+
+/* ── 5.3 Focus mode ──
+   Reading contract §5.3 literally: top bar, hud, bottom nav and zone
+   affordances are removed. The page counter survives as the hud, which
+   still appears while it is summoned (`.visible`) — that is the "counter
+   outside the top bar" the contract keeps. `#reader-sheet` still opens. */
+body[data-r-focus="1"] #reader-topbar,
+body[data-r-focus="1"] #reader-bottom-nav,
+body[data-r-focus="1"] .reader-zone {
+  display: none;
+}
+
+body[data-r-focus="1"] #reader-hud {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(0.5rem);
+}
+
+body[data-r-focus="1"] #reader-hud.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+/* §6.2: pins are hidden in focus mode unless the notes toggle is on.
+   `#reader-notes-toggle` is absent from the §9 index (see the report's
+   contract gap); it is the `on` half of the "Show notes" `.reader-seg`, so
+   the pressed-button shape is the one that fires. The checkbox shape is
+   covered too, because §6.2 worded it as a toggle and either markup is legal. */
+body[data-r-focus="1"] :where(.reader-note-pin) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+body[data-r-focus="1"]:where(:has(#reader-notes-toggle[aria-pressed="true"], #reader-notes-toggle:checked)) :where(.reader-note-pin) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* The notes toggle is a group row like any other; give the whole label the
+   44px hit area (§8.2) rather than growing the 13px default checkbox. */
+.reader-sheet-group > label:has(#reader-notes-toggle) {
+  min-height: 44px;
+  cursor: pointer;
+}
+/* ── 5.4 End-of-chapter nav overlay (paged layouts) ──
+   `strip` uses `.reader-bottom-nav` in flow instead. Nav buttons are the
+   same markup, so only the container is styled here. */
+.reader-chapter-nav {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 120;
+  padding: 2.5rem 1rem calc(1.25rem + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top,
+      var(--r-chrome-bg, rgba(10, 10, 10, 0.92)) 55%,
+      transparent);
+  color: var(--r-chrome-fg, #ffffff);
+  text-align: center;
+}
+
+.reader-chapter-nav[hidden] {
+  display: none;
+}
+
+.reader-chapter-nav .reader-bottom-nav-inner {
+  max-width: var(--r-max-w, 700px);
+  margin: 0 auto;
+}
+
+/* The extra `Next up: Ch. N` action lives in the overlay with the same
+   .reader-nav-btn markup (§5.4). */
+.reader-chapter-nav .reader-nav-btn[data-action="next"] {
+  border-color: var(--accent, #f59e0b);
+  color: var(--accent, #f59e0b);
+}
+
+/* ── 5.5 Resume badge ── */
+.reader-resume-badge {
+  position: fixed;
+  inset-inline-start: 50%;
+  top: calc(env(safe-area-inset-top, 0px) + 0.75rem);
+  transform: translateX(-50%);
+  z-index: 95; /* under the top bar (100), so a revealed bar covers it */
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+  padding: 0.5rem 0.9rem;
+  border-radius: 999px;
+  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  color: var(--r-chrome-fg, #ffffff);
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.reader-resume-badge:hover {
+  border-color: var(--accent, #f59e0b);
+}
+
+/* ── 5.5 Next-up queue ──
+   The server renders it; it can sit inside the end-of-chapter overlay or,
+   on strip, right after the pages. Flow layout works in both places. */
+.reader-nextup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 420px;
+  margin: 0.9rem auto 0;
+}
+
+.reader-nextup-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 44px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  border-radius: 10px;
+  color: var(--r-chrome-fg, #ffffff);
+  font-family: var(--font-display, inherit);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.reader-nextup-item:hover {
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  border-color: var(--accent, #f59e0b);
+}
+
+/* The warm-up affordance is honest about being a warm-up, not a download:
+   three states, only `ready` claims success. */
+.reader-nextup-prefetch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.72rem;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 66%, transparent);
+  background: transparent;
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.reader-nextup-prefetch[data-prefetch-state="prefetching"] {
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  cursor: progress;
+}
+
+.reader-nextup-prefetch[data-prefetch-state="ready"] {
+  color: var(--accent, #f59e0b);
+  border-color: var(--accent, #f59e0b);
+  cursor: default;
+}
+
+/* ── 4.4 Auto-next countdown ──
+   A timer, not motion, so it survives reduced motion (§5.6). */
+#reader-countdown {
+  position: fixed;
+  inset-inline: 0;
+  bottom: calc(1rem + var(--r-controls-offset, 0px));
+  z-index: 130;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  width: max-content;
+  max-width: calc(100% - 2rem);
+  margin-inline: auto;
+  padding: 0.6rem 0.7rem 0.6rem 1rem;
+  border-radius: 999px;
+  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  color: var(--r-chrome-fg, #ffffff);
+  font-size: 0.85rem;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+#reader-countdown[hidden] {
+  display: none;
+}
+
+#reader-countdown button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.35rem 0.75rem;
+  font-family: var(--font-display, inherit);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--r-chrome-fg, #ffffff);
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+#reader-countdown button:hover {
+  border-color: var(--accent, #f59e0b);
+}
+
+/* ── 7. Offline banner ── */
+#reader-offline {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  min-height: 44px;
+  padding: 0.65rem 1rem;
+  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  border-top: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  font-size: 0.8rem;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+#reader-offline[hidden] {
+  display: none;
+}
+
+/* ── 7. Empty chapter ── */
+.reader-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  min-height: 60dvh;
+  padding: 4rem 1.5rem;
+  text-align: center;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  font-size: 0.95rem;
+}
+
+.reader-empty[hidden] {
+  display: none;
+}
+
+/* The reader has exactly one checkbox: `#reader-remember-series`, styled
+   above at 44x44. Every other boolean is a `.reader-seg-btn`, also 44px. This
+   rule is a guard for a future toggle-shaped control inside a group; §9 names
+   no class for a toggle row, so element selectors are used (see the report). */
+.reader-sheet-group > label:has(input[type="checkbox"]) {
+  min-height: 44px;
+  cursor: pointer;
+}
+
+/* ============================================
+   7. States
+   ============================================ */
+
+/* The syncing skeleton keeps the reader's width so the layout does not jump
+   on load (§7). Base rules at style.css:577-607 and 2031-2066 supply the
+   shimmer and the 3/5 / 3/4 boxes. */
+body.reader-page .loading-state.reader-loading {
+  max-width: var(--r-max-w, 700px);
+  margin-inline: auto;
+}
+
+/* Until the server emits per-page dimensions, `idle`/`loading`/`error`
+   reserve a fixed 3/4 box; `ready` hands sizing back to the image. */
+.reader-images .reader-page[data-page-state="idle"],
+.reader-images .reader-page[data-page-state="loading"],
+.reader-images .reader-page[data-page-state="error"] {
+  aspect-ratio: 3 / 4;
+  width: 100%;
+  margin-inline: auto;
+}
+
+/* The reserved box is a CLS guard, not a layout model. In the paged layouts
+   one screen is the unit, so a 3/4 box on a wide column (700px wide -> 933px
+   tall) would overflow the viewport before the image arrives. */
+body:not([data-r-layout="strip"]) .reader-images .reader-page[data-page-state="idle"],
+body:not([data-r-layout="strip"]) .reader-images .reader-page[data-page-state="loading"],
+body:not([data-r-layout="strip"]) .reader-images .reader-page[data-page-state="error"] {
+  max-height: calc(100dvh * var(--r-zoom, 1));
+}
+
+.reader-images .reader-page[data-page-state="ready"] {
+  aspect-ratio: auto;
+}
+
+/* Blur-up stand-in: a tint of the backdrop plus the base shimmer. Opacity 0
+   once the image is `ready`, so there is no flash on a fast cache hit. */
+body.reader-page .reader-page[data-page-state="idle"] .reader-page-placeholder,
+body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholder {
+  background: linear-gradient(90deg,
+      var(--r-bg, #0a0a0a) 25%,
+      color-mix(in srgb, var(--r-bg, #0a0a0a) 88%, var(--r-chrome-fg, #ffffff)) 50%,
+      var(--r-bg, #0a0a0a) 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.reader-images .reader-page[data-page-state="ready"] .reader-page-placeholder {
+  opacity: 0;
+}
+
+.reader-images .reader-page[data-page-state="error"] .reader-page-placeholder {
+  opacity: 0;
+}
+
+/* ── 7. Image failure ── */
+.reader-page-error {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  padding: 1.5rem;
+  text-align: center;
+  background: color-mix(in srgb, var(--r-bg, #0a0a0a) 92%, var(--r-chrome-fg, #ffffff));
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  font-size: 0.85rem;
+}
+
+.reader-page-error[hidden] {
+  display: none;
+}
+
+.reader-retry-btn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.55rem 1rem;
+  font-family: var(--font-display, inherit);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--r-chrome-fg, #ffffff);
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  border: 1px solid var(--accent, #f59e0b);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.reader-retry-btn:hover {
+  background: color-mix(in srgb, var(--accent, #f59e0b) 18%, transparent);
+}
+
+/* ============================================
+   6. Notes
+   ============================================ */
+
+/* ── 6.2 Pin on the page ── */
+.reader-note-pin {
+  position: absolute;
+  inset-inline-end: 8px;
+  top: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  border: 1px solid var(--accent, #f59e0b);
+  color: var(--accent, #f59e0b);
+  font-family: var(--font-display, inherit);
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.reader-note-pin::before {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent, #f59e0b);
+}
+
+.reader-note-pin::after {
+  content: attr(data-count);
+  margin-inline-start: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* One note: the dot alone. Two or more: the count replaces the dot. */
+.reader-note-pin[data-count="1"]::after {
+  display: none;
+}
+
+.reader-note-pin[data-count]:not([data-count="1"])::before {
+  display: none;
+}
+
+.reader-note-pin:hover {
+  transform: scale(1.06);
+}
+
+/* ── 6.1 Composer ──
+   A bottom sheet, not a modal: the anchored page stays visible behind it. */
+.reader-note-composer {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 210;
+  padding: 0.9rem 1rem calc(0.9rem + env(safe-area-inset-bottom, 0px));
+  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  border-top: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  border-start-start-radius: 18px;
+  border-start-end-radius: 18px;
+  color: var(--r-chrome-fg, #ffffff);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.reader-note-composer[hidden] {
+  display: none;
+}
+
+.reader-note-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.reader-note-body {
+  width: 100%;
+  min-height: 96px;
+  max-height: 40dvh;
+  padding: 0.7rem 0.8rem;
+  font-family: var(--font-body, inherit);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  resize: vertical;
+  color: var(--r-chrome-fg, #ffffff);
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  border-radius: 12px;
+}
+
+.reader-note-body::placeholder {
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 66%, transparent);
+}
+
+.reader-note-form button {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.55rem 1rem;
+  font-family: var(--font-display, inherit);
+  font-size: 0.85rem;
+  font-weight: 600;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.reader-note-save {
+  align-self: flex-end;
+  color: #111111;
+  background: var(--accent, #f59e0b);
+  border: 1px solid var(--accent, #f59e0b);
+}
+
+.reader-note-cancel {
+  align-self: flex-start;
+  margin-inline-end: auto;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  background: transparent;
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+}
+
+.reader-note-cancel:hover {
+  color: var(--r-chrome-fg, #ffffff);
+}
+
+.reader-note-error {
+  margin: 0;
+  color: #f87171;
+  font-size: 0.8rem;
+}
+
+.reader-note-error[hidden] {
+  display: none;
+}
+
+/* ── 6.3 Notes panel ──
+   Bottom sheet below 768px; right rail at >=768px (see §8.1 motion of the
+   same element). Only `inset` and `width` change between the two. */
+.reader-notes-panel {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 210;
+  display: flex;
+  flex-direction: column;
+  max-height: 70dvh;
+  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  color: var(--r-chrome-fg, #ffffff);
+  border-top: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  border-start-start-radius: 18px;
+  border-start-end-radius: 18px;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.reader-notes-panel[hidden] {
+  display: none;
+}
+
+.reader-notes-panel header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 56px;
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+}
+
+.reader-notes-panel header h2 {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-display, inherit);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.reader-notes-count {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 66%, transparent);
+}
+
+.reader-notes-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.reader-notes-close:hover {
+  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
+  color: var(--r-chrome-fg, #ffffff);
+}
+
+.reader-notes-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0.35rem 0 calc(0.5rem + env(safe-area-inset-bottom, 0px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.reader-note-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 0.7rem;
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+}
+
+.reader-note-item:last-child {
+  border-bottom: 0;
+}
+
+.reader-note-jump {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: start;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.35rem 0.5rem;
+  font-family: var(--font-display, inherit);
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent, #f59e0b);
+  background: color-mix(in srgb, var(--accent, #f59e0b) 12%, transparent);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.reader-note-jump:hover {
+  border-color: var(--accent, #f59e0b);
+}
+
+.reader-note-time {
+  grid-column: 2;
+  font-size: 0.7rem;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 66%, transparent);
+}
+
+.reader-note-text {
+  grid-column: 2;
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  cursor: pointer;
+  /* Four lines collapsed by default (§6.3). The panel is light-on-dark, so
+     the text deliberately keeps the 72% chrome tone rather than the 66%
+     metadata tone: it is body copy, and 66% on a 0.92 chrome backdrop sits
+     under the 4.5:1 bar. The expand-on-click behaviour has no contract-named
+     hook, so JS lifts this with an inline `-webkit-line-clamp`. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+}
+
+.reader-notes-empty {
+  padding: 1.75rem 1.25rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 66%, transparent);
+}
+
+/* ============================================
+   8. Responsive and accessibility
+   Only the three existing breakpoints (480, 600, 768) are used.
+   ============================================ */
+
+/* ── <=600px ──
+   Nav buttons go full width: three side-by-side pill labels at phone width
+   squeeze the chapter numbers into ellipses. Declared before the 480px block
+   so the narrower query wins where both match. */
+@media (max-width: 600px) {
+  .reader-page .reader-bottom-nav-inner {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .reader-page .reader-nav-btn {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .reader-sheet-panel {
+    max-height: 85dvh;
+  }
+}
+
+/* ── <=480px ──
+   Contract §8.1: sheet is full height, the top bar keeps the page counter
+   only, and `--r-max-w` may not push the column past the viewport. */
+@media (max-width: 480px) {
+  .reader-topbar-title {
+    display: none;
+  }
+
+  .reader-topbar-inner {
+    gap: 0.4rem;
+  }
+
+  #reader-images {
+    max-width: 100%;
+  }
+
+  .reader-sheet-panel {
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px));
+  }
+
+  .reader-notes-panel {
+    max-height: 85dvh;
+  }
+
+  .reader-chapter-nav {
+    padding: 2rem 0.75rem calc(1rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  .reader-nextup {
+    max-width: 100%;
+  }
+}
+
+/* ── <=768px ──
+   Touch floor for everything interactive, stated once and explicitly
+   because the 36px base rule at style.css:1246 is the known violation. */
+@media (max-width: 768px) {
+  .reader-back-btn,
+  .reader-icon-btn,
+  .reader-zone,
+  .reader-nav-btn,
+  .reader-seg-btn,
+  .reader-sheet-tab,
+  .reader-keybind-key,
+  .reader-keybind-reset,
+  .reader-retry-btn,
+  .reader-notes-close,
+  .reader-note-pin,
+  .reader-note-jump,
+  .reader-slider,
+  .reader-hud,
+  .reader-resume-badge,
+  .reader-nextup-item,
+  .reader-nextup-prefetch {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .reader-zone {
+    justify-content: center;
+  }
+}
+
+/* ── >=768px ──
+   The sheet stops being a bottom sheet and becomes a 340px right rail; the
+   notes panel docks to the same edge. Both surfaces stack their groups, so
+   the tab strip is retired and every group becomes visible again — an author
+   `display: block` beats the UA `[hidden] { display: none }` rule. */
+@media (min-width: 768px) {
+  .reader-sheet-backdrop {
+    background: rgba(0, 0, 0, 0.4);
+  }
+
+  .reader-sheet-panel {
+    inset-inline: auto 0;
+    top: 0;
+    bottom: 0;
+    width: 340px;
+    max-height: none;
+    padding-bottom: 1rem;
+    border-top: 0;
+    border-start-start-radius: 0;
+    border-start-end-radius: 0;
+    border-inline-start: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+    transform: translateX(0);
+  }
+
+  .reader-sheet-tabs {
+    display: none;
+  }
+
+  /* Rail: the panel becomes the scroller and every group stacks (§3.3). The
+     author `display: block` also beats the UA `[hidden] { display: none }`,
+     which is what makes all five groups visible at once. */
+  .reader-sheet-panel {
+    overflow-y: auto;
+  }
+
+  .reader-sheet-group,
+  .reader-sheet-group[hidden] {
+    display: block;
+  }
+
+  .reader-sheet-group {
+    flex: 0 0 auto;
+    overflow-y: visible;
+  }
+
+  .reader-notes-panel {
+    inset-inline: auto 0;
+    top: 0;
+    bottom: 0;
+    width: 340px;
+    max-height: none;
+    border-top: 0;
+    border-start-start-radius: 0;
+    border-start-end-radius: 0;
+    border-inline-start: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  }
+
+  .reader-notes-list {
+    padding-bottom: 0.5rem;
+  }
+
+  /* Chrome stays above the rail's two-edge stack. */
+  .reader-chapter-nav {
+    padding-bottom: 1.25rem;
+  }
+
+  #reader-images {
+    margin-inline: auto;
+  }
+}
+
+/* ── 8.2 Focus rings ──
+   `--accent` may be absent on an unknown theme, so the fallback is
+   mandatory, not decorative. */
+:focus-visible {
+  outline: 2px solid var(--accent, #f59e0b);
+  outline-offset: 2px;
+}
+
+/* ── 5.6 Reduced motion ──
+   hintPulse is killed outright; every chrome transition collapses to an
+   imperceptible duration so hide/dim still change state, just not visibly
+   over time. No parallax, no smooth scrolling. */
+@media (prefers-reduced-motion: reduce) {
+
+  .reader-hint,
+  .reader-hint.hidden {
+    animation: none;
+  }
+
+  .reader-topbar,
+  .reader-hud,
+  .reader-sheet-panel,
+  .reader-resume-badge,
+  .reader-note-pin,
+  .reader-page-placeholder,
+  .reader-sheet-tab,
+  .reader-seg-btn,
+  .reader-icon-btn,
+  .reader-back-btn,
+  .reader-nav-btn,
+  .reader-nextup-item,
+  .reader-keybind-key,
+  .reader-note-jump {
+    transition-duration: 0.01ms;
+    animation-duration: 0.01ms;
+  }
+
+  /* The dim overlay needs its shipped specificity restated: the base rules
+     `#reader-dim.reader-dim` (0,2,0) and `body[data-r-dim="1"]
+     #reader-dim.reader-dim` (1,3,1) both outrank a bare `#reader-dim` (1,0,0). */
+  #reader-dim.reader-dim,
+  body[data-r-dim="1"] #reader-dim.reader-dim {
+    transition-duration: 0.01ms;
+  }
+
+  /* The skeleton and placeholder keep their box, they just stop shimmering:
+     a zero-duration animation would strobe. */
+  body.reader-page .reader-page[data-page-state="idle"] .reader-page-placeholder,
+  body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholder,
+  .skeleton {
+    animation: none;
+  }
+
+  /* The auto-next timer is not motion, so it keeps running; only its fade
+     is removed. */
+  #reader-countdown {
+    animation: none;
+  }
+}
+
+/* ── 5.6 No smooth scrolling inside the reader ──
+   style.css:66 sets `html { scroll-behavior: smooth }` globally. In `strip`
+   and `vertical` the snap/scroll navigation must be immediate. */
+html:has(body.reader-page),
+body.reader-page,
+body.reader-page #reader-images {
+  scroll-behavior: auto;
+}
+
+/* ── 8.2 No horizontal scroll ──
+   The base rule at style.css:1210 already sets `overflow-x: hidden` on the
+   body; this keeps the fixed overlays from contributing scroll width in the
+   first place. No `max-width` is set on the body: `100vw` includes the
+   scrollbar and would shift a centred column by half the scrollbar width. */
+#reader-zones,
+.reader-chapter-nav,
+.reader-dim {
+  max-width: 100%;
+}
+
+
+
+
