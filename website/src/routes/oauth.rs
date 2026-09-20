@@ -3,7 +3,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{AppendHeaders, Html, IntoResponse, Response},
 };
 use mangaread_core::domain::{NewUser, Role};
 use serde::Deserialize;
@@ -16,6 +16,25 @@ use crate::{
 };
 
 const STATE_COOKIE: &str = "oauth_state";
+
+/// State cookie header value. Mirrors `auth.rs`' `MANGAREAD_COOKIE_SECURE`
+/// decision so the state and session cookies share one convention.
+fn state_cookie_value(value: &str, max_age_secs: i64) -> String {
+    let secure = std::env::var("MANGAREAD_COOKIE_SECURE").as_deref() == Ok("1");
+    state_cookie_with_secure(value, max_age_secs, secure)
+}
+
+/// Pure cookie builder; `secure` is passed in so the logic is testable without
+/// mutating process environment variables.
+fn state_cookie_with_secure(value: &str, max_age_secs: i64, secure: bool) -> String {
+    let mut cookie = format!(
+        "{STATE_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}"
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
 
 fn error_page(cfg: &crate::config::SiteConfig, theme: &str, msg: &str, user: Option<&AuthUser>) -> Response {
     (
@@ -54,7 +73,7 @@ pub async fn oauth_start(
         StatusCode::SEE_OTHER,
         [
             (header::LOCATION, url),
-            (header::SET_COOKIE, format!("{STATE_COOKIE}={state_token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600")),
+            (header::SET_COOKIE, state_cookie_value(&state_token, 600)),
         ],
         "",
     ).into_response()
@@ -146,8 +165,10 @@ pub async fn oauth_callback(
 }
 
 /// Insert a remembered (30-day) session and redirect home with the cookie.
-/// The state cookie is cleared alongside (duplicate header names are legal
-/// in the array — both SET_COOKIE headers are sent).
+/// The state cookie is cleared alongside. Both cookies are emitted through
+/// `AppendHeaders` because a raw `[(K, V); N]` array uses `HeaderMap::insert`,
+/// which replaces prior values of the same header key — the second `SET_COOKIE`
+/// would drop the session cookie.
 /// `&MutexGuard<Connection>` coerces to `&Connection` via Deref at the call.
 fn open_session(db: &tokio::sync::MutexGuard<'_, rusqlite::Connection>, user_id: i64, device: &str) -> Response {
     let max_age = lifetime_for_remember(true);
@@ -155,13 +176,63 @@ fn open_session(db: &tokio::sync::MutexGuard<'_, rusqlite::Connection>, user_id:
     if mangaread_core::db::insert_session(db, user_id, &token, &session_expires_at(max_age), device).is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+    open_session_response(set_cookie_value(&token, max_age))
+}
+
+/// Build the 303-home response carrying the session cookie and the cleared
+/// state cookie. Split out from [`open_session`] so the two-header behavior is
+/// unit-testable without a live provider or database.
+fn open_session_response(session_cookie: String) -> Response {
     (
         StatusCode::SEE_OTHER,
-        [
+        AppendHeaders([
+            (header::SET_COOKIE, session_cookie),
+            (header::SET_COOKIE, state_cookie_value("", 0)),
             (header::LOCATION, "/".to_string()),
-            (header::SET_COOKIE, set_cookie_value(&token, max_age)),
-            (header::SET_COOKIE, format!("{STATE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")),
-        ],
+        ]),
         "",
     ).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the response must carry BOTH `set-cookie` values, not one
+    /// that overwrote the other.
+    #[test]
+    fn session_response_keeps_both_cookies() {
+        let response = open_session_response(set_cookie_value("tok-1", 2592000));
+        let cookies: Vec<&str> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(cookies.len(), 2, "expected two set-cookie headers: {cookies:?}");
+        assert!(cookies.iter().any(|c| c.contains("mangaread_session=tok-1")));
+        assert!(cookies.iter().any(|c| c.contains("oauth_state=;") && c.contains("Max-Age=0")));
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/");
+    }
+
+    #[test]
+    fn state_cookie_secure_flag() {
+        let insecure = state_cookie_with_secure("s", 600, false);
+        assert!(insecure.contains("oauth_state=s"));
+        assert!(insecure.contains("Max-Age=600"));
+        assert!(!insecure.contains("Secure"));
+
+        let secure = state_cookie_with_secure("s", 600, true);
+        assert!(secure.contains("oauth_state=s"));
+        assert!(secure.contains("Max-Age=600"));
+        assert!(secure.ends_with("; Secure"));
+    }
+
+    #[test]
+    fn clear_state_cookie_is_expired() {
+        let cookie = state_cookie_value("", 0);
+        assert!(cookie.contains("oauth_state=;"));
+        assert!(cookie.contains("Max-Age=0"));
+    }
 }
