@@ -6,7 +6,7 @@
 //! |----------|---------|-------------|
 //! | `SITE_TITLE` | `MangaRead` | Site name in header / `<title>` |
 //! | `SITE_COLOR` | `#f59e0b` | Primary accent color (hex) |
-//! | `SITE_BG` | `#0f0f0f` | Page background color |
+//! | `SITE_BG` | `#131210` | Page background color |
 //!
 //! Colors `accent_hover`, `accent_dim`, `accent_glow` are auto-derived.
 //! Font, max-width, and other layout tokens are set in CSS variables
@@ -79,6 +79,36 @@ fn parse_hex(hex: &str) -> (u8, u8, u8) {
     (r, g, b)
 }
 
+/// Convert a `#rrggbb` string to `(hue_degrees, saturation_percent, lightness_percent)`.
+///
+/// Used to translate the admin accent and background colours into the
+/// hue/saturation/lightness components Bulma derives its palettes from.
+/// Invalid input returns `(0.0, 0.0, 0.0)`, matching `parse_hex`.
+pub fn hex_to_hsl(hex: &str) -> (f64, f64, f64) {
+    let (r, g, b) = parse_hex(hex);
+    if hex.trim_start_matches('#').len() != 6 {
+        return (0.0, 0.0, 0.0);
+    }
+    let (r, g, b) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    if (max - min).abs() < f64::EPSILON {
+        return (0.0, 0.0, l * 100.0);
+    }
+    let d = max - min;
+    let s = d / (1.0 - (2.0 * l - 1.0).abs());
+    let h = if max == r {
+        60.0 * (((g - b) / d) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    let h = if h < 0.0 { h + 360.0 } else { h };
+    (h, s * 100.0, l * 100.0)
+}
+
 /// Lighten a hex color by blending it toward white.
 fn lighten(hex: &str, amount: f32) -> String {
     let (r, g, b) = parse_hex(hex);
@@ -90,7 +120,7 @@ impl SiteConfig {
     /// Build from environment variables with sensible defaults.
     pub fn from_env() -> Self {
         let accent = std::env::var("SITE_COLOR").unwrap_or_else(|_| "#f59e0b".into());
-        let bg_page = std::env::var("SITE_BG").unwrap_or_else(|_| "#0f0f0f".into());
+        let bg_page = std::env::var("SITE_BG").unwrap_or_else(|_| "#131210".into());
         let (accent_r, accent_g, accent_b) = parse_hex(&accent);
 
         Self {
@@ -104,18 +134,32 @@ impl SiteConfig {
         }
     }
 
-    /// Generate a `<style>` block overriding CSS custom properties
-    /// for accent colors (everything else lives in `style.css`'s `:root`).
+    /// CSS fragment carrying admin-derived colour overrides.
+    ///
+    /// Emitted inside `:root[data-theme="dark"]` (specificity 0,2,0) so these
+    /// beat the static identity tokens in `theme.css` on specificity rather
+    /// than on document order. Only the hue/saturation/lightness components
+    /// are written: Bulma derives its palettes from them, so the composed
+    /// colours recompute. `--bulma-primary-rgb` is a literal in Bulma and is
+    /// therefore written by hand.
     pub fn css_overrides(&self) -> String {
+        let (h, s, l) = hex_to_hsl(&self.accent);
+        let (_, _, bg_l) = hex_to_hsl(&self.bg_page);
+        // Elevation steps stay proportional to the chosen page lightness so
+        // the surface hierarchy survives any admin background.
+        let bis = (bg_l + 2.0).min(100.0);
+        let ter = (bg_l + 4.0).min(100.0);
+        let background = (bg_l + 6.0).min(100.0);
+        // Whole-number precision matches the identity tokens in `theme.css`
+        // (`38deg` / `92%` / `50%`), so the env defaults reproduce the
+        // designed palette exactly rather than drifting by fractions of a
+        // degree. `hex_to_hsl` stays exact; rounding happens at emission.
         format!(
-            ":root{{--accent:{};--accent-hover:{};--accent-dim:{}14;--bg-page:{};--accent-r:{};--accent-g:{};--accent-b:{};}}",
-            self.accent,
-            self.accent_hover,
-            self.accent,
-            self.bg_page,
-            self.accent_r,
-            self.accent_g,
-            self.accent_b,
+            ":root[data-theme=\"dark\"]{{--bulma-primary-h:{h:.0}deg;--bulma-primary-s:{s:.0}%;\
+--bulma-primary-l:{l:.0}%;--bulma-primary-rgb:{},{},{};--bulma-scheme-main-l:{bg_l:.0}%;\
+--bulma-scheme-main-bis-l:{bis:.0}%;--bulma-scheme-main-ter-l:{ter:.0}%;\
+--bulma-background-l:{background:.0}%;}}",
+            self.accent_r, self.accent_g, self.accent_b
         )
     }
 
@@ -193,6 +237,42 @@ mod tests {
         let c = SiteConfig::from_settings(&map);
         assert_eq!(c.site_title, "MyDen");
         assert_eq!(c.accent, "#f59e0b"); // invalid hex keeps boot default
+    }
+
+    #[test]
+    fn hex_to_hsl_converts_ember() {
+        let (h, s, l) = hex_to_hsl("#f59e0b");
+        assert!((h - 38.0).abs() < 0.5, "hue was {h}");
+        assert!((s - 92.0).abs() < 0.5, "saturation was {s}");
+        assert!((l - 50.0).abs() < 0.5, "lightness was {l}");
+    }
+
+    #[test]
+    fn hex_to_hsl_handles_greys_and_bad_input() {
+        let (_h, s, l) = hex_to_hsl("#131210");
+        // The identity surface is a warm near-neutral (hsl(40 8.57% 6.86%)),
+        // not a pure grey: 8% is the designed scheme saturation.
+        assert!(s < 10.0, "expected a near-neutral saturation, got {s}");
+        assert!((l - 7.0).abs() < 0.5, "lightness was {l}");
+        assert_eq!(hex_to_hsl("nonsense"), (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn overrides_target_the_dark_scheme_block() {
+        let cfg = SiteConfig {
+            site_title: "T".into(),
+            accent: "#f59e0b".into(),
+            accent_hover: "#fbbf24".into(),
+            bg_page: "#131210".into(),
+            accent_r: 245,
+            accent_g: 158,
+            accent_b: 11,
+        };
+        let css = cfg.css_overrides();
+        assert!(css.starts_with(":root[data-theme=\"dark\"]{"), "got {css}");
+        assert!(css.contains("--bulma-primary-h:38"), "got {css}");
+        assert!(css.contains("--bulma-primary-rgb:245,158,11"), "got {css}");
+        assert!(css.contains("--bulma-scheme-main-l:"), "got {css}");
     }
 }
 
