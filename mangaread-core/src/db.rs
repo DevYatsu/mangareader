@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rusqlite::Connection;
 
 use crate::error::Error;
@@ -113,6 +115,12 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
         );
         CREATE INDEX IF NOT EXISTS idx_progress_user_updated ON progress(user_id, updated_at);
         CREATE INDEX IF NOT EXISTS idx_history_user ON history(user_id, read_at);
+        CREATE TABLE IF NOT EXISTS site_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT '',
+            updated_by INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         ",
     )?;
     // Migrations for existing DBs (safe no-ops if column already exists)
@@ -120,6 +128,23 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
         .ok();
     conn.execute_batch("ALTER TABLE manga ADD COLUMN series_id INTEGER REFERENCES series(id);")
         .ok();
+    // users.theme migration: ALTER TABLE only if the column is missing
+    // (keeps init_db idempotent for existing DBs).
+    let has_theme: bool = {
+        let mut stmt = conn.prepare("PRAGMA table_info(users)")?;
+        let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for col in cols {
+            if col? == "theme" {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    if !has_theme {
+        conn.execute_batch("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT ''")?;
+    }
     Ok(())
 }
 
@@ -617,7 +642,8 @@ fn map_user_row(row: &rusqlite::Row) -> rusqlite::Result<User> {
         password_hash: row.get(3)?,
         role: Role::from_str(&row.get::<_, String>(4)?),
         locale: row.get(5)?,
-        created_at: row.get(6)?,
+        theme: row.get(6)?,
+        created_at: row.get(7)?,
     })
 }
 
@@ -633,7 +659,7 @@ pub fn create_user(conn: &Connection, u: &NewUser) -> Result<i64, Error> {
 /// Find a user by email. `NotFound` when missing.
 pub fn find_user_by_email(conn: &Connection, email: &str) -> Result<User, Error> {
     conn.query_row(
-        "SELECT id, name, email, password_hash, role, locale, created_at FROM users WHERE email = ?1",
+        "SELECT id, name, email, password_hash, role, locale, theme, created_at FROM users WHERE email = ?1",
         rusqlite::params![email],
         map_user_row,
     )
@@ -669,7 +695,7 @@ pub fn insert_session(
 /// Find the user owning a live session token (`expires_at > now`).
 pub fn find_user_by_session(conn: &Connection, token: &str, now: &str) -> Result<User, Error> {
     conn.query_row(
-        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.created_at
+        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.theme, u.created_at
          FROM users u JOIN sessions s ON s.user_id = u.id
          WHERE s.token = ?1 AND s.expires_at > ?2",
         rusqlite::params![token, now],
@@ -817,6 +843,67 @@ pub fn list_notes(
         .map_err(Error::from)
 }
 
+/// Update a user's profile fields (name, locale, theme).
+pub fn update_user_profile(
+    conn: &Connection,
+    user_id: i64,
+    name: &str,
+    locale: &str,
+    theme: &str,
+) -> Result<(), Error> {
+    conn.execute(
+        "UPDATE users SET name = ?1, locale = ?2, theme = ?3 WHERE id = ?4",
+        rusqlite::params![name, locale, theme, user_id],
+    )?;
+    Ok(())
+}
+
+/// Update a user's password hash.
+pub fn update_user_password(conn: &Connection, user_id: i64, new_hash: &str) -> Result<(), Error> {
+    conn.execute(
+        "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+        rusqlite::params![new_hash, user_id],
+    )?;
+    Ok(())
+}
+
+// ── Site settings (KV store) ──
+
+/// Fetch a single site setting by key. `Ok(None)` when missing.
+pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, Error> {
+    let mut stmt = conn.prepare("SELECT value FROM site_settings WHERE key = ?1")?;
+    match stmt.query_row(rusqlite::params![key], |row| row.get::<_, String>(0)) {
+        Ok(v) => Ok(Some(v)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Upsert a site setting.
+pub fn set_setting(conn: &Connection, key: &str, value: &str, updated_by: i64) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO site_settings (key, value, updated_by, updated_at) VALUES (?1, ?2, ?3, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = datetime('now')",
+        rusqlite::params![key, value, updated_by],
+    )?;
+    Ok(())
+}
+
+/// Load all site settings into a map.
+pub fn all_settings(conn: &Connection) -> Result<HashMap<String, String>, Error> {
+    let mut stmt = conn.prepare("SELECT key, value FROM site_settings")?;
+    let rows = stmt.query_map([], |row| {
+        let k: String = row.get(0)?;
+        let v: String = row.get(1)?;
+        Ok((k, v))
+    })?;
+    let mut map = HashMap::new();
+    for row in rows {
+        let (k, v) = row?;
+        map.insert(k, v);
+    }
+    Ok(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -839,6 +926,21 @@ mod tests {
         insert_session(&conn, id, "tok123", "2099-01-01 00:00:00", "test").unwrap();
         let u = find_user_by_session(&conn, "tok123", "2026-01-01 00:00:00").unwrap();
         assert_eq!(u.email, "r@x.io");
+    }
+
+    #[test]
+    fn settings_roundtrip_and_profile_update() {
+        let conn = mem();
+        assert_eq!(get_setting(&conn, "site_title").unwrap(), None);
+        set_setting(&conn, "site_title", "MyDen", 1).unwrap();
+        assert_eq!(get_setting(&conn, "site_title").unwrap().as_deref(), Some("MyDen"));
+        let id = create_user(&conn, &NewUser {
+            name: "r".into(), email: "r@x.io".into(),
+            password_hash: "h".into(), role: Role::Member,
+        }).unwrap();
+        update_user_profile(&conn, id, "renamed", "fr", "asura").unwrap();
+        let u = find_user_by_email(&conn, "r@x.io").unwrap();
+        assert_eq!(u.name, "renamed");
     }
 
     #[test]

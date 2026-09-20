@@ -49,6 +49,7 @@ pub struct User {
     pub password_hash: String,
     pub role: Role,
     pub locale: String,
+    pub theme: String,
     pub created_at: String,
 }
 
