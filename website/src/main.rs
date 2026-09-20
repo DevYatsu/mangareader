@@ -2,6 +2,7 @@
 //!
 //! This crate provides the web frontend using Axum and Maud templates.
 
+mod auth;
 mod config;
 mod routes;
 mod scraper_helper;
@@ -114,6 +115,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/series", get(crate::routes::series::series_list))
         .route("/series/{id}", get(crate::routes::series::series_detail))
         .route("/bookmarks", get(crate::routes::bookmarks::bookmarks_page))
+        .route("/login", get(crate::routes::auth_pages::login_page).post(crate::routes::auth_pages::login_submit))
+        .route("/register", get(crate::routes::auth_pages::register_page).post(crate::routes::auth_pages::register_submit))
+        .route("/logout", post(crate::routes::auth_pages::logout))
         .route("/source/{source}", get(crate::routes::source::source_list))
         .route("/manga/{id}", get(crate::routes::manga::manga_detail))
         .route(
@@ -125,6 +129,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sync-status", get(crate::routes::api::sync_status))
         .route("/api/sync-manga/{id}", post(crate::routes::api::sync_manga))
         .route("/api/progress-series", get(crate::routes::api::progress_series))
+        .route("/api/bookmarks", get(crate::routes::sync::get_bookmarks).post(crate::routes::sync::set_bookmark))
+        .route("/api/progress", get(crate::routes::sync::get_progress).post(crate::routes::sync::post_progress))
+        .route("/api/history", post(crate::routes::sync::post_history))
+        .route("/api/migrate", post(crate::routes::sync::post_migrate))
         .route("/health", get(crate::routes::health::health))
         .route("/favicon.ico", get(|| async { axum::response::Redirect::permanent("/static/favicon.svg") }))
         .nest_service(

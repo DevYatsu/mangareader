@@ -3,7 +3,7 @@ use axum::response::Html;
 use maud::html;
 use std::sync::Arc;
 
-use crate::AppState;
+use crate::{auth::AuthUser, AppState};
 
 /// GET `/read/{manga_id}/{chapter_id}` — render the chapter reader page.
 ///
@@ -13,6 +13,7 @@ use crate::AppState;
 /// navigation and uses the reader-specific layout.
 pub async fn chapter_reader(
     State(state): State<Arc<AppState>>,
+    user: Option<AuthUser>,
     Path((manga_id, chapter_id)): Path<(i64, i64)>,
 ) -> Html<String> {
     // Check if pages exist — quick peek, release lock
@@ -175,5 +176,6 @@ if(++a>=20)clearInterval(iv)
         content,
         &css,
         &state.config.site_title,
+        user.as_ref(),
     ).0)
 }

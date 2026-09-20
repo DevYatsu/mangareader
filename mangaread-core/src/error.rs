@@ -7,4 +7,6 @@ pub enum Error {
     Database(#[from] rusqlite::Error),
     #[error("Not found: {0}")]
     NotFound(String),
+    #[error("Auth error: {0}")]
+    Auth(String),
 }

@@ -1,3 +1,4 @@
+use crate::auth::AuthUser;
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
 /// Render the standard page layout (HTML document shell).
@@ -11,7 +12,9 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 ///
 /// `config_css` is a `<style>` fragment overriding CSS custom properties
 /// (accent color, background, etc.) — generated from [`SiteConfig::css_overrides`].
-pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, config_css: &str, site_title: &str) -> Markup {
+/// `user` drives the nav session state (`None` → Login link, `Some` → name
+/// + logout form) and sets `data-user-id` on `<body>` when logged in.
+pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, config_css: &str, site_title: &str, user: Option<&AuthUser>) -> Markup {
     let home_class = if title == "Home" { "active" } else { "" };
     let series_class = if title == "Series" { "active" } else { "" };
     let bookmarks_class = if title == "Bookmarks" { "active" } else { "" };
@@ -29,7 +32,7 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                 link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
                 style { (PreEscaped(config_css.to_string())) }
             }
-            body {
+            body data-user-id=[user.map(|u| u.id.to_string())] {
                 @if let Some(text) = sync_banner {
                     div class="sync-banner" {
                         span class="sync-banner-spinner" {}
@@ -69,6 +72,14 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                                 }
                                 "Bookmarks"
                             }
+                            @if let Some(u) = user {
+                                a href="/bookmarks" class="user-name" { (u.name) }
+                                form method="post" action="/logout" class="logout-form" {
+                                    button type="submit" class="logout-btn" { "Logout" }
+                                }
+                            } @else {
+                                a href="/login" { "Login" }
+                            }
                         }
                     }
                     main { (content) }
@@ -79,6 +90,7 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                     }
                 }
                 script src="/static/app.js" {}
+                script src="/static/auth.js" {}
             }
         }
     }
@@ -135,7 +147,10 @@ pub fn error_layout(heading: &str, message: &str) -> Markup {
 /// A minimal layout without the standard site header or footer, intended for
 /// the full-screen chapter reader view. Loads the reader stylesheet and the
 /// `app.js` script for page navigation and progress tracking.
-pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title: &str) -> Markup {
+///
+/// `user` sets `data-user-id` on `<body>` when logged in so the sync adapter
+/// (`auth.js`) can write reading progress through to the server.
+pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title: &str, user: Option<&AuthUser>) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -146,9 +161,10 @@ pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title:
                 link rel="stylesheet" href="/static/style.css";
                 style { (PreEscaped(config_css.to_string())) }
             }
-            body class="reader-page" {
+            body class="reader-page" data-user-id=[user.map(|u| u.id.to_string())] {
                 (content)
                 script src="/static/app.js" {}
+                script src="/static/auth.js" {}
             }
         }
     }

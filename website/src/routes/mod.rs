@@ -11,6 +11,7 @@
 //! - `api`:     sync management, progress tracking
 //! - `bookmarks`: client-side bookmark page
 pub mod api;
+pub mod auth_pages;
 pub mod bookmarks;
 pub mod check;
 pub mod health;
@@ -19,3 +20,4 @@ pub mod manga;
 pub mod reader;
 pub mod series;
 pub mod source;
+pub mod sync;
