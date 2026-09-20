@@ -2,19 +2,6 @@ use crate::auth::AuthUser;
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 use mangaread_core::domain::Role;
 
-/// Body class for a theme key, or `None` when no class applies.
-///
-/// Every allowlisted [`crate::config::THEMES`] key (including `default`)
-/// yields `theme-{key}`; unknown/empty names yield no class so the base
-/// stylesheet look is preserved.
-fn theme_body_class(theme: &str) -> Option<String> {
-    if crate::config::is_theme(theme) {
-        Some(format!("theme-{theme}"))
-    } else {
-        None
-    }
-}
-
 /// Which top-level page is currently displayed, used to mark the active
 /// navbar entry.
 ///
@@ -146,57 +133,23 @@ pub fn base_layout(
     }
 }
 
-/// Render an error page with a heading, detail message, and a link back home.
+/// Inner content for an error page.
 ///
-/// The header and footer match the standard `base_layout`, so the error page
-/// does not feel disconnected from the rest of the site.
-///
-/// `theme` behaves as in [`base_layout`]: allowlisted names add a
-/// `theme-{theme}` body class plus the theme stylesheet link.
-pub fn error_layout(heading: &str, message: &str, theme: &str) -> Markup {
-    let site_title = std::env::var("SITE_TITLE").unwrap_or_else(|_| "MangaRead".into());
-    let config = crate::config::SiteConfig::from_env();
-    let theme_class = theme_body_class(theme);
-    let theme_link = crate::config::theme_css(theme);
+/// Deliberately not a layout: the shell comes from [`base_layout`], so error
+/// pages share the navbar, footer, and admin-configured colours with every
+/// other page. The previous standalone `error_layout` duplicated the document
+/// shell and read colors from the environment instead of the database.
+pub fn error_content(heading: &str, message: &str) -> Markup {
     html! {
-        (DOCTYPE)
-        html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1.0";
-                title { (heading) " — " (site_title) }
-                link rel="preconnect" href="https://fonts.googleapis.com";
-                link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="";
-                link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap";
-                link rel="stylesheet" href="/static/style.css";
-                @if let Some(href) = &theme_link {
-                    link rel="stylesheet" href=(href);
+        div class="columns is-centered" {
+            div class="column is-6-desktop is-8-tablet" {
+                div class="box has-text-centered" {
+                    h1 class="title is-3" { (heading) }
+                    p class="subtitle is-6 has-text-grey" { (message) }
+                    a class="button is-primary mt-4" href="/" { "Back to Home" }
                 }
-                style { (PreEscaped(config.css_overrides())) }
-            }
-            body class=[theme_class] {
-                div.container {
-                    header class="site-header" {
-                        a class="site-logo" href="/" { (site_title) }
-                        nav class="site-nav" {
-                            a href="/" { "Home" }
-                            a href="/series" { "Series" }
-                        }
-                    }
-                    main {
-                        section class="error-section" {
-                            h1 class="error-heading" { (heading) }
-                            p class="error-message" { (message) }
-                            a href="/" class="error-home-btn" { "Back to Home" }
-                        }
-            }
-            footer {
-                p { (site_title) }
             }
         }
-        script src="/static/app.js" {}
-    }
-}
     }
 }
 

@@ -42,7 +42,7 @@ fn error_page(cfg: &crate::config::SiteConfig, msg: &str, user: Option<&AuthUser
         Html(
             crate::templates::layout::base_layout(
                 "Login",
-                maud::html! { section class="auth-section" { p class="auth-error" { (msg) } p { a href="/login" { "Back to login" } } } },
+                crate::templates::layout::error_content("Login failed", msg),
                 None,
                 &cfg.css_overrides(),
                 &cfg.site_title,

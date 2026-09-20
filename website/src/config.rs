@@ -223,25 +223,6 @@ pub fn site_config(conn: &rusqlite::Connection) -> SiteConfig {
     }
 }
 
-/// Resolve the active theme key for a request.
-///
-/// The user's own `theme` wins when non-empty and allowlisted; otherwise
-/// the `site_theme` setting applies; otherwise `"default"`.
-pub fn resolve_theme(
-    conn: &rusqlite::Connection,
-    user: Option<&crate::auth::AuthUser>,
-) -> String {
-    if let Some(u) = user {
-        if !u.theme.trim().is_empty() && is_theme(&u.theme) {
-            return u.theme.clone();
-        }
-    }
-    match mangaread_core::db::get_setting(conn, "site_theme") {
-        Ok(Some(t)) if !t.trim().is_empty() && is_theme(&t) => t,
-        _ => "default".into(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

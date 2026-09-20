@@ -19,11 +19,17 @@ pub async fn manga_detail(
             }
         }
         Err(_) => {
+            let cfg = crate::config::site_config(&db);
+            let css = cfg.css_overrides();
             Err(axum::response::Html(
-                crate::templates::layout::error_layout(
+                crate::templates::layout::base_layout(
                     "Not Found",
-                    "Manga not found.",
-                    &crate::config::resolve_theme(&db, None),
+                    crate::templates::layout::error_content("Not Found", "Manga not found."),
+                    None,
+                    &css,
+                    &cfg.site_title,
+                    None,
+                    crate::templates::layout::Nav::None,
                 ).0,
             ))
         }

@@ -33,10 +33,19 @@ pub async fn series_detail(
     let s = match mangaread_core::db::get_series_by_id(&db, id) {
         Ok(s) => s,
         Err(_) => {
-            return Html(crate::templates::layout::error_layout(
+            let cfg = crate::config::site_config(&db);
+            let css = cfg.css_overrides();
+            return Html(crate::templates::layout::base_layout(
                 "Not Found",
-                "This series doesn't exist or may have been removed.",
-                &crate::config::resolve_theme(&db, user.as_ref()),
+                crate::templates::layout::error_content(
+                    "Not Found",
+                    "This series doesn't exist or may have been removed.",
+                ),
+                None,
+                &css,
+                &cfg.site_title,
+                user.as_ref(),
+                crate::templates::layout::Nav::None,
             ).0);
         }
     };
