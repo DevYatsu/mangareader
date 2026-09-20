@@ -4,7 +4,7 @@
 
 **Goal:** Users edit their profile in `/settings`; admins rebrand the whole site (title, accent, theme preset, SEO, legal, homepage) in `/admin` with no restart; three built-in visual themes (Webtoon-clean, Asura-dark, Demonic-crimson) are admin-selectable with live preview and per-user override.
 
-**Architecture:** `site_settings(key,value,updated_by,updated_at)` KV table is the single source of branding truth; `SiteConfig::from_env` stays as boot defaults only and a new `site_config(conn)` helper overlays DB values per request (no reload logic, no stale state). Themes are pure CSS: same Maud markup, one extra `<link>` to `/static/themes/{preset}.css` overriding `:root` tokens. `users.theme` (`''` = follow site) gives per-user override.
+**Architecture:** `site_settings(key,value,updated_by,updated_at)` KV table is the single source of branding truth; `SiteConfig::from_env` stays as boot defaults only and a new `site_config(conn)` helper overlays DB values per request (no reload logic, no stale state). Themes are layout variants, not skins: shared Maud markup with per-theme stylesheets doing structural work (CSS grid areas, order, display modes) plus a `theme-{name}` body class and a small number of theme-conditional markup branches (utility bars, hero slots). Content parity is mandatory: every theme exposes the same pages, nav, auth, and data — only arrangement and styling differ. `users.theme` (`''` = follow site) gives per-user override.
 
 **Tech Stack:** Rust edition 2024, Axum 0.8, Maud 0.27, rusqlite 0.32 (bundled), vanilla JS + new vanilla CSS theme files.
 
@@ -14,7 +14,7 @@
 
 - Self-host first. Single Docker image. SQLite default (WAL + busy_timeout, existing pattern; PRAGMA foreign_keys=ON from Slice 1 stays).
 - Stay in Rust for core. Vanilla CSS/JS stays.
-- No runtime plugin API. No WASM loaders. No dynamic libs. Themes are static CSS files only.
+- No runtime plugin API. No WASM loaders. No dynamic libs. Themes are static CSS files plus ≤2 small conditional markup branches per layout fn (utility bar, hero slot) that degrade to nothing on unknown themes.
 - One account = one reader identity. No profiles.
 - Readers never see sources, adapters, sync state, or origin URLs. This slice touches no reader-visible scraping UI (`/source/*` removal stays a Slice-5 job).
 - OAuth, reading stats, theme export/import JSON, dark-schedule, multi-library, 8-preset library are NOT in this slice. Three presets only: `webtoon`, `asura`, `demonic`.
@@ -39,7 +39,7 @@ Modified files:
 - `website/src/config.rs` — keep `from_env`; add `from_settings(map: HashMap<String,String>)` overlay + `site_config(conn) -> SiteConfig` helper (env boot defaults, DB wins per key).
 - `website/src/main.rs` — remove `config: SiteConfig` from AppState (single source = DB); register settings/admin/legal routes; bootstrap log line.
 - `website/src/routes/mod.rs` — add `pub mod settings; pub mod admin; pub mod legal;`
-- `website/src/templates/layout.rs` — `base_layout` + `reader_layout` gain `theme: &str` param (empty = no extra link, current look); `error_layout` gains `user + theme` (session-aware nav fix); every caller updated via grep; user-name nav link moves from `/bookmarks` to `/settings`.
+- `website/src/templates/layout.rs` — `base_layout` + `reader_layout` gain `theme: &str` param (empty = no extra link, current look); layout emits `<link id="theme-css">` via `theme_css()` plus `class="theme-{theme}"` on `<body>` as the structural hook; `error_layout` gains `user + theme` (session-aware nav fix); every caller updated via grep; user-name nav link moves from `/bookmarks` to `/settings`. Theme-conditional markup branches are allowed (≤2 small blocks per layout fn: utility bar, hero slot) and must degrade to nothing on unknown themes.
 - Every handler reading `state.config.site_title` — switch to `site_config(&conn)` helper (same grep sweep as theme param).
 - `website/static/style.css` — append only: settings/admin form styles, theme-preview cards, legal page styles.
 - `website/src/routes/auth_pages.rs` — bootstrap log gate `id == 1` → `role == Admin` (one-line deferred fix).
@@ -125,6 +125,7 @@ git commit -m "feat: site_settings KV store, users.theme, profile repository"
   - `pub fn site_config(conn: &rusqlite::Connection) -> SiteConfig` — `all_settings` then `from_settings`; on DB error returns `from_env()` (never 500 a page for a settings read).
   - `pub const THEMES: &[(&str, &str)] = &[("default","Default dark"),("webtoon","Webtoon clean"),("asura","Asura dark"),("demonic","Demonic crimson")]` — single allowlist used by layout link builder, settings/appearance validation, admin picker.
   - `pub fn theme_css(theme: &str) -> Option<String>` — `Some("/static/themes/{theme}.css")` when theme is `webtoon|asura|demonic`, else `None` (unknown/empty/default → no extra link, current look preserved).
+  - Layout plumbing (part of this task's caller sweep): `base_layout`/`reader_layout`/`error_layout` gain `theme: &str`; body gets `class="theme-{theme}"` (only for allowlisted names, else no class) plus the `theme_css()` link; new `pub fn resolve_theme(conn: &rusqlite::Connection, user: Option<&AuthUser>) -> String` — user.theme non-empty and allowlisted wins, else `site_theme` setting, else `"default"`.
   - AppState loses `config` field; `use crate::config::SiteConfig` import removed from main.rs; boot keeps `SiteConfig::from_env()` only for the startup log line.
 
 - [ ] **Step 1: Write the failing test**
@@ -157,7 +158,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add website/src/config.rs website/src/main.rs website/src/routes/
+git add website/src/config.rs website/src/main.rs website/src/routes/ website/src/templates/layout.rs
 git commit -m "feat: DB-backed site config with env boot defaults"
 ```
 
@@ -259,7 +260,7 @@ git commit -m "feat: admin branding, theme picker with preview, legal pages"
 
 **Files:**
 - Create: `website/static/themes/webtoon.css`, `website/static/themes/asura.css`, `website/static/themes/demonic.css`
-- Modify: `website/src/templates/layout.rs` only if the `<link id="theme-css">` hook needs adjusting (read-only first; prefer no change)
+- Modify: `website/src/templates/layout.rs` — at most one small theme-conditional branch per layout fn (hero slot in `base_layout`, utility bar in `reader_layout`), each degrading to nothing when the theme is not allowlisted; prefer pure-CSS structural work (grid areas, order, display modes) scoped under `body.theme-{name}`.
 - Test: visual checklist in browser (steps below) + `curl` link presence
 
 **Interfaces:**
@@ -268,7 +269,7 @@ git commit -m "feat: admin branding, theme picker with preview, legal pages"
   - `webtoon`: light clean reader-brand look — white `#ffffff` surfaces, ink `#1a1a1a` text, signature green `#00DC64` default accent hooks (still overridable), generous radius (16-20px cards), airy section spacing, pill genre chips, prominent hero strip on home.
   - `asura`: dark scanlator look — near-black navy `#0b0e17` page, `#151b2e` cards, violet `#8b5cf6` accent with cyan `#22d3ee` secondary glow, dense "latest updates" rows with borders instead of cards, compact uppercase section headers with accent bar.
   - `demonic`: dark crimson look — pure-black `#0a0a0a` page, `#141414` cards, crimson `#e11d48` accent, heavy condensed headers, red glow on featured covers, sharp 6-8px radii.
-- Each file: `:root` token overrides + ≤150 lines of component rules scoped to existing classes only (`.site-header`, `.series-card`, `.chapter-row`, `.btn`, `.nav`, `.hero`, `.section-title`, etc. — grep style.css for exact class names; no markup changes, no new fonts beyond the two already loaded).
+- Each file: `:root` token overrides + ≤150 lines of component rules scoped to existing classes only (`.site-header`, `.series-card`, `.chapter-row`, `.btn`, `.nav`, `.hero`, `.section-title`, etc. — grep style.css for exact class names; no new fonts beyond the two already loaded). Structural layout differences go here under the `body.theme-{name}` hook: `webtoon` gets the hero strip + airy card grid; `asura` gets dense bordered update rows + accent-bar section headers; `demonic` gets heavy condensed headers + red-glow featured covers. Branch contract: every theme-conditional markup block in layout.rs renders nothing unless the theme is allowlisted, and content parity is mandatory — same pages, nav, auth, and data under every theme, only arrangement and styling differ.
 
 - [ ] **Step 1: Write the failing check**
 
@@ -279,7 +280,7 @@ Expected: "No such file or directory".
 
 - [ ] **Step 3: Verify in browser**
 
-Checklist: (1) set each theme via `/admin/branding`, home + series + reader pages render with no unstyled flash and no horizontal overflow at 375px and 1440px; (2) admin accent override still wins over theme accent (inline style order); (3) per-user override (`/settings/appearance`) shows that user's theme while logged-out visitors see the site theme; (4) unknown theme value in DB renders default look (no broken link).
+Checklist: (1) set each theme via `/admin/branding`, home + series + reader pages render with no unstyled flash and no horizontal overflow at 375px and 1440px; (2) admin accent override still wins over theme accent (inline style order); (3) per-user override (`/settings/appearance`) shows that user's theme while logged-out visitors see the site theme; (4) unknown theme value in DB renders default look (no broken link); (5) content parity: same nav links, auth state, and series/chapter data reachable under all three themes (no theme hides a page or action).
 
 - [ ] **Step 4: Commit**
 
@@ -305,7 +306,7 @@ Expected: build clean, `/health` returns ok.
 - [ ] **Step 3: Spec acceptance replay** (§6/§7/§16 as applicable to slice 2)
 
   - Env-only restart branding is gone: change title via `/admin/branding`, homepage shows it with no restart.
-  - All three themes selectable, preview works without saving, user override independent of site theme.
+  - All three themes selectable, preview works without saving, user override independent of site theme; content parity: same pages/nav/auth/data reachable under every theme (curl home/series/reader/login per theme, compare link sets).
   - Non-admin gets 403 on `/admin*`; logged-out gets login redirect; readers see no sources/admin traces.
   - `/terms` + `/privacy` render stored text.
   - `grep -ri "demonicscans\|manhuaplus" website/src/templates/` count unchanged from Slice 1 (0).
@@ -320,7 +321,7 @@ Expected: build clean, `/health` returns ok.
 
 **2. Placeholder scan:** no TBD/TODO/generic steps. Exact keys, SQL, validation bounds (name 1-32/1-64, tagline 0-140, SEO 0-300, legal 0-20000, password ≥8, hex regex, locale allowlist, theme allowlist), exact curl commands, exact commit file lists.
 
-**3. Type consistency:** `THEMES` allowlist defined once Task 2, consumed Tasks 3-5. `theme_css` href contract identical in Task 2 impl and Task 5 brief. `User.theme` added Task 1, read by layout resolution (Task 4 layout touch states the resolution rule: user.theme non-empty wins, else site_theme setting, else default). `site_config(&conn)` signature used consistently. `set_setting` upsert semantics match branding POST (validate-all-before-write).
+**3. Type consistency:** `THEMES` allowlist defined once Task 2, consumed Tasks 3-5. `theme_css` href contract identical in Task 2 impl and Task 5 brief. `User.theme` added Task 1, read by layout resolution (Task 2 `resolve_theme`: allowlisted user.theme wins, else `site_theme` setting, else `"default"`). `site_config(&conn)` signature used consistently. `set_setting` upsert semantics match branding POST (validate-all-before-write).
 
 ---
 
