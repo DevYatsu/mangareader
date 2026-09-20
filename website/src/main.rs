@@ -4,7 +4,6 @@
 
 mod auth;
 mod config;
-mod mail;
 mod oauth;
 mod routes;
 mod scraper_helper;
@@ -121,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/login", get(crate::routes::auth_pages::login_page).post(crate::routes::auth_pages::login_submit))
         .route("/register", get(crate::routes::auth_pages::register_page).post(crate::routes::auth_pages::register_submit))
         .route("/logout", post(crate::routes::auth_pages::logout))
-        .route("/forgot", get(crate::routes::password_reset::forgot_page).post(crate::routes::password_reset::forgot_submit))
+        .route("/forgot", get(crate::routes::password_reset::forgot_page))
         .route("/reset/{token}", get(crate::routes::password_reset::reset_page).post(crate::routes::password_reset::reset_submit))
         .route("/auth/{provider}", get(crate::routes::oauth::oauth_start))
         .route("/auth/{provider}/callback", get(crate::routes::oauth::oauth_callback))

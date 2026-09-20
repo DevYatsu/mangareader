@@ -13,8 +13,6 @@ use std::sync::Arc;
 use crate::{
     AppState,
     auth::{AuthUser, hash_password, now_utc_string},
-    mail,
-    oauth::base_url,
 };
 
 /// Reset-link expiry: `now + 1 hour`, SQLite timestamp format.
@@ -47,19 +45,6 @@ fn page(
     )
 }
 
-fn forgot_form() -> maud::Markup {
-    html! {
-        section class="auth-section" {
-            h1 class="page-title" { "Forgot password" }
-            form method="post" action="/forgot" class="auth-form" {
-                label { "Email" input type="email" name="email" required=""; }
-                button type="submit" { "Send reset link" }
-            }
-            p { a href="/login" { "Back to login" } }
-        }
-    }
-}
-
 fn reset_form() -> maud::Markup {
     html! {
         section class="auth-section" {
@@ -72,7 +57,7 @@ fn reset_form() -> maud::Markup {
     }
 }
 
-/// GET `/forgot`.
+/// GET `/forgot` — no email in this app; direct the user to an administrator.
 pub async fn forgot_page(
     State(state): State<Arc<AppState>>,
     user: Option<AuthUser>,
@@ -84,61 +69,19 @@ pub async fn forgot_page(
             crate::config::resolve_theme(&db, user.as_ref()),
         )
     };
-    page(&cfg, &theme, "Forgot password", forgot_form(), user.as_ref())
-}
-
-#[derive(Deserialize)]
-pub struct ForgotForm {
-    pub email: String,
-}
-
-/// POST `/forgot` — identical success text whether the email exists or not.
-pub async fn forgot_submit(
-    State(state): State<Arc<AppState>>,
-    user: Option<AuthUser>,
-    Form(form): Form<ForgotForm>,
-) -> Html<String> {
-    let (cfg, theme) = {
-        let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user.as_ref()),
-        )
-    };
-    let done = || {
-        page(
-            &cfg,
-            &theme,
-            "Forgot password",
-            html! { section class="auth-section" { p { "If an account exists for that email, a reset link is on its way." } } },
-            user.as_ref(),
-        )
-    };
-    let email = form.email.trim().to_string();
-    let found = {
-        let db = state.db.lock().await;
-        mangaread_core::db::find_user_by_email(&db, &email)
-            .ok()
-            .map(|u| (u.id, u.email))
-    };
-    let Some((user_id, to)) = found else {
-        return done();
-    };
-    let token = crate::auth::new_token();
-    {
-        let db = state.db.lock().await;
-        if mangaread_core::db::create_password_reset(&db, user_id, &token, &reset_expires_at())
-            .is_err()
-        {
-            return done();
-        }
-    }
-    if mail::smtp_configured() {
-        let link = format!("{}/reset/{token}", base_url());
-        // Best-effort: the success text renders either way.
-        let _ = mail::send_reset_email(to, link).await;
-    }
-    done()
+    page(
+        &cfg,
+        &theme,
+        "Forgot password",
+        html! {
+            section class="auth-section" {
+                h1 class="page-title" { "Forgot password" }
+                p { "Password resets are handled by an administrator. Please contact the site administrator to request a reset link." }
+                p { a href="/login" { "Back to login" } }
+            }
+        },
+        user.as_ref(),
+    )
 }
 
 /// GET `/reset/{token}` — always renders the form (no validity leak).
