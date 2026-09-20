@@ -1,0 +1,145 @@
+/* ==========================================================================
+   theme.css — "Ink & Ember" identity layer
+   --------------------------------------------------------------------------
+   Layer 2 of 3:  vendor/bulma.min.css  ->  theme.css  ->  reader.css
+
+   Every rule that changes Bulma itself targets :root[data-theme="dark"]
+   (specificity 0,2,0), which beats Bulma's own :root and [data-theme=*]
+   blocks (0,1,0) on specificity rather than on load order.
+
+   Contract: each token below sits on its own line as `--name: value;`.
+   The contrast test in src/config.rs reads this file.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Part 1 — Bulma palette and scheme overrides
+   -------------------------------------------------------------------------- */
+:root[data-theme="dark"] {
+  /* Ember accent: #f59e0b, hsl(38 92% 50%).
+     Override the hue/saturation/lightness components, never the composed
+     color: Bulma generates the whole palette (-00..-100, -invert, -soft,
+     -bold, -on-scheme) from these. --bulma-primary-rgb is a literal in
+     Bulma and is not recomputed, so it is set by hand. */
+  --bulma-primary-h: 38deg;
+  --bulma-primary-s: 92%;
+  --bulma-primary-l: 50%;
+  --bulma-primary-rgb: 245, 158, 11;
+
+  /* Warm neutral scheme. Greys read as ink rather than cool blue-grey, and
+     the page surface sits deeper than Bulma's 9% default. */
+  --bulma-scheme-h: 30deg;
+  --bulma-scheme-s: 8%;
+  --bulma-scheme-main-l: 7%;
+  --bulma-scheme-main-bis-l: 9%;
+  --bulma-scheme-main-ter-l: 11%;
+  --bulma-background-l: 13%;
+  --bulma-border-l: 22%;
+  --bulma-text-l: 72%;
+  --bulma-text-strong-l: 94%;
+  --bulma-text-weak-l: 53%;
+
+  /* Editorial type: Inter for body, Space Grotesk for display. */
+  --bulma-family-primary: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --bulma-family-secondary: "Space Grotesk", var(--bulma-family-primary);
+  --bulma-body-family: var(--bulma-family-primary);
+
+  /* Calmer corners than Bulma's defaults. */
+  --bulma-radius: 0.5rem;
+  --bulma-radius-medium: 0.625rem;
+  --bulma-radius-large: 0.875rem;
+}
+
+/* --------------------------------------------------------------------------
+   Part 2 — Ink & Ember tokens
+   -------------------------------------------------------------------------- */
+:root[data-theme="dark"] {
+  --m-font-display: var(--bulma-family-secondary);
+  --m-tracking-display: -0.02em;
+  --m-leading-display: 1.15;
+  --m-gutter: 1.5rem;
+  --m-cover-radius: var(--bulma-radius);
+  --m-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --m-dur-fast: 120ms;
+  --m-dur: 200ms;
+}
+
+/* --------------------------------------------------------------------------
+   Part 3 — primitives Bulma does not define
+
+   Everything below exists because Bulma has no equivalent. No class may be
+   added here without first being listed in §6 of the design spec.
+   -------------------------------------------------------------------------- */
+
+/* Bulma emits no font-family for .title (--bulma-title-family is false), so
+   titles inherit body type unless the display face is assigned explicitly. */
+.title,
+.subtitle,
+.m-display {
+  font-family: var(--m-font-display);
+}
+
+.title {
+  letter-spacing: var(--m-tracking-display);
+  line-height: var(--m-leading-display);
+}
+
+/* Bulma has no navbar current-page state. */
+.navbar-item.m-nav-active {
+  color: var(--bulma-primary);
+}
+
+/* Bulma has no empty-state component. */
+.m-empty {
+  padding: 3rem 1.5rem;
+  text-align: center;
+  color: var(--bulma-text-weak);
+}
+
+.m-empty-icon {
+  margin-bottom: 1rem;
+  color: var(--bulma-border);
+}
+
+/* Site chrome: the wordmark pairs the logo mark with the display face. */
+.m-wordmark {
+  gap: 0.625rem;
+  font-family: var(--m-font-display);
+  font-weight: 600;
+  letter-spacing: var(--m-tracking-display);
+}
+
+.m-footer {
+  padding: 2.5rem 1.5rem 3rem;
+}
+
+/* The sync banner is a Bulma notification; this keeps it out of normal flow
+   so it never shifts the navbar. */
+.sync-banner {
+  margin-bottom: 0;
+  border-radius: 0;
+}
+
+.sync-banner-spinner {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-right: 0.5rem;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.1em;
+  animation: m-spin 0.7s linear infinite;
+}
+
+@keyframes m-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Respect the OS reduced-motion preference for our own animation. */
+@media (prefers-reduced-motion: reduce) {
+  .sync-banner-spinner {
+    animation: none;
+  }
+}

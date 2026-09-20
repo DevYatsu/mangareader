@@ -195,3 +195,113 @@ mod tests {
         assert_eq!(c.accent, "#f59e0b"); // invalid hex keeps boot default
     }
 }
+
+#[cfg(test)]
+mod contrast {
+    //! WCAG contrast guard for the Ink & Ember identity tokens.
+    //!
+    //! The token values live in `static/theme.css` because that is what the
+    //! browser consumes; this test reads the shipped file so a token edit that
+    //! breaks contrast fails `cargo test` instead of shipping.
+    //!
+    //! Contract: every token this test reads must sit on its own line as
+    //! `--name: value;`.
+
+    const THEME_CSS: &str = include_str!("../static/theme.css");
+
+    /// Read a `--name: value;` declaration written one-per-line.
+    fn token(name: &str) -> String {
+        let needle = format!("--{name}:");
+        THEME_CSS
+            .lines()
+            .find_map(|line| {
+                let t = line.trim();
+                t.strip_prefix(&needle)
+                    .map(|v| v.trim().trim_end_matches(';').trim().to_string())
+            })
+            .unwrap_or_else(|| panic!("token --{name} not found on its own line in theme.css"))
+    }
+
+    fn angle(raw: &str) -> f64 {
+        raw.trim_end_matches("deg")
+            .parse()
+            .unwrap_or_else(|_| panic!("expected an angle, got {raw}"))
+    }
+
+    fn percent(raw: &str) -> f64 {
+        raw.trim_end_matches('%')
+            .parse::<f64>()
+            .unwrap_or_else(|_| panic!("expected a percentage, got {raw}"))
+            / 100.0
+    }
+
+    /// HSL to linear-light RGB channels, then to WCAG relative luminance.
+    fn luminance(h_deg: f64, s: f64, l: f64) -> f64 {
+        let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+        let h_prime = h_deg / 60.0;
+        let x = c * (1.0 - (h_prime % 2.0 - 1.0).abs());
+        let (r1, g1, b1) = match h_prime as u32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        let m = l - c / 2.0;
+        let channel = |v: f64| {
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(r1 + m) + 0.7152 * channel(g1 + m) + 0.0722 * channel(b1 + m)
+    }
+
+    fn scheme_luminance(lightness_pct: f64) -> f64 {
+        luminance(angle(&token("bulma-scheme-h")), percent(&token("bulma-scheme-s")), lightness_pct)
+    }
+
+    fn ratio(a: f64, b: f64) -> f64 {
+        let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    fn scheme_main() -> f64 {
+        scheme_luminance(percent(&token("bulma-scheme-main-l")))
+    }
+
+    #[test]
+    fn body_text_meets_wcag_aa() {
+        let r = ratio(scheme_luminance(percent(&token("bulma-text-l"))), scheme_main());
+        assert!(r >= 4.5, "--bulma-text-l contrast is {r:.2}:1, need >= 4.5");
+    }
+
+    #[test]
+    fn muted_text_meets_wcag_aa() {
+        let r = ratio(scheme_luminance(percent(&token("bulma-text-weak-l"))), scheme_main());
+        assert!(r >= 4.5, "--bulma-text-weak-l contrast is {r:.2}:1, need >= 4.5");
+    }
+
+    #[test]
+    fn ember_accent_meets_wcag_aa_on_the_page_surface() {
+        let accent = luminance(
+            angle(&token("bulma-primary-h")),
+            percent(&token("bulma-primary-s")),
+            percent(&token("bulma-primary-l")),
+        );
+        let r = ratio(accent, scheme_main());
+        assert!(r >= 4.5, "ember accent contrast is {r:.2}:1, need >= 4.5");
+    }
+
+    #[test]
+    fn surface_elevation_separates_from_the_page() {
+        // Raised surfaces must stay distinguishable from the page background.
+        let r = ratio(
+            scheme_luminance(percent(&token("bulma-scheme-main-bis-l"))),
+            scheme_main(),
+        );
+        assert!(r > 1.0, "scheme-main-bis is indistinguishable from scheme-main");
+    }
+}
