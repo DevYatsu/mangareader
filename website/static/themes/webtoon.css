@@ -1,0 +1,113 @@
+/* ============================================
+   MangaRead theme: webtoon (light, clean)
+   Layering: style.css < this file < inline css_overrides().
+   Tokens live on :root (not body.theme-x) on purpose: this file
+   only loads when the theme is active, and equal-specificity
+   :root ordering lets the admin accent/BG inline block win.
+   All component rules are scoped under body.theme-webtoon.
+   ============================================ */
+
+:root {
+  --bg-page: #f7f8fa;
+  --bg-body: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: #f1f4f6;
+  --bg-elevated: #ffffff;
+  --bg-input: #f1f4f6;
+
+  --text-primary: #1a1a1a;
+  --text-secondary: #4b5563;
+  --text-muted: #8a94a3;
+  --text-dim: #b6bdc8;
+
+  --accent-r: 0;
+  --accent-g: 220;
+  --accent-b: 100;
+  --accent: #00dc64;
+  --accent-hover: #00b854;
+  --accent-glow: rgba(0, 220, 100, 0.16);
+  --accent-dim: rgba(0, 220, 100, 0.1);
+
+  --border: #e5e9ee;
+  --border-subtle: #eef1f5;
+  --border-hover: #cfd8e0;
+
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+
+  --shadow-sm: 0 1px 2px rgba(26, 26, 26, 0.06);
+  --shadow-md: 0 4px 14px rgba(26, 26, 26, 0.08);
+  --shadow-lg: 0 12px 32px rgba(26, 26, 26, 0.12);
+  --shadow-glow: 0 0 22px var(--accent-glow);
+}
+
+/* Light-page base adjustments */
+body.theme-webtoon {
+  background-image: radial-gradient(ellipse 80% 40% at 50% -10%, rgba(0, 220, 100, 0.08), transparent);
+}
+body.theme-webtoon .manga-card::before { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6); }
+body.theme-webtoon .chapter-list li:nth-child(even),
+body.theme-webtoon .recent-item:nth-child(even) { background: rgba(26, 26, 26, 0.02); }
+body.theme-webtoon .card-overlay {
+  background: linear-gradient(to top, rgba(26, 26, 26, 0.55) 0%, rgba(26, 26, 26, 0.05) 40%, transparent 60%);
+}
+body.theme-webtoon .chapter-badge { background: rgba(255, 255, 255, 0.92); }
+body.theme-webtoon ::-webkit-scrollbar-thumb { background: #cfd8e0; }
+body.theme-webtoon ::-webkit-scrollbar-thumb:hover { background: #b6bdc8; }
+
+/* Prominent hero strip on home */
+body.theme-webtoon .hero-section {
+  padding: 5rem 1.5rem 3.5rem;
+  background: linear-gradient(180deg, rgba(0, 220, 100, 0.12) 0%, rgba(0, 220, 100, 0.02) 70%, transparent 100%);
+  border-bottom: 1px solid var(--border-subtle);
+}
+body.theme-webtoon .hero-title {
+  background: linear-gradient(135deg, #1a1a1a 0%, #1a1a1a 55%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+body.theme-webtoon .hero-tagline { max-width: 560px; }
+body.theme-webtoon .hero-stat-value { color: var(--accent); }
+
+/* Airy card grid */
+body.theme-webtoon .manga-grid { gap: 2rem; margin-top: 1.5rem; }
+body.theme-webtoon .manga-card { box-shadow: var(--shadow-sm); }
+body.theme-webtoon .manga-card:hover { transform: translateY(-8px); box-shadow: var(--shadow-lg), var(--shadow-glow); }
+body.theme-webtoon .manga-card .cover-placeholder,
+body.theme-webtoon .manga-hero-placeholder { background: linear-gradient(135deg, #eef1f5, #e0e6ec); }
+body.theme-webtoon .continue-section { margin-bottom: 3.5rem; }
+body.theme-webtoon .chapter-section { margin-top: 2rem; }
+
+/* Pill genre chips */
+body.theme-webtoon .source-meta-badge,
+body.theme-webtoon .source-badge,
+body.theme-webtoon .section-count,
+body.theme-webtoon .meta-stat {
+  border-radius: 999px;
+  padding: 0.4rem 1rem;
+}
+body.theme-webtoon .meta-stat { background: var(--bg-hover); }
+body.theme-webtoon .section-title { font-size: 1.4rem; letter-spacing: 0; margin-bottom: 1.5rem; }
+
+/* Friendly light header + buttons */
+body.theme-webtoon .site-header { border-bottom: 1px solid var(--border-subtle); }
+body.theme-webtoon .site-header::after { opacity: 0.35; }
+body.theme-webtoon .start-btn,
+body.theme-webtoon .browse-btn,
+body.theme-webtoon .error-home-btn { color: #fff; border-radius: var(--radius-lg); }
+body.theme-webtoon .start-btn:hover,
+body.theme-webtoon .browse-btn:hover,
+body.theme-webtoon .error-home-btn:hover { color: #fff; }
+body.theme-webtoon .search-card { box-shadow: var(--shadow-sm); }
+body.theme-webtoon .chapter-list,
+body.theme-webtoon .recent-list { box-shadow: var(--shadow-sm); }
+body.theme-webtoon .manga-hero-cover img { box-shadow: var(--shadow-lg); }
+body.theme-webtoon .auth-error { color: #b3261e; }
+body.theme-webtoon footer { border-top: 1px solid var(--border-subtle); }
+
+@media (max-width: 768px) {
+  body.theme-webtoon .hero-section { padding: 3rem 1rem 2.5rem; }
+  body.theme-webtoon .manga-grid { gap: 1.25rem; }
+}
