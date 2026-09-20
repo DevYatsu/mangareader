@@ -16,7 +16,10 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{
-    auth::{hash_password, new_token, session_expires_at, set_cookie_value, token_from_headers, verify_password, AuthUser},
+    auth::{
+        hash_password, lifetime_for_remember, new_token, session_expires_at, set_cookie_value,
+        token_from_headers, verify_password, AuthUser, REMEMBER_SESSION_MAX_AGE,
+    },
     AppState,
 };
 
@@ -31,6 +34,9 @@ pub struct RegisterForm {
 pub struct LoginForm {
     pub email: String,
     pub password: String,
+    /// Checkbox sends `remember=on` only when checked; `Option` keeps the form
+    /// parseable when the box is unchecked.
+    pub remember: Option<String>,
 }
 
 fn page(
@@ -66,6 +72,7 @@ fn login_form(error: Option<&str>) -> maud::Markup {
             form method="post" action="/login" class="auth-form" {
                 label { "Email" input type="email" name="email" required=""; }
                 label { "Password" input type="password" name="password" required=""; }
+                label { input type="checkbox" name="remember" value="on"; " Remember me (30 days)" }
                 button type="submit" { "Login" }
             }
             p { a href="/register" { "Create an account" } }
@@ -153,15 +160,16 @@ pub async fn login_submit(
         return render_401(user.as_ref());
     }
     let token = new_token();
+    let max_age = lifetime_for_remember(form.remember.as_deref() == Some("on"));
     {
         let db = state.db.lock().await;
-        if mangaread_core::db::insert_session(&db, found.0, &token, &session_expires_at(), "web")
+        if mangaread_core::db::insert_session(&db, found.0, &token, &session_expires_at(max_age), "web")
             .is_err()
         {
             return render_401(user.as_ref());
         }
     }
-    redirect_with_cookie("/", set_cookie_value(&token))
+    redirect_with_cookie("/", set_cookie_value(&token, max_age))
 }
 
 /// GET `/register` — render the registration form.
@@ -261,11 +269,19 @@ pub async fn register_submit(
         if is_bootstrap_admin {
             tracing::warn!("first registered user bootstrapped as admin: {email}");
         }
-        if mangaread_core::db::insert_session(&db, id, &token, &session_expires_at(), "web").is_err() {
+        if mangaread_core::db::insert_session(
+            &db,
+            id,
+            &token,
+            &session_expires_at(REMEMBER_SESSION_MAX_AGE),
+            "web",
+        )
+        .is_err()
+        {
             return render_failed(user.as_ref());
         }
     }
-    redirect_with_cookie("/", set_cookie_value(&token))
+    redirect_with_cookie("/", set_cookie_value(&token, REMEMBER_SESSION_MAX_AGE))
 }
 
 /// POST `/logout` — close the session, expire the cookie, redirect home.
