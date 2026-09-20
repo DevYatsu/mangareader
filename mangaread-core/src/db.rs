@@ -19,6 +19,9 @@ pub fn open_db() -> Result<Connection, Error> {
 
 /// Create tables if they don't exist + run migrations.
 pub fn init_db(conn: &Connection) -> Result<(), Error> {
+    // SQLite disables FK enforcement by default; without this the
+    // REFERENCES/ON DELETE CASCADE clauses below are parsed but ignored.
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS series (
@@ -836,5 +839,16 @@ mod tests {
         insert_session(&conn, id, "tok123", "2099-01-01 00:00:00", "test").unwrap();
         let u = find_user_by_session(&conn, "tok123", "2026-01-01 00:00:00").unwrap();
         assert_eq!(u.email, "r@x.io");
+    }
+
+    #[test]
+    fn bookmark_unknown_series_fails_on_fk() {
+        let conn = mem();
+        let user_id = create_user(&conn, &NewUser {
+            name: "fk".into(), email: "fk@x.io".into(),
+            password_hash: "h".into(), role: Role::Member,
+        }).unwrap();
+        // No series with id 9999 exists → FK violation must error.
+        assert!(set_bookmark(&conn, user_id, 9999, true).is_err());
     }
 }

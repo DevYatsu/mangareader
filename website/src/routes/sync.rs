@@ -47,11 +47,36 @@ fn ok() -> Response {
 }
 
 fn db_error(e: impl std::fmt::Display) -> Response {
+    tracing::warn!("sync api db error: {e}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+        Json(serde_json::json!({"ok": false, "error": "database error"})),
     )
         .into_response()
+}
+
+fn bad_request(msg: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({"ok": false, "error": msg})),
+    )
+        .into_response()
+}
+
+/// Statuses the JS client actually sends (`website/static/app.js`
+/// `setChapterStatus`, `auth.js` `pushProgress` default).
+fn valid_status(s: &str) -> bool {
+    matches!(s, "unread" | "started" | "finished")
+}
+
+fn validate_progress(page: i64, status: &str) -> Option<Response> {
+    if page < 1 {
+        return Some(bad_request("page must be >= 1"));
+    }
+    if !valid_status(status) {
+        return Some(bad_request("invalid status"));
+    }
+    None
 }
 
 /// GET /api/bookmarks → `{"series":[ids]}`.
@@ -147,6 +172,9 @@ pub async fn post_progress(
     user: AuthUser,
     Json(body): Json<PostProgress>,
 ) -> Response {
+    if let Some(resp) = validate_progress(body.page, &body.status) {
+        return resp;
+    }
     let stamped = now_utc_string();
     let res = {
         let conn = state.db.lock().await;
@@ -218,6 +246,11 @@ pub async fn post_migrate(
 ) -> Response {
     let n_bookmarks = body.bookmarks.len();
     let n_progress = body.progress.len();
+    for p in &body.progress {
+        if let Some(resp) = validate_progress(p.page, &p.status) {
+            return resp;
+        }
+    }
     // One guard for the whole migrate (transaction requires it). Only fast
     // local SQL runs under the guard — no hashing or slow work.
     let mut conn = state.db.lock().await;
@@ -258,7 +291,7 @@ pub async fn post_migrate(
 
 #[cfg(test)]
 mod tests {
-    use super::merge_progress;
+    use super::{merge_progress, validate_progress, valid_status};
 
     #[test]
     fn newer_incoming_wins() {
@@ -271,5 +304,17 @@ mod tests {
             "2026-01-01 00:00:00"
         ));
         assert!(merge_progress(None, "2026-01-01 00:00:00"));
+    }
+
+    #[test]
+    fn progress_validation_rejects_bad_status_and_page() {
+        assert!(valid_status("started"));
+        assert!(valid_status("finished"));
+        assert!(valid_status("unread"));
+        assert!(!valid_status("bogus"));
+        assert!(validate_progress(1, "started").is_none());
+        assert!(validate_progress(0, "started").is_some());
+        assert!(validate_progress(-1, "finished").is_some());
+        assert!(validate_progress(1, "bogus").is_some());
     }
 }
