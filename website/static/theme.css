@@ -34,6 +34,17 @@
   --bulma-focus-s: var(--bulma-primary-s);
   --bulma-focus-l: var(--bulma-primary-l);
 
+  /* Bulma renders anchor color from --bulma-link-* (its factory 233deg /
+     100% / 63% is the blue). The pre-migration `style.css` painted every
+     unclassed anchor with `color: var(--accent)` and `a:hover` with
+     `color: var(--accent-hover)`, so leaving these at Bulma's defaults
+     silently drops links out of the identity. §4.3 keeps the accent
+     admin-rebrandable, so bind rather than copy: an admin rebrand moves the
+     link color with the accent. */
+  --bulma-link-h: var(--bulma-primary-h);
+  --bulma-link-s: var(--bulma-primary-s);
+  --bulma-link-l: var(--bulma-primary-l);
+
   /* Warm neutral scheme. Greys read as ink rather than cool blue-grey, and
      the page surface sits deeper than Bulma's 9% default. */
   --bulma-scheme-h: 30deg;

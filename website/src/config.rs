@@ -435,6 +435,26 @@ mod contrast {
         );
     }
 
+    /// Bulma paints anchors from --bulma-link-*, whose factory hue is the blue
+    /// 233deg. theme.css binds it to the accent; this locks the binding, so a
+    /// future edit cannot silently regress links to Bulma's blue.
+    #[test]
+    fn link_hue_follows_the_ember_accent() {
+        // Unlike the other angle readers, this token is bound with `var()`
+        // rather than a literal, so resolve the reference first. A hardcoded
+        // literal is itself the regression this guards against.
+        let link = token("bulma-link-h");
+        let inner = link
+            .strip_prefix("var(")
+            .and_then(|s| s.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("--bulma-link-h must bind with var(...), got {link}"));
+        assert_eq!(
+            angle(&token(inner.trim_start_matches("--"))),
+            angle(&token("bulma-primary-h")),
+            "link hue must follow the ember accent hue"
+        );
+    }
+
     #[test]
     fn ember_accent_meets_wcag_aa_on_the_page_surface() {
         let accent = luminance(
