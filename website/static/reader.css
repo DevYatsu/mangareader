@@ -96,9 +96,10 @@ body[data-r-frame="on"] {
 
 /* `single`/`vertical`/`double` reveal one page (or one spread) at a time; the
    client module hides the rest with the `hidden` attribute. The specificity
-   here (0,4,1) deliberately outranks every layout/fit `display` below
-   (the strongest is `body[data-r-fit="height"]:not([data-r-layout="strip"])
-   .reader-page` at 0,3,1) — otherwise a fit mode resurrects hidden pages. */
+   here (0,4,1) deliberately outranks every layout/fit `display` rule below.
+   The strongest of those is (0,2,1), e.g. `body[data-r-fit="height"]
+   .reader-page` and `body[data-r-layout="vertical"] .reader-page` — otherwise
+   a fit mode resurrects hidden pages. */
 body.reader-page .reader-images .reader-page[hidden] {
   display: none;
 }
@@ -820,7 +821,20 @@ body[data-r-fit][data-r-layout="double"] .reader-page {
 
 /* ── 3.9 Zones (§4.1) ──
    Real buttons sitting between the pages and the chrome. Gone on strip,
-   where scrolling owns the gesture. */
+   where scrolling owns the gesture.
+
+   Paint order, root stacking context:
+     50  zones (this rule)
+     60  page-level controls — `.reader-note-pin`, `.reader-page-error`
+     80  #reader-dim
+     90  .reader-hud
+    100  .reader-topbar
+    120  .reader-chapter-nav
+    130  #reader-countdown
+    200  #reader-sheet  ·  210  #reader-note-composer / .reader-notes-panel
+   Page-level controls outrank the zones so a tap on a note pin or a Retry
+   button reaches the control instead of the zone underneath it. Everything
+   above 60 is chrome and stays on top. */
 .reader-zone {
   position: fixed;
   top: 0;
@@ -1026,6 +1040,12 @@ body[data-r-focus="1"]:where(:has(#reader-notes-toggle[aria-pressed="true"], #re
 
 .reader-resume-badge:hover {
   border-color: var(--accent, #f59e0b);
+}
+
+/* `display: inline-flex` above outranks the UA `[hidden] { display: none }`,
+   so the badge needs its own override like every other hidden component. */
+.reader-resume-badge[hidden] {
+  display: none;
 }
 
 /* ── 5.5 Next-up queue ──
@@ -1241,11 +1261,15 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   opacity: 0;
 }
 
-/* ── 7. Image failure ── */
+/* ── 7. Image failure ──
+   Sits at 60, above the zones (50), so the Retry button is reachable — the
+   zones cover the full viewport and would otherwise swallow the tap. The
+   panel itself is click-through so a tap anywhere else on a failed page still
+   navigates; only `.reader-retry-btn` re-enables pointer events. */
 .reader-page-error {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 60;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1256,6 +1280,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   background: color-mix(in srgb, var(--r-bg, #0a0a0a) 92%, var(--r-chrome-fg, #ffffff));
   color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
   font-size: 0.85rem;
+  pointer-events: none;
 }
 
 .reader-page-error[hidden] {
@@ -1274,6 +1299,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   border: 1px solid var(--accent, #f59e0b);
   border-radius: 10px;
   cursor: pointer;
+  pointer-events: auto;
 }
 
 .reader-retry-btn:hover {
@@ -1284,12 +1310,15 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
    6. Notes
    ============================================ */
 
-/* ── 6.2 Pin on the page ── */
+/* ── 6.2 Pin on the page ──
+   Sits at 60, above the zones (50): the zones cover the full viewport in the
+   paged layouts, so a pin below them would never receive its own tap and the
+   page would advance instead of opening the notes panel (§6.2). */
 .reader-note-pin {
   position: absolute;
   inset-inline-end: 8px;
   top: 8px;
-  z-index: 3;
+  z-index: 60;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1743,6 +1772,9 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   .reader-hint,
   .reader-hint.hidden {
     animation: none;
+    /* style.css:1409 declares a 0.8s opacity fade on the hint; without this
+       the pulse is gone but the fade still animates under reduced motion. */
+    transition-duration: 0.01ms;
   }
 
   .reader-topbar,
