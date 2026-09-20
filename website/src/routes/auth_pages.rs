@@ -100,6 +100,7 @@ fn login_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
             }
             (oauth_buttons(providers))
             p { a href="/register" { "Create an account" } }
+            p { a href="/forgot" { "Forgot password?" } }
         }
     }
 }

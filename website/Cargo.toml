@@ -23,3 +23,4 @@ bcrypt = "0.17"
 reqwest = { version = "0.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting", "macros", "std"] }
+lettre = { version = "0.11", features = ["builder", "smtp-transport"] }
