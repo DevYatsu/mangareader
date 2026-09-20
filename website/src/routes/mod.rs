@@ -25,6 +25,7 @@ pub mod manga;
 pub mod oauth;
 pub mod password_reset;
 pub mod reader;
+pub mod reader_prefs;
 pub mod series;
 pub mod settings;
 pub mod source;
