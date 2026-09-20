@@ -153,6 +153,10 @@ async fn main() -> anyhow::Result<()> {
             "/api/reader-prefs",
             get(crate::routes::reader_prefs::get_prefs).post(crate::routes::reader_prefs::post_prefs),
         )
+        .route(
+            "/api/notes",
+            get(crate::routes::notes::list_notes).post(crate::routes::notes::create_note),
+        )
         .route("/health", get(crate::routes::health::health))
         .route("/favicon.ico", get(|| async { axum::response::Redirect::permanent("/static/favicon.svg") }))
         .nest_service(
