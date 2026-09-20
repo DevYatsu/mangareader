@@ -121,7 +121,7 @@ fn login_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
                         }
                     }
                     (oauth_buttons(providers))
-                    div class="is-size-7 has-text-grey mt-5" {
+                    div class="is-size-7 m-text-muted mt-5" {
                         p { a href="/register" { "Create an account" } }
                         p { a href="/forgot" { "Forgot password?" } }
                     }
@@ -166,7 +166,7 @@ fn register_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
                         }
                     }
                     (oauth_buttons(providers))
-                    div class="is-size-7 has-text-grey mt-5" {
+                    div class="is-size-7 m-text-muted mt-5" {
                         p { a href="/login" { "Already have an account? Login" } }
                     }
                 }

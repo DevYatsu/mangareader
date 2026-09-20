@@ -128,7 +128,7 @@ pub fn base_layout(
                 footer class="footer m-footer" {
                     div class="content has-text-centered" {
                         p { strong { (site_title) } }
-                        p class="has-text-grey" { "Your personal manga library." }
+                        p class="m-text-muted" { "Your personal manga library." }
                     }
                 }
                 script src="/static/app.js" {}
@@ -150,7 +150,7 @@ pub fn error_content(heading: &str, message: &str) -> Markup {
             div class="column is-6-desktop is-8-tablet" {
                 div class="box has-text-centered" {
                     h1 class="title is-3" { (heading) }
-                    p class="subtitle is-6 has-text-grey" { (message) }
+                    p class="subtitle is-6 m-text-muted" { (message) }
                     a class="button is-primary mt-4" href="/" { "Back to Home" }
                 }
             }

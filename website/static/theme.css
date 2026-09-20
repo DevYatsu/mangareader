@@ -123,6 +123,17 @@
   color: var(--bulma-primary);
 }
 
+/* Bulma's `has-text-grey*` utilities emit hardcoded cool hex (`--bulma-grey*`
+   is a literal no rule consumes, so it is dead). Measured on the warm
+   surfaces, `has-text-grey` is 3.99:1 on scheme-main and 3.81:1 on
+   scheme-main-bis — below WCAG AA 4.5:1. No Bulma text utility resolves
+   through a token bound here, so muted text gets one primitive bound to
+   `--bulma-text-weak`, the token the contrast guard in src/config.rs models
+   (5.02:1 on the deepest surface). */
+.m-text-muted {
+  color: var(--bulma-text-weak);
+}
+
 /* Bulma has no empty-state component. */
 .m-empty {
   padding: 3rem 1.5rem;
