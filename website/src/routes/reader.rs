@@ -25,6 +25,7 @@ pub async fn chapter_reader(
                 return Html(crate::templates::layout::error_layout(
                     "Not Found",
                     "This manga doesn't exist or may have been removed.",
+                    &crate::config::resolve_theme(&db, user.as_ref()),
                 ).0);
             }
         };
@@ -34,6 +35,7 @@ pub async fn chapter_reader(
                 return Html(crate::templates::layout::error_layout(
                     "Not Found",
                     "This chapter doesn't exist or may have been removed.",
+                    &crate::config::resolve_theme(&db, user.as_ref()),
                 ).0);
             }
         };
@@ -170,12 +172,15 @@ if(++a>=20)clearInterval(iv)
         }
     };
 
-    let css = state.config.css_overrides();
+    let cfg = crate::config::site_config(&db);
+    let css = cfg.css_overrides();
+    let theme = crate::config::resolve_theme(&db, user.as_ref());
     Html(crate::templates::layout::reader_layout(
         &format!("Ch. {} — {}", chapter.number, manga.title),
         content,
         &css,
-        &state.config.site_title,
+        &cfg.site_title,
         user.as_ref(),
+        &theme,
     ).0)
 }

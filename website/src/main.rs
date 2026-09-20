@@ -12,7 +12,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use crate::config::SiteConfig;
 use mangaread_core::db;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,6 +47,10 @@ pub struct AdapterHealth {
 /// Shared application state.
 ///
 /// Wrapped in `Arc` and accessed via Axum's `State` extractor.
+///
+/// Site branding is resolved per request from the DB-backed settings table
+/// (see [`crate::config::site_config`]); no config is cached here so admin
+/// edits take effect immediately.
 pub struct AppState {
     pub db: Mutex<rusqlite::Connection>,
     /// Last sync error message (cleared on read).
@@ -58,8 +61,6 @@ pub struct AppState {
     pub auto_sync: Mutex<SyncProgress>,
     /// Per-source adapter health (keyed by source name).
     pub adapter_health: Mutex<HashMap<String, AdapterHealth>>,
-    /// Site branding configuration (env-driven).
-    pub config: SiteConfig,
 }
 
 
@@ -80,14 +81,14 @@ async fn main() -> anyhow::Result<()> {
     let conn = db::open_db()?;
     db::init_db(&conn)?;
 
-    let site_config = SiteConfig::from_env();
+    let boot = crate::config::SiteConfig::from_env();
+    tracing::info!(site_title = %boot.site_title, accent = %boot.accent, "boot defaults loaded");
 
     let state = Arc::new(AppState {
         db: Mutex::new(conn),
         sync_error: Mutex::new(None),
         syncing_manga_ids: Mutex::new(Vec::new()),
         auto_sync: Mutex::new(SyncProgress { running: false, total: 0, current: 0 }),
-        config: site_config,
         adapter_health: Mutex::new(HashMap::from([
             ("demonicscans".into(), AdapterHealth {
                 source: "demonicscans".into(),
@@ -118,6 +119,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/login", get(crate::routes::auth_pages::login_page).post(crate::routes::auth_pages::login_submit))
         .route("/register", get(crate::routes::auth_pages::register_page).post(crate::routes::auth_pages::register_submit))
         .route("/logout", post(crate::routes::auth_pages::logout))
+        .route("/settings", get(crate::routes::settings::settings_page))
+        .route("/settings/profile", post(crate::routes::settings::profile_submit))
+        .route("/settings/appearance", post(crate::routes::settings::appearance_submit))
+        .route("/settings/password", post(crate::routes::settings::password_submit))
+        .route("/admin", get(crate::routes::admin::dashboard))
+        .route("/admin/branding", get(crate::routes::admin::branding_page).post(crate::routes::admin::branding_submit))
+        .route("/terms", get(crate::routes::legal::terms))
+        .route("/privacy", get(crate::routes::legal::privacy))
         .route("/source/{source}", get(crate::routes::source::source_list))
         .route("/manga/{id}", get(crate::routes::manga::manga_detail))
         .route(

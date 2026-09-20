@@ -34,21 +34,23 @@ pub struct LoginForm {
 }
 
 fn page(
-    state: &AppState,
+    cfg: &crate::config::SiteConfig,
+    theme: &str,
     title: &str,
     content: maud::Markup,
     user: Option<&AuthUser>,
 ) -> Html<String> {
     let banner: Option<String> = None;
-    let css = state.config.css_overrides();
+    let css = cfg.css_overrides();
     Html(
         crate::templates::layout::base_layout(
             title,
             content,
             banner.as_deref(),
             &css,
-            &state.config.site_title,
+            &cfg.site_title,
             user,
+            theme,
         )
         .0,
     )
@@ -106,7 +108,14 @@ pub async fn login_page(
     State(state): State<Arc<AppState>>,
     user: Option<AuthUser>,
 ) -> Html<String> {
-    page(&state, "Login", login_form(None), user.as_ref())
+    let (cfg, theme) = {
+        let db = state.db.lock().await;
+        (
+            crate::config::site_config(&db),
+            crate::config::resolve_theme(&db, user.as_ref()),
+        )
+    };
+    page(&cfg, &theme, "Login", login_form(None), user.as_ref())
 }
 
 /// POST `/login` — verify credentials, open a session, redirect home.
@@ -115,10 +124,17 @@ pub async fn login_submit(
     user: Option<AuthUser>,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    let render_401 = |state: &AppState, user: Option<&AuthUser>| {
+    let (cfg, theme) = {
+        let db = state.db.lock().await;
+        (
+            crate::config::site_config(&db),
+            crate::config::resolve_theme(&db, user.as_ref()),
+        )
+    };
+    let render_401 = |user: Option<&AuthUser>| {
         (
             StatusCode::UNAUTHORIZED,
-            page(state, "Login", login_form(Some("Invalid email or password")), user),
+            page(&cfg, &theme, "Login", login_form(Some("Invalid email or password")), user),
         )
             .into_response()
     };
@@ -130,11 +146,11 @@ pub async fn login_submit(
         match mangaread_core::db::find_user_by_email(&db, form.email.trim()) {
             Ok(u) => (u.id, u.password_hash),
             // Identical message for unknown email — no user enumeration.
-            Err(_) => return render_401(&state, user.as_ref()),
+            Err(_) => return render_401(user.as_ref()),
         }
     };
     if !verify_password(&form.password, &found.1) {
-        return render_401(&state, user.as_ref());
+        return render_401(user.as_ref());
     }
     let token = new_token();
     {
@@ -142,7 +158,7 @@ pub async fn login_submit(
         if mangaread_core::db::insert_session(&db, found.0, &token, &session_expires_at(), "web")
             .is_err()
         {
-            return render_401(&state, user.as_ref());
+            return render_401(user.as_ref());
         }
     }
     redirect_with_cookie("/", set_cookie_value(&token))
@@ -153,7 +169,14 @@ pub async fn register_page(
     State(state): State<Arc<AppState>>,
     user: Option<AuthUser>,
 ) -> Html<String> {
-    page(&state, "Register", register_form(None), user.as_ref())
+    let (cfg, theme) = {
+        let db = state.db.lock().await;
+        (
+            crate::config::site_config(&db),
+            crate::config::resolve_theme(&db, user.as_ref()),
+        )
+    };
+    page(&cfg, &theme, "Register", register_form(None), user.as_ref())
 }
 
 /// POST `/register` — validate, create the user, open a session, redirect home.
@@ -174,21 +197,29 @@ pub async fn register_submit(
     } else {
         None
     };
+    let (cfg, theme) = {
+        let db = state.db.lock().await;
+        (
+            crate::config::site_config(&db),
+            crate::config::resolve_theme(&db, user.as_ref()),
+        )
+    };
     if let Some(msg) = invalid {
         return (
             StatusCode::BAD_REQUEST,
-            page(&state, "Register", register_form(Some(msg)), user.as_ref()),
+            page(&cfg, &theme, "Register", register_form(Some(msg)), user.as_ref()),
         )
             .into_response();
     }
 
     // Every failure below renders the same message — no user enumeration
     // (duplicate email surfaces as a raw rusqlite error otherwise).
-    let render_failed = |state: &AppState, user: Option<&AuthUser>| {
+    let render_failed = |user: Option<&AuthUser>| {
         (
             StatusCode::BAD_REQUEST,
             page(
-                state,
+                &cfg,
+                &theme,
                 "Register",
                 register_form(Some("could not create account")),
                 user,
@@ -204,12 +235,13 @@ pub async fn register_submit(
         match mangaread_core::db::count_users(&db) {
             Ok(0) => Role::Admin,
             Ok(_) => Role::Member,
-            Err(_) => return render_failed(&state, user.as_ref()),
+            Err(_) => return render_failed(user.as_ref()),
         }
     };
+    let is_bootstrap_admin = role == Role::Admin;
     let password_hash = match hash_password(&form.password) {
         Ok(h) => h,
-        Err(_) => return render_failed(&state, user.as_ref()),
+        Err(_) => return render_failed(user.as_ref()),
     };
     let token = new_token();
     {
@@ -224,13 +256,13 @@ pub async fn register_submit(
             },
         ) {
             Ok(id) => id,
-            Err(_) => return render_failed(&state, user.as_ref()),
+            Err(_) => return render_failed(user.as_ref()),
         };
-        if id == 1 {
+        if is_bootstrap_admin {
             tracing::warn!("first registered user bootstrapped as admin: {email}");
         }
         if mangaread_core::db::insert_session(&db, id, &token, &session_expires_at(), "web").is_err() {
-            return render_failed(&state, user.as_ref());
+            return render_failed(user.as_ref());
         }
     }
     redirect_with_cookie("/", set_cookie_value(&token))

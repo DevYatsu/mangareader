@@ -10,14 +10,20 @@
 //! - `health`:   liveness probe for Docker
 //! - `api`:     sync management, progress tracking
 //! - `bookmarks`: client-side bookmark page
+//! - `settings`:  user settings (profile, appearance, password)
+//! - `admin`:     admin dashboard + branding (site title, theme, legal)
+//! - `legal`:     public terms + privacy pages
+pub mod admin;
 pub mod api;
 pub mod auth_pages;
 pub mod bookmarks;
 pub mod check;
 pub mod health;
 pub mod home;
+pub mod legal;
 pub mod manga;
 pub mod reader;
 pub mod series;
+pub mod settings;
 pub mod source;
 pub mod sync;

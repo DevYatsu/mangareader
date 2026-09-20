@@ -27,6 +27,46 @@ pub struct SiteConfig {
     pub accent_b: u8,
 }
 
+/// Single allowlist of theme names, shared by the layout link builder,
+/// the settings/appearance validation, and the admin theme picker.
+///
+/// The first element of each pair is the theme key (stylesheet file stem
+/// and `theme-{key}` body class); the second is the human-readable label.
+pub const THEMES: &[(&str, &str)] = &[
+    ("default", "Default dark"),
+    ("webtoon", "Webtoon clean"),
+    ("asura", "Asura dark"),
+    ("demonic", "Demonic crimson"),
+];
+
+/// Stylesheet URL for a theme, or `None` when no extra stylesheet applies.
+///
+/// Only `webtoon`/`asura`/`demonic` ship a file; `default`, empty, and
+/// unknown names fall back to the base stylesheet (current look preserved).
+pub fn theme_css(theme: &str) -> Option<String> {
+    match theme {
+        "webtoon" | "asura" | "demonic" => Some(format!("/static/themes/{theme}.css")),
+        _ => None,
+    }
+}
+
+/// Whether `theme` is an allowlisted [`THEMES`] key.
+pub fn is_theme(theme: &str) -> bool {
+    THEMES.iter().any(|(key, _)| *key == theme)
+}
+
+/// Whether `s` is a usable `#rrggbb` hex color (leading `#` optional).
+fn is_valid_hex(s: &str) -> bool {
+    let hex = s.trim().trim_start_matches('#');
+    hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Normalize a validated hex color to lowercase with a leading `#`.
+fn normalize_hex(s: &str) -> String {
+    let hex = s.trim().trim_start_matches('#').to_lowercase();
+    format!("#{hex}")
+}
+
 /// Parse a `#rrggbb` hex string into its RGB components.
 fn parse_hex(hex: &str) -> (u8, u8, u8) {
     let hex = hex.trim_start_matches('#');
@@ -77,5 +117,81 @@ impl SiteConfig {
             self.accent_g,
             self.accent_b,
         )
+    }
+
+    /// Overlay DB-backed settings on top of the env boot defaults.
+    ///
+    /// Applies `site_title`, `site_accent` (recomputing hover + rgb), and
+    /// `site_bg` when present and non-empty. Invalid hex falls back to the
+    /// current value (never blank).
+    pub fn from_settings(map: &std::collections::HashMap<String, String>) -> Self {
+        let mut cfg = Self::from_env();
+        if let Some(title) = map.get("site_title") {
+            if !title.trim().is_empty() {
+                cfg.site_title = title.clone();
+            }
+        }
+        if let Some(accent) = map.get("site_accent") {
+            if !accent.trim().is_empty() && is_valid_hex(accent) {
+                cfg.accent = normalize_hex(accent);
+                cfg.accent_hover = lighten(&cfg.accent, 0.25);
+                let (r, g, b) = parse_hex(&cfg.accent);
+                cfg.accent_r = r;
+                cfg.accent_g = g;
+                cfg.accent_b = b;
+            }
+        }
+        if let Some(bg) = map.get("site_bg") {
+            if !bg.trim().is_empty() && is_valid_hex(bg) {
+                cfg.bg_page = normalize_hex(bg);
+            }
+        }
+        cfg
+    }
+}
+
+/// Load the effective site config: env boot defaults overlaid with the
+/// `site_settings` table. Falls back to `from_env()` on DB error — a
+/// settings read must never 500 a page.
+pub fn site_config(conn: &rusqlite::Connection) -> SiteConfig {
+    match mangaread_core::db::all_settings(conn) {
+        Ok(map) => SiteConfig::from_settings(&map),
+        Err(_) => SiteConfig::from_env(),
+    }
+}
+
+/// Resolve the active theme key for a request.
+///
+/// The user's own `theme` wins when non-empty and allowlisted; otherwise
+/// the `site_theme` setting applies; otherwise `"default"`.
+pub fn resolve_theme(
+    conn: &rusqlite::Connection,
+    user: Option<&crate::auth::AuthUser>,
+) -> String {
+    if let Some(u) = user {
+        if !u.theme.trim().is_empty() && is_theme(&u.theme) {
+            return u.theme.clone();
+        }
+    }
+    match mangaread_core::db::get_setting(conn, "site_theme") {
+        Ok(Some(t)) if !t.trim().is_empty() && is_theme(&t) => t,
+        _ => "default".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn settings_overlay_beats_env() {
+        let mut map = HashMap::new();
+        map.insert("site_title".into(), "MyDen".into());
+        map.insert("site_accent".into(), "#00dc64".into());
+        map.insert("site_accent".into(), "not-a-color".into());
+        let c = SiteConfig::from_settings(&map);
+        assert_eq!(c.site_title, "MyDen");
+        assert_eq!(c.accent, "#f59e0b"); // invalid hex keeps boot default
     }
 }

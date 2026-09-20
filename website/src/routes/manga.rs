@@ -20,7 +20,11 @@ pub async fn manga_detail(
         }
         Err(_) => {
             Err(axum::response::Html(
-                crate::templates::layout::error_layout("Not Found", "Manga not found.").0,
+                crate::templates::layout::error_layout(
+                    "Not Found",
+                    "Manga not found.",
+                    &crate::config::resolve_theme(&db, None),
+                ).0,
             ))
         }
     }

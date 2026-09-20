@@ -2780,6 +2780,7 @@ dependencies = [
  "anyhow",
  "axum",
  "bcrypt",
+ "form_urlencoded",
  "manga-scraper",
  "mangaread-core",
  "maud",

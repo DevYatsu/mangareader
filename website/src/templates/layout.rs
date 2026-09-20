@@ -1,5 +1,19 @@
 use crate::auth::AuthUser;
 use maud::{html, Markup, PreEscaped, DOCTYPE};
+use mangaread_core::domain::Role;
+
+/// Body class for a theme key, or `None` when no class applies.
+///
+/// Every allowlisted [`crate::config::THEMES`] key (including `default`)
+/// yields `theme-{key}`; unknown/empty names yield no class so the base
+/// stylesheet look is preserved.
+fn theme_body_class(theme: &str) -> Option<String> {
+    if crate::config::is_theme(theme) {
+        Some(format!("theme-{theme}"))
+    } else {
+        None
+    }
+}
 
 /// Render the standard page layout (HTML document shell).
 ///
@@ -14,10 +28,15 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 /// (accent color, background, etc.) — generated from [`SiteConfig::css_overrides`].
 /// `user` drives the nav session state (`None` → Login link, `Some` → name
 /// + logout form) and sets `data-user-id` on `<body>` when logged in.
-pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, config_css: &str, site_title: &str, user: Option<&AuthUser>) -> Markup {
+/// `theme` is the resolved theme key: allowlisted names add a
+/// `theme-{theme}` body class plus the [`crate::config::theme_css`] link;
+/// unknown/empty names render with no body class and no extra link.
+pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, config_css: &str, site_title: &str, user: Option<&AuthUser>, theme: &str) -> Markup {
     let home_class = if title == "Home" { "active" } else { "" };
     let series_class = if title == "Series" { "active" } else { "" };
     let bookmarks_class = if title == "Bookmarks" { "active" } else { "" };
+    let theme_class = theme_body_class(theme);
+    let theme_link = crate::config::theme_css(theme);
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -29,10 +48,13 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                 link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="";
                 link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap";
                 link rel="stylesheet" href="/static/style.css";
+                @if let Some(href) = &theme_link {
+                    link id="theme-css" rel="stylesheet" href=(href);
+                }
                 link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
                 style { (PreEscaped(config_css.to_string())) }
             }
-            body data-user-id=[user.map(|u| u.id.to_string())] {
+            body class=[theme_class] data-user-id=[user.map(|u| u.id.to_string())] {
                 @if let Some(text) = sync_banner {
                     div class="sync-banner" {
                         span class="sync-banner-spinner" {}
@@ -73,7 +95,10 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                                 "Bookmarks"
                             }
                             @if let Some(u) = user {
-                                a href="/bookmarks" class="user-name" { (u.name) }
+                                @if u.role == Role::Admin {
+                                    a href="/admin" { "Admin" }
+                                }
+                                a href="/settings" class="user-name" { (u.name) }
                                 form method="post" action="/logout" class="logout-form" {
                                     button type="submit" class="logout-btn" { "Logout" }
                                 }
@@ -100,9 +125,14 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
 ///
 /// The header and footer match the standard `base_layout`, so the error page
 /// does not feel disconnected from the rest of the site.
-pub fn error_layout(heading: &str, message: &str) -> Markup {
+///
+/// `theme` behaves as in [`base_layout`]: allowlisted names add a
+/// `theme-{theme}` body class plus the theme stylesheet link.
+pub fn error_layout(heading: &str, message: &str, theme: &str) -> Markup {
     let site_title = std::env::var("SITE_TITLE").unwrap_or_else(|_| "MangaRead".into());
     let config = crate::config::SiteConfig::from_env();
+    let theme_class = theme_body_class(theme);
+    let theme_link = crate::config::theme_css(theme);
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -114,9 +144,12 @@ pub fn error_layout(heading: &str, message: &str) -> Markup {
                 link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="";
                 link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap";
                 link rel="stylesheet" href="/static/style.css";
+                @if let Some(href) = &theme_link {
+                    link rel="stylesheet" href=(href);
+                }
                 style { (PreEscaped(config.css_overrides())) }
             }
-            body {
+            body class=[theme_class] {
                 div.container {
                     header class="site-header" {
                         a class="site-logo" href="/" { (site_title) }
@@ -150,7 +183,12 @@ pub fn error_layout(heading: &str, message: &str) -> Markup {
 ///
 /// `user` sets `data-user-id` on `<body>` when logged in so the sync adapter
 /// (`auth.js`) can write reading progress through to the server.
-pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title: &str, user: Option<&AuthUser>) -> Markup {
+///
+/// `theme` behaves as in [`base_layout`], except the body class is appended
+/// to the fixed `reader-page` class instead of replacing it.
+pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title: &str, user: Option<&AuthUser>, theme: &str) -> Markup {
+    let theme_class = theme_body_class(theme).map(|c| format!("reader-page {c}")).unwrap_or_else(|| "reader-page".to_string());
+    let theme_link = crate::config::theme_css(theme);
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -159,9 +197,12 @@ pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title:
                 meta name="viewport" content="width=device-width, initial-scale=1.0";
                 title { (title) " — " (site_title) }
                 link rel="stylesheet" href="/static/style.css";
+                @if let Some(href) = &theme_link {
+                    link rel="stylesheet" href=(href);
+                }
                 style { (PreEscaped(config_css.to_string())) }
             }
-            body class="reader-page" data-user-id=[user.map(|u| u.id.to_string())] {
+            body class=(theme_class) data-user-id=[user.map(|u| u.id.to_string())] {
                 (content)
                 script src="/static/app.js" {}
                 script src="/static/auth.js" {}

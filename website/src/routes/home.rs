@@ -81,6 +81,19 @@ pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) ->
         .unwrap_or(0);
     let recent = mangaread_core::db::list_recent_chapters(&db, 30).unwrap_or_default();
 
+    // Homepage sections enabled by the admin `home_sections` CSV. Keys match
+    // the branding-form checkbox values (`latest`, `popular`, `continue`);
+    // an empty/missing value means all sections (current behavior).
+    let enabled: Vec<String> = mangaread_core::db::get_setting(&db, "home_sections")
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let show = |key: &str| enabled.is_empty() || enabled.iter().any(|s| s == key);
+
     let content = html! {
         // ── Hero Section ──
         section class="hero-section" {
@@ -108,9 +121,12 @@ pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) ->
         }
 
         // ── Continue Reading ──
-        div id="continue-reading-container" class="continue-section" {}
+        @if show("continue") {
+            div id="continue-reading-container" class="continue-section" {}
+        }
 
         // ── Recent Chapters ──
+        @if show("latest") {
         h2 class="section-title" { "Recently Updated" }
         @if recent.is_empty() {
             div class="empty-state" {
@@ -145,8 +161,11 @@ pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) ->
                 }
             }
         }
+        }
     };
 
-    let css = state.config.css_overrides();
-    Html(crate::templates::layout::base_layout("Home", content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0)
+    let cfg = crate::config::site_config(&db);
+    let css = cfg.css_overrides();
+    let theme = crate::config::resolve_theme(&db, user.as_ref());
+    Html(crate::templates::layout::base_layout("Home", content, banner.as_deref(), &css, &cfg.site_title, user.as_ref(), &theme).0)
 }
