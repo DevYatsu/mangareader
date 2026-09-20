@@ -25,6 +25,15 @@
   --bulma-primary-l: 50%;
   --bulma-primary-rgb: 245, 158, 11;
 
+  /* §4.3 puts the focus ring in the accent. Bulma derives --bulma-focus-*
+     (and, through it, --bulma-input-focus-*) from --bulma-link-*, so without
+     these three the ring stays Bulma's factory link blue. Bound to the
+     primary components rather than copied, so an admin rebrand moves the
+     ring with the accent. */
+  --bulma-focus-h: var(--bulma-primary-h);
+  --bulma-focus-s: var(--bulma-primary-s);
+  --bulma-focus-l: var(--bulma-primary-l);
+
   /* Warm neutral scheme. Greys read as ink rather than cool blue-grey, and
      the page surface sits deeper than Bulma's 9% default. */
   --bulma-scheme-h: 30deg;
