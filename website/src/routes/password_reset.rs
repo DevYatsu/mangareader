@@ -26,7 +26,6 @@ pub fn reset_expires_at() -> String {
 
 fn page(
     cfg: &crate::config::SiteConfig,
-    theme: &str,
     title: &str,
     content: maud::Markup,
     user: Option<&AuthUser>,
@@ -39,7 +38,7 @@ fn page(
             &cfg.css_overrides(),
             &cfg.site_title,
             user,
-            theme,
+            crate::templates::layout::Nav::None,
         )
         .0,
     )
@@ -62,16 +61,12 @@ pub async fn forgot_page(
     State(state): State<Arc<AppState>>,
     user: Option<AuthUser>,
 ) -> Html<String> {
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user.as_ref()),
-        )
+        crate::config::site_config(&db)
     };
     page(
         &cfg,
-        &theme,
         "Forgot password",
         html! {
             section class="auth-section" {
@@ -90,14 +85,11 @@ pub async fn reset_page(
     user: Option<AuthUser>,
     Path(_token): Path<String>,
 ) -> Html<String> {
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user.as_ref()),
-        )
+        crate::config::site_config(&db)
     };
-    page(&cfg, &theme, "Set a new password", reset_form(), user.as_ref())
+    page(&cfg, "Set a new password", reset_form(), user.as_ref())
 }
 
 #[derive(Deserialize)]
@@ -112,19 +104,15 @@ pub async fn reset_submit(
     Path(token): Path<String>,
     Form(form): Form<ResetForm>,
 ) -> Response {
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user.as_ref()),
-        )
+        crate::config::site_config(&db)
     };
     let bad = |msg: &str| {
         (
             StatusCode::BAD_REQUEST,
             page(
                 &cfg,
-                &theme,
                 "Set a new password",
                 html! { section class="auth-section" { p class="auth-error" { (msg) } } ({ reset_form() }) },
                 user.as_ref(),

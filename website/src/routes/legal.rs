@@ -27,18 +27,14 @@ async fn legal_page(
     key: &str,
     fallback: &str,
 ) -> Html<String> {
-    let (cfg, theme, body) = {
+    let (cfg, body) = {
         let db = state.db.lock().await;
         let text = mangaread_core::db::get_setting(&db, key)
             .ok()
             .flatten()
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| fallback.to_string());
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user),
-            text,
-        )
+        (crate::config::site_config(&db), text)
     };
     let banner: Option<String> = None;
     let css = cfg.css_overrides();
@@ -50,7 +46,7 @@ async fn legal_page(
             &css,
             &cfg.site_title,
             user,
-            &theme,
+            crate::templates::layout::Nav::None,
         )
         .0,
     )

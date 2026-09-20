@@ -16,12 +16,9 @@ pub async fn bookmarks_page(State(state): State<Arc<AppState>>, user: Option<Aut
         }
     };
 
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user.as_ref()),
-        )
+        crate::config::site_config(&db)
     };
     let css = cfg.css_overrides();
     let content = html! {
@@ -34,5 +31,5 @@ pub async fn bookmarks_page(State(state): State<Arc<AppState>>, user: Option<Aut
         }
     };
 
-    Html(crate::templates::layout::base_layout("Bookmarks", content, banner.as_deref(), &css, &cfg.site_title, user.as_ref(), &theme).0)
+    Html(crate::templates::layout::base_layout("Bookmarks", content, banner.as_deref(), &css, &cfg.site_title, user.as_ref(), crate::templates::layout::Nav::Bookmarks).0)
 }

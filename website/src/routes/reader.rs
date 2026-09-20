@@ -677,14 +677,12 @@ if(++a>=20)clearInterval(iv)
 
     let cfg = crate::config::site_config(&db);
     let css = cfg.css_overrides();
-    let theme = crate::config::resolve_theme(&db, user.as_ref());
     Html(crate::templates::layout::reader_layout(
         &format!("Ch. {} — {}", chapter.number, manga.title),
         content,
         &css,
         &cfg.site_title,
         user.as_ref(),
-        &theme,
         &prefs,
     ).0)
 }
@@ -758,7 +756,7 @@ mod tests {
     fn reader_layout_body_carries_prefs_attrs() {
         let p = ReaderPrefs::default();
         let out = crate::templates::layout::reader_layout(
-            "t", maud::html! {}, "", "S", None, "", &p,
+            "t", maud::html! {}, "", "S", None, &p,
         ).into_string();
         assert!(out.contains("data-r-layout=\"strip\""), "{out}");
         assert!(out.contains("/static/reader.css"), "{out}");

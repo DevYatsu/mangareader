@@ -490,3 +490,19 @@
   }
 
 })();
+
+// Bulma ships no JavaScript, so the navbar burger toggle is ours.
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.navbar-burger').forEach((burger) => {
+    burger.addEventListener('click', () => {
+      const target = document.getElementById(burger.dataset.target);
+      if (!target) return;
+      burger.classList.toggle('is-active');
+      target.classList.toggle('is-active');
+      burger.setAttribute(
+        'aria-expanded',
+        String(burger.classList.contains('is-active')),
+      );
+    });
+  });
+});

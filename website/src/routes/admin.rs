@@ -101,7 +101,6 @@ fn normalize_sections(values: &[String]) -> Vec<String> {
 
 fn page(
     cfg: &crate::config::SiteConfig,
-    theme: &str,
     title: &str,
     content: Markup,
     user: Option<&AuthUser>,
@@ -116,7 +115,7 @@ fn page(
             &css,
             &cfg.site_title,
             user,
-            theme,
+            crate::templates::layout::Nav::Admin,
         )
         .0,
     )
@@ -198,11 +197,10 @@ pub async fn dashboard(
     if require_role(&user, Role::Admin).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let (cfg, theme, settings) = {
+    let (cfg, settings) = {
         let db = state.db.lock().await;
         (
             crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
             mangaread_core::db::all_settings(&db).unwrap_or_default(),
         )
     };
@@ -212,7 +210,7 @@ pub async fn dashboard(
     } else {
         site_theme
     };
-    page(&cfg, &theme, "Admin", dashboard_content(&site_theme), Some(&user)).into_response()
+    page(&cfg, "Admin", dashboard_content(&site_theme), Some(&user)).into_response()
 }
 
 /// GET `/admin/branding` — branding form prefilled from stored settings.
@@ -223,18 +221,16 @@ pub async fn branding_page(
     if require_role(&user, Role::Admin).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let (cfg, theme, settings) = {
+    let (cfg, settings) = {
         let db = state.db.lock().await;
         (
             crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
             mangaread_core::db::all_settings(&db).unwrap_or_default(),
         )
     };
     let checked = normalize_sections(&[stored(&settings, "home_sections")]);
     page(
         &cfg,
-        &theme,
         "Branding",
         branding_content(&settings, &checked, None),
         Some(&user),
@@ -252,12 +248,9 @@ pub async fn branding_submit(
         return StatusCode::FORBIDDEN.into_response();
     }
     let form = parse_branding(&body);
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
-        )
+        crate::config::site_config(&db)
     };
     // Re-render prefill keeps the submitted values so no input is lost.
     let submitted: HashMap<String, String> = HashMap::from([
@@ -277,7 +270,6 @@ pub async fn branding_submit(
             StatusCode::BAD_REQUEST,
             page(
                 &cfg,
-                &theme,
                 "Branding",
                 branding_content(&submitted, &checked, Some(msg)),
                 Some(&user),
@@ -345,7 +337,7 @@ pub async fn users_page(
     if require_role(&user, Role::Admin).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let (cfg, theme, users) = {
+    let (cfg, users) = {
         let db = state.db.lock().await;
         let users = mangaread_core::db::list_users(&db).unwrap_or_default();
         let providers: HashMap<i64, String> = users
@@ -359,7 +351,6 @@ pub async fn users_page(
             .collect();
         (
             crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
             users
                 .into_iter()
                 .map(|u| {
@@ -397,7 +388,7 @@ pub async fn users_page(
         }
         p { a href="/admin" { "Back to admin" } }
     };
-    page(&cfg, &theme, "Users", content, Some(&user)).into_response()
+    page(&cfg, "Users", content, Some(&user)).into_response()
 }
 
 /// POST `/admin/users/{id}/reset-link` — mint a 1h token, redirect back with the link.

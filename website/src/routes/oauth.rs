@@ -36,7 +36,7 @@ fn state_cookie_with_secure(value: &str, max_age_secs: i64, secure: bool) -> Str
     cookie
 }
 
-fn error_page(cfg: &crate::config::SiteConfig, theme: &str, msg: &str, user: Option<&AuthUser>) -> Response {
+fn error_page(cfg: &crate::config::SiteConfig, msg: &str, user: Option<&AuthUser>) -> Response {
     (
         StatusCode::BAD_REQUEST,
         Html(
@@ -47,7 +47,7 @@ fn error_page(cfg: &crate::config::SiteConfig, theme: &str, msg: &str, user: Opt
                 &cfg.css_overrides(),
                 &cfg.site_title,
                 user,
-                theme,
+                crate::templates::layout::Nav::None,
             ).0,
         ),
     ).into_response()
@@ -102,11 +102,11 @@ pub async fn oauth_callback(
     headers: HeaderMap,
     user: Option<AuthUser>,
 ) -> Response {
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (crate::config::site_config(&db), crate::config::resolve_theme(&db, user.as_ref()))
+        crate::config::site_config(&db)
     };
-    let fail = |msg: &str| error_page(&cfg, &theme, msg, user.as_ref());
+    let fail = |msg: &str| error_page(&cfg, msg, user.as_ref());
     let Some(p) = Provider::from_key(&provider_key) else {
         return StatusCode::NOT_FOUND.into_response();
     };

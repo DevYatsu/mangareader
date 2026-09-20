@@ -64,7 +64,6 @@ pub struct LoginForm {
 
 fn page(
     cfg: &crate::config::SiteConfig,
-    theme: &str,
     title: &str,
     content: maud::Markup,
     user: Option<&AuthUser>,
@@ -79,7 +78,7 @@ fn page(
             &css,
             &cfg.site_title,
             user,
-            theme,
+            crate::templates::layout::Nav::None,
         )
         .0,
     )
@@ -141,14 +140,11 @@ pub async fn login_page(
     State(state): State<Arc<AppState>>,
     user: Option<AuthUser>,
 ) -> Html<String> {
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user.as_ref()),
-        )
+        crate::config::site_config(&db)
     };
-    page(&cfg, &theme, "Login", login_form(None, &crate::oauth::configured_providers()), user.as_ref())
+    page(&cfg, "Login", login_form(None, &crate::oauth::configured_providers()), user.as_ref())
 }
 
 /// POST `/login` — verify credentials, open a session, redirect home.
@@ -157,17 +153,14 @@ pub async fn login_submit(
     user: Option<AuthUser>,
     Form(form): Form<LoginForm>,
 ) -> Response {
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user.as_ref()),
-        )
+        crate::config::site_config(&db)
     };
     let render_401 = |user: Option<&AuthUser>| {
         (
             StatusCode::UNAUTHORIZED,
-            page(&cfg, &theme, "Login", login_form(Some("Invalid email or password"), &crate::oauth::configured_providers()), user),
+            page(&cfg, "Login", login_form(Some("Invalid email or password"), &crate::oauth::configured_providers()), user),
         )
             .into_response()
     };
@@ -203,14 +196,11 @@ pub async fn register_page(
     State(state): State<Arc<AppState>>,
     user: Option<AuthUser>,
 ) -> Html<String> {
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user.as_ref()),
-        )
+        crate::config::site_config(&db)
     };
-    page(&cfg, &theme, "Register", register_form(None, &crate::oauth::configured_providers()), user.as_ref())
+    page(&cfg, "Register", register_form(None, &crate::oauth::configured_providers()), user.as_ref())
 }
 
 /// POST `/register` — validate, create the user, open a session, redirect home.
@@ -231,17 +221,14 @@ pub async fn register_submit(
     } else {
         None
     };
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user.as_ref()),
-        )
+        crate::config::site_config(&db)
     };
     if let Some(msg) = invalid {
         return (
             StatusCode::BAD_REQUEST,
-            page(&cfg, &theme, "Register", register_form(Some(msg), &crate::oauth::configured_providers()), user.as_ref()),
+            page(&cfg, "Register", register_form(Some(msg), &crate::oauth::configured_providers()), user.as_ref()),
         )
             .into_response();
     }
@@ -253,7 +240,6 @@ pub async fn register_submit(
             StatusCode::BAD_REQUEST,
             page(
                 &cfg,
-                &theme,
                 "Register",
                 register_form(Some("could not create account"), &crate::oauth::configured_providers()),
                 user,

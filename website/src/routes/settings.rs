@@ -73,7 +73,6 @@ fn current_profile(conn: &rusqlite::Connection, user_id: i64) -> CurrentProfile 
 
 fn page(
     cfg: &crate::config::SiteConfig,
-    theme: &str,
     content: Markup,
     user: Option<&AuthUser>,
 ) -> Html<String> {
@@ -87,7 +86,7 @@ fn page(
             &css,
             &cfg.site_title,
             user,
-            theme,
+            crate::templates::layout::Nav::None,
         )
         .0,
     )
@@ -159,20 +158,18 @@ pub async fn settings_page(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
 ) -> Html<String> {
-    let (cfg, theme, current) = {
+    let (cfg, current) = {
         let db = state.db.lock().await;
         (
             crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
             current_profile(&db, user.id),
         )
     };
-    page(&cfg, &theme, settings_content(&current, None, None, None), Some(&user))
+    page(&cfg, settings_content(&current, None, None, None), Some(&user))
 }
 
 fn render_400(
     cfg: &crate::config::SiteConfig,
-    theme: &str,
     current: &CurrentProfile,
     profile_error: Option<&str>,
     appearance_error: Option<&str>,
@@ -183,7 +180,6 @@ fn render_400(
         StatusCode::BAD_REQUEST,
         page(
             cfg,
-            theme,
             settings_content(current, profile_error, appearance_error, password_error),
             user,
         ),
@@ -198,18 +194,16 @@ pub async fn profile_submit(
     Form(form): Form<ProfileForm>,
 ) -> Response {
     let name = form.name.trim().to_string();
-    let (cfg, theme, current) = {
+    let (cfg, current) = {
         let db = state.db.lock().await;
         (
             crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
             current_profile(&db, user.id),
         )
     };
     if name.is_empty() || name.chars().count() > 32 {
         return render_400(
             &cfg,
-            &theme,
             &current,
             Some("Name must be 1-32 characters."),
             None,
@@ -220,7 +214,6 @@ pub async fn profile_submit(
     if !is_locale(&form.locale) {
         return render_400(
             &cfg,
-            &theme,
             &current,
             Some("Unknown locale."),
             None,
@@ -231,7 +224,6 @@ pub async fn profile_submit(
     if !crate::config::is_theme(&form.theme) {
         return render_400(
             &cfg,
-            &theme,
             &current,
             Some("Unknown theme."),
             None,
@@ -246,7 +238,6 @@ pub async fn profile_submit(
         {
             return render_400(
                 &cfg,
-                &theme,
                 &current,
                 Some("Could not save profile."),
                 None,
@@ -264,18 +255,16 @@ pub async fn appearance_submit(
     user: AuthUser,
     Form(form): Form<AppearanceForm>,
 ) -> Response {
-    let (cfg, theme, current) = {
+    let (cfg, current) = {
         let db = state.db.lock().await;
         (
             crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
             current_profile(&db, user.id),
         )
     };
     if !crate::config::is_theme(&form.theme) {
         return render_400(
             &cfg,
-            &theme,
             &current,
             None,
             Some("Unknown theme."),
@@ -296,7 +285,6 @@ pub async fn appearance_submit(
         {
             return render_400(
                 &cfg,
-                &theme,
                 &current,
                 None,
                 Some("Could not save appearance."),
@@ -317,20 +305,17 @@ pub async fn password_submit(
     user: AuthUser,
     Form(form): Form<PasswordForm>,
 ) -> Response {
-    let (cfg, theme, current) = {
+    let (cfg, current) = {
         let db = state.db.lock().await;
         (
             crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
             current_profile(&db, user.id),
         )
     };
     let render_failed = |cfg: &crate::config::SiteConfig,
-                         theme: &str,
                          current: &CurrentProfile| {
         render_400(
             cfg,
-            theme,
             current,
             None,
             None,
@@ -349,23 +334,23 @@ pub async fn password_submit(
             |row| row.get::<_, String>(0),
         ) {
             Ok(h) => h,
-            Err(_) => return render_failed(&cfg, &theme, &current),
+            Err(_) => return render_failed(&cfg, &current),
         }
     };
     if !crate::auth::verify_password(&form.current, &stored_hash) {
-        return render_failed(&cfg, &theme, &current);
+        return render_failed(&cfg, &current);
     }
     if form.new.len() < 8 {
-        return render_failed(&cfg, &theme, &current);
+        return render_failed(&cfg, &current);
     }
     let new_hash = match crate::auth::hash_password(&form.new) {
         Ok(h) => h,
-        Err(_) => return render_failed(&cfg, &theme, &current),
+        Err(_) => return render_failed(&cfg, &current),
     };
     {
         let db = state.db.lock().await;
         if mangaread_core::db::update_user_password(&db, user.id, &new_hash).is_err() {
-            return render_failed(&cfg, &theme, &current);
+            return render_failed(&cfg, &current);
         }
     }
     Redirect::to("/settings").into_response()
