@@ -36,6 +36,7 @@ pub async fn series_detail(
             return Html(crate::templates::layout::error_layout(
                 "Not Found",
                 "This series doesn't exist or may have been removed.",
+                &crate::config::resolve_theme(&db, user.as_ref()),
             ).0);
         }
     };
@@ -51,8 +52,10 @@ pub async fn series_detail(
             }
             h2 class="page-title" { "Series not found" }
         };
-        let css = state.config.css_overrides();
-        return Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0);
+        let cfg = crate::config::site_config(&db);
+        let css = cfg.css_overrides();
+        let theme = crate::config::resolve_theme(&db, user.as_ref());
+        return Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref(), &css, &cfg.site_title, user.as_ref(), &theme).0);
     }
 
     // Use the new service layer for domain logic
@@ -214,8 +217,10 @@ pub async fn series_detail(
         }
     };
 
-    let css = state.config.css_overrides();
-    Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0)
+    let cfg = crate::config::site_config(&db);
+    let css = cfg.css_overrides();
+    let theme = crate::config::resolve_theme(&db, user.as_ref());
+    Html(crate::templates::layout::base_layout(&s.title, content, banner.as_deref(), &css, &cfg.site_title, user.as_ref(), &theme).0)
 }
 
 /// GET `/series` — render the series listing page.
@@ -313,6 +318,8 @@ pub async fn series_list(
         }
     };
 
-    let css = state.config.css_overrides();
-    Html(crate::templates::layout::base_layout("Series", content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0)
+    let cfg = crate::config::site_config(&db);
+    let css = cfg.css_overrides();
+    let theme = crate::config::resolve_theme(&db, user.as_ref());
+    Html(crate::templates::layout::base_layout("Series", content, banner.as_deref(), &css, &cfg.site_title, user.as_ref(), &theme).0)
 }

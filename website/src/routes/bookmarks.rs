@@ -16,7 +16,14 @@ pub async fn bookmarks_page(State(state): State<Arc<AppState>>, user: Option<Aut
         }
     };
 
-    let css = state.config.css_overrides();
+    let (cfg, theme) = {
+        let db = state.db.lock().await;
+        (
+            crate::config::site_config(&db),
+            crate::config::resolve_theme(&db, user.as_ref()),
+        )
+    };
+    let css = cfg.css_overrides();
     let content = html! {
         div class="bookmarks-header" {
             h1 class="page-title" { "Bookmarks" }
@@ -27,5 +34,5 @@ pub async fn bookmarks_page(State(state): State<Arc<AppState>>, user: Option<Aut
         }
     };
 
-    Html(crate::templates::layout::base_layout("Bookmarks", content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0)
+    Html(crate::templates::layout::base_layout("Bookmarks", content, banner.as_deref(), &css, &cfg.site_title, user.as_ref(), &theme).0)
 }

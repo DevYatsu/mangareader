@@ -147,6 +147,8 @@ pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) ->
         }
     };
 
-    let css = state.config.css_overrides();
-    Html(crate::templates::layout::base_layout("Home", content, banner.as_deref(), &css, &state.config.site_title, user.as_ref()).0)
+    let cfg = crate::config::site_config(&db);
+    let css = cfg.css_overrides();
+    let theme = crate::config::resolve_theme(&db, user.as_ref());
+    Html(crate::templates::layout::base_layout("Home", content, banner.as_deref(), &css, &cfg.site_title, user.as_ref(), &theme).0)
 }
