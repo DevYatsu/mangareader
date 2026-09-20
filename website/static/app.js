@@ -111,53 +111,59 @@
   //  READ TRACKING
   // ============================================================
 
-  /** @param {number|string} seriesId */
-  function storageKey(seriesId) {
-    return 'mangaread_read_' + seriesId;
-  }
+  // The read-state helpers are the single write path for progress on every
+  // surface (series list, home, and reader.js). `reader.js` reaches them
+  // through `window.MangaReadState`; keeping them here means the
+  // `MangaSync.pushProgress` write-through lives in exactly one place.
+  window.MangaReadState = {
+    /** @param {number|string} seriesId */
+    storageKey(seriesId) {
+      return 'mangaread_read_' + seriesId;
+    },
 
-  /** @returns {Object} chapterId -> {status, page, updated} */
-  function getReadState(seriesId) {
-    try {
-      const raw = localStorage.getItem(storageKey(seriesId));
-      if (raw) return JSON.parse(raw);
-    } catch (_) { /* ignore */ }
-    return {};
-  }
+    /** @returns {Object} chapterId -> {status, page, updated} */
+    getReadState(seriesId) {
+      try {
+        const raw = localStorage.getItem(window.MangaReadState.storageKey(seriesId));
+        if (raw) return JSON.parse(raw);
+      } catch (_) { /* ignore */ }
+      return {};
+    },
 
-  /**
-   * Persist the full read-state object for a series to localStorage.
-   * @param {number|string} seriesId
-   * @param {Object} state
-   */
-  function saveReadState(seriesId, state) {
-    localStorage.setItem(storageKey(seriesId), JSON.stringify(state));
-  }
+    /**
+     * Persist the full read-state object for a series to localStorage.
+     * @param {number|string} seriesId
+     * @param {Object} state
+     */
+    saveReadState(seriesId, state) {
+      localStorage.setItem(window.MangaReadState.storageKey(seriesId), JSON.stringify(state));
+    },
 
-  /**
-   * @param {number|string} seriesId
-   * @param {number|string} chapterId
-   * @param {'unread'|'started'|'finished'} status
-   * @param {number} [page] last viewed page
-   */
-  function setChapterStatus(seriesId, chapterId, status, page) {
-    const state = getReadState(seriesId);
-    state['ch_' + chapterId] = { status, page: page || 1, updated: new Date().toISOString() };
-    saveReadState(seriesId, state);
-    // Write-through to server when logged in; failures are swallowed
-    // (localStorage stays the source of truth offline).
-    try {
-      if (typeof window.MangaSync !== 'undefined') {
-        window.MangaSync.pushProgress(chapterId, page || 1, status);
-      }
-    } catch (_) { /* ignore */ }
-  }
+    /**
+     * @param {number|string} seriesId
+     * @param {number|string} chapterId
+     * @param {'unread'|'started'|'finished'} status
+     * @param {number} [page] last viewed page
+     */
+    setChapterStatus(seriesId, chapterId, status, page) {
+      const state = window.MangaReadState.getReadState(seriesId);
+      state['ch_' + chapterId] = { status, page: page || 1, updated: new Date().toISOString() };
+      window.MangaReadState.saveReadState(seriesId, state);
+      // Write-through to server when logged in; failures are swallowed
+      // (localStorage stays the source of truth offline).
+      try {
+        if (typeof window.MangaSync !== 'undefined') {
+          window.MangaSync.pushProgress(chapterId, page || 1, status);
+        }
+      } catch (_) { /* ignore */ }
+    },
 
-  /** @returns {{status:string, page:number}|null} */
-  function getChapterStatus(seriesId, chapterId) {
-    const state = getReadState(seriesId);
-    return state['ch_' + chapterId] || null;
-  }
+    /** @returns {{status:string, page:number}|null} */
+    getChapterStatus(seriesId, chapterId) {
+      const state = window.MangaReadState.getReadState(seriesId);
+      return state['ch_' + chapterId] || null;
+    },
+  };
 
   /**
    * Apply read-status CSS classes (`ch-unread`, `ch-started`, `ch-finished`)
@@ -165,7 +171,7 @@
    * @param {number|string} seriesId
    */
   function applyReadStatus(seriesId) {
-    const state = getReadState(seriesId);
+    const state = window.MangaReadState.getReadState(seriesId);
     document.querySelectorAll('.chapter-list > li[data-chapter-id]').forEach(li => {
       const chId = li.getAttribute('data-chapter-id');
       const info = state['ch_' + chId];
@@ -259,224 +265,7 @@
       .catch(function () { container.remove(); });
   }
 
-  // ============================================================
-  //  READER PAGE: progress tracking
-  // ============================================================
-
-  /**
-   * Initialize reading progress tracking on the reader page.
-   *
-   * Observes `.reader-page` elements (which already have `data-page-idx`
-   * from the server template).  Saves the last viewed page to localStorage
-   * on `beforeunload` and auto-marks the chapter as finished when the last
-   * page scrolls into view.
-   *
-   * @param {number|string} seriesId
-   * @param {number|string} chapterId
-   * @param {number} totalPages
-   */
-  function initReader(seriesId, chapterId, totalPages) {
-    // Mark as started
-    setChapterStatus(seriesId, chapterId, 'started', 1);
-
-    const pages = document.querySelectorAll('.reader-page[data-page-idx]');
-    if (pages.length === 0) return;
-    let lastVisible = 1;
-    let finishedMarked = false;
-
-    const observer = new IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        if (entry.isIntersecting) {
-          let idx = parseInt(entry.target.getAttribute('data-page-idx'), 10);
-          if (idx > lastVisible) {
-            lastVisible = idx;
-          }
-        }
-      });
-    }, { threshold: 0.4 });
-
-    pages.forEach(function (p) { observer.observe(p); });
-
-    // Save progress on unload
-    function saveProgress() {
-      setChapterStatus(seriesId, chapterId, 'started', lastVisible);
-    }
-    window.addEventListener('beforeunload', saveProgress);
-
-    // Auto-mark finished when last page is reached
-    function checkFinished() {
-      if (finishedMarked) return;
-      if (lastVisible >= totalPages) {
-        setChapterStatus(seriesId, chapterId, 'finished', totalPages);
-        finishedMarked = true;
-        const badge = h('span', { className: 'completed-badge', textContent: '\u2713 Read' });
-        const target = document.querySelector('.reader-topbar-chapter');
-        if (target) target.appendChild(badge);
-      }
-    }
-
-    // Check on scroll and after images load
-    window.addEventListener('scroll', function () {
-      if (window._finishCheck) clearTimeout(window._finishCheck);
-      window._finishCheck = setTimeout(checkFinished, 500);
-    });
-
-    let loaded = 0;
-    pages.forEach(function (p) {
-      const img = p.querySelector('img');
-      if (img) {
-        img.addEventListener('load', function () {
-          loaded++;
-          if (loaded >= pages.length) setTimeout(checkFinished, 300);
-        });
-      }
-    });
-  }
-
-  // ============================================================
-  //  READER: page navigation & UX
-  // ============================================================
-
-  /**
-   * Initialize reader UX: page navigation via click zones, keyboard arrows,
-   * scroll-aware topbar visibility, and a fading hint for first-time readers.
-   */
-  function initReaderUX() {
-    const images = document.getElementById('reader-images');
-    if (!images) return;
-    const pages = images.querySelectorAll('.reader-page');
-    if (pages.length === 0) return;
-
-    const topbar = document.getElementById('reader-topbar');
-    const pageIndicator = document.getElementById('reader-page-indicator');
-    const clickLeft = document.getElementById('reader-click-left');
-    const clickRight = document.getElementById('reader-click-right');
-
-    let currentPage = 1;
-    const totalPages = pages.length;
-
-    function updateIndicator() {
-      if (pageIndicator) {
-        pageIndicator.textContent = currentPage + ' / ' + totalPages;
-      }
-    }
-
-    function goToPage(idx) {
-      if (idx < 1 || idx > totalPages) return;
-      currentPage = idx;
-      updateIndicator();
-      pages[idx - 1].scrollIntoView({ behavior: 'instant', block: 'start' });
-    }
-
-    function nextPage() {
-      if (currentPage < totalPages) {
-        goToPage(currentPage + 1);
-      }
-    }
-
-    function prevPage() {
-      if (currentPage > 1) {
-        goToPage(currentPage - 1);
-      }
-    }
-
-    // Preload next images
-    const pageImages = Array.from(pages).map(function (p) {
-      const img = p.querySelector('img');
-      return img ? img.getAttribute('src') : null;
-    });
-
-    let preloadLinks = [];
-
-    function updatePreload() {
-      let i, src, link;
-      preloadLinks.forEach(function (l) { l.remove(); });
-      preloadLinks = [];
-      for (i = currentPage; i < currentPage + 3 && i < pageImages.length; i++) {
-        src = pageImages[i];
-        if (!src) continue;
-        link = h('link', { rel: 'preload', as: 'image', href: src });
-        document.head.appendChild(link);
-        preloadLinks.push(link);
-      }
-    }
-
-    // Track visible page on scroll
-    const pageObserver = new IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        if (entry.isIntersecting) {
-          const idx = parseInt(entry.target.getAttribute('data-page-idx'), 10);
-          if (idx > 0) {
-            currentPage = idx;
-            updateIndicator();
-            updatePreload();
-          }
-        }
-      });
-    }, { threshold: 0.3 });
-
-    pages.forEach(function (p) { pageObserver.observe(p); });
-
-    // Click zones
-    if (clickLeft) clickLeft.addEventListener('click', prevPage);
-    if (clickRight) clickRight.addEventListener('click', nextPage);
-
-    // Keyboard nav: arrows navigate chapters, space scrolls normally
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'ArrowLeft') {
-        const prev = document.querySelector('.reader-bottom-nav-inner > :first-child');
-        if (prev && prev.tagName === 'A') window.location.href = prev.href;
-      }
-      if (e.key === 'ArrowRight') {
-        const next = document.querySelector('.reader-bottom-nav-inner > :last-child');
-        if (next && next.tagName === 'A') window.location.href = next.href;
-      }
-    });
-
-    // Show/hide topbar on scroll
-    let lastScrollY = window.scrollY;
-    let topbarTimer = null;
-
-    function showTopbar() {
-      if (topbar) topbar.classList.add('visible');
-      if (topbarTimer) clearTimeout(topbarTimer);
-      topbarTimer = setTimeout(function () {
-        if (topbar) topbar.classList.remove('visible');
-      }, 3000);
-    }
-
-    window.addEventListener('scroll', function () {
-      const sy = window.scrollY;
-      if (sy < lastScrollY - 20 || sy < 60) {
-        showTopbar();
-      } else if (sy > lastScrollY + 60) {
-        if (topbar) topbar.classList.remove('visible');
-      }
-      lastScrollY = sy;
-    });
-
-    // Show on mouse near top
-    document.addEventListener('mousemove', function (e) {
-      if (e.clientY < 80) showTopbar();
-    });
-
-    // Hide hint on first interaction
-    const hint = document.getElementById('reader-hint');
-    function hideHint() {
-      if (hint) hint.classList.add('hidden');
-      document.removeEventListener('click', hideHint);
-      document.removeEventListener('keydown', hideHint);
-    }
-    document.addEventListener('click', hideHint);
-    document.addEventListener('keydown', hideHint);
-
-    updateIndicator();
-  }
-
   document.addEventListener('DOMContentLoaded', function () {
-    // Reader UX setup
-    initReaderUX();
-
     // Init continue reading
     initContinueReading();
 
@@ -547,36 +336,7 @@
       }
     }
 
-    // --- Reader page ---
-    const readerEl = document.getElementById('reader-track');
-    if (readerEl) {
-      const seriesId = readerEl.getAttribute('data-series-id');
-      const chapterId = readerEl.getAttribute('data-chapter-id');
-      const totalPages = parseInt(readerEl.getAttribute('data-total-pages') || '0', 10);
-      if (seriesId && chapterId) {
-        initReader(seriesId, chapterId, totalPages);
-      }
-    }
-
-    // --- Reader: scroll-to-resume ---
-    const readerTrack = document.getElementById('reader-track');
-    const resumeTarget = document.getElementById('resume-target');
-    if (readerTrack && resumeTarget) {
-      const seriesId = readerTrack.getAttribute('data-series-id');
-      const chapterId = readerTrack.getAttribute('data-chapter-id');
-      const saved = getChapterStatus(seriesId, chapterId);
-      if (saved && saved.page && saved.page > 1) {
-        const page = parseInt(saved.page, 10);
-        if (isNaN(page) || page < 1) return;
-        resumeTarget.setAttribute('data-page', String(page));
-        // The server template already sets data-page-idx on .reader-page divs
-        const el = document.querySelector('.reader-page[data-page-idx="' + page + '"]');
-        if (el) {
-          el.scrollIntoView({ behavior: 'instant', block: 'start' });
-        }
-      }
-    }
-
+    // Bookmark buttons on series detail page
     // Bookmark buttons on series detail page
     initBookmarkButtons();
 

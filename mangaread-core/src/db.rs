@@ -161,6 +161,22 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
     if !has_theme {
         conn.execute_batch("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT ''")?;
     }
+    // users.reader_prefs migration: one JSON blob per user (design contract §2.3).
+    let has_reader_prefs: bool = {
+        let mut stmt = conn.prepare("PRAGMA table_info(users)")?;
+        let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for col in cols {
+            if col? == "reader_prefs" {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    if !has_reader_prefs {
+        conn.execute_batch("ALTER TABLE users ADD COLUMN reader_prefs TEXT NOT NULL DEFAULT '{}'")?;
+    }
     Ok(())
 }
 
@@ -1002,6 +1018,30 @@ pub fn all_settings(conn: &Connection) -> Result<HashMap<String, String>, Error>
     Ok(map)
 }
 
+// ── Reader preferences (one JSON blob per user) ──
+
+/// Load a user's reader preferences. Missing user or unreadable blob yields
+/// defaults — a prefs read must never fail a page render.
+pub fn get_reader_prefs(conn: &Connection, user_id: i64) -> Result<ReaderPrefs, Error> {
+    let mut stmt = conn.prepare("SELECT reader_prefs FROM users WHERE id = ?1")?;
+    match stmt.query_row(rusqlite::params![user_id], |row| row.get::<_, String>(0)) {
+        Ok(raw) => Ok(ReaderPrefs::from_json(&raw)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ReaderPrefs::default()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Persist reader preferences, normalized first so a hand-crafted request can
+/// never store an illegal value.
+pub fn set_reader_prefs(conn: &Connection, user_id: i64, prefs: &ReaderPrefs) -> Result<(), Error> {
+    let json = prefs.clone().normalized().to_json();
+    conn.execute(
+        "UPDATE users SET reader_prefs = ?1 WHERE id = ?2",
+        rusqlite::params![json, user_id],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1097,5 +1137,36 @@ mod tests {
         }).unwrap();
         // No series with id 9999 exists → FK violation must error.
         assert!(set_bookmark(&conn, user_id, 9999, true).is_err());
+    }
+
+    #[test]
+    fn reader_prefs_roundtrip_and_defaults() {
+        let conn = mem();
+        let uid = create_user(
+            &conn,
+            &NewUser {
+                name: "r".into(),
+                email: "r@x.io".into(),
+                password_hash: "h".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
+        // Fresh user -> defaults.
+        assert_eq!(get_reader_prefs(&conn, uid).unwrap(), ReaderPrefs::default());
+        // Illegal values are normalized on write.
+        let mut p = ReaderPrefs::default();
+        p.layout = "nope".into();
+        p.max_w = 99999;
+        set_reader_prefs(&conn, uid, &p).unwrap();
+        let got = get_reader_prefs(&conn, uid).unwrap();
+        assert_eq!(got.layout, "strip");
+        assert_eq!(got.max_w, 1400);
+        // A corrupted blob degrades to defaults, never errors.
+        conn.execute("UPDATE users SET reader_prefs = '{{{' WHERE id = ?1", rusqlite::params![uid])
+            .unwrap();
+        assert_eq!(get_reader_prefs(&conn, uid).unwrap(), ReaderPrefs::default());
+        // Unknown user -> defaults, not an error.
+        assert_eq!(get_reader_prefs(&conn, 12_345).unwrap(), ReaderPrefs::default());
     }
 }
