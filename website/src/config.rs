@@ -272,16 +272,47 @@ mod contrast {
         scheme_luminance(percent(&token("bulma-scheme-main-l")))
     }
 
+    /// Text composes from `--bulma-text-h`/`-s`, which is NOT necessarily the
+    /// scheme hue. The guard must model the color the browser paints, or it
+    /// over-reports contrast against warm surfaces.
+    fn text_luminance(lightness: f64) -> f64 {
+        luminance(
+            angle(&token("bulma-text-h")),
+            percent(&token("bulma-text-s")),
+            lightness,
+        )
+    }
+
+    /// The deepest surface the design defines; `.m-empty` puts
+    /// `--bulma-text-weak` on it, so it is the muted-text worst case.
+    fn background_luminance() -> f64 {
+        scheme_luminance(percent(&token("bulma-background-l")))
+    }
+
     #[test]
     fn body_text_meets_wcag_aa() {
-        let r = ratio(scheme_luminance(percent(&token("bulma-text-l"))), scheme_main());
+        let r = ratio(text_luminance(percent(&token("bulma-text-l"))), scheme_main());
         assert!(r >= 4.5, "--bulma-text-l contrast is {r:.2}:1, need >= 4.5");
     }
 
     #[test]
     fn muted_text_meets_wcag_aa() {
-        let r = ratio(scheme_luminance(percent(&token("bulma-text-weak-l"))), scheme_main());
+        let r = ratio(
+            text_luminance(percent(&token("bulma-text-weak-l"))),
+            background_luminance(),
+        );
         assert!(r >= 4.5, "--bulma-text-weak-l contrast is {r:.2}:1, need >= 4.5");
+    }
+
+    /// §4.1 requires greys to read as warm ink. That is now enforced, so a
+    /// future edit cannot silently regress text to Bulma's cool 221deg.
+    #[test]
+    fn text_hue_matches_the_warm_scheme() {
+        assert_eq!(
+            angle(&token("bulma-text-h")),
+            angle(&token("bulma-scheme-h")),
+            "text hue must match the warm scheme hue"
+        );
     }
 
     #[test]

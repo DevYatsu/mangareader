@@ -34,9 +34,16 @@
   --bulma-scheme-main-ter-l: 11%;
   --bulma-background-l: 13%;
   --bulma-border-l: 22%;
+  /* Text shares the scheme's warm hue, so greys read as ink, not cool
+     blue-grey. Bulma's defaults are cool (221deg / 14%); without these two
+     the surfaces would be warm while the text on them stayed cool. */
+  --bulma-text-h: 30deg;
+  --bulma-text-s: 8%;
   --bulma-text-l: 72%;
   --bulma-text-strong-l: 94%;
-  --bulma-text-weak-l: 53%;
+  /* Bound by the deepest surface (--bulma-background-l, 13%), not just the
+     page surface: .m-empty sets --bulma-text-weak and may sit on background. */
+  --bulma-text-weak-l: 56%;
 
   /* Editorial type: Inter for body, Space Grotesk for display. */
   --bulma-family-primary: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
