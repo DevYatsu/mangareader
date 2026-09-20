@@ -2381,3 +2381,98 @@ footer p {
   border-radius: 6px;
   font-size: 1rem;
 }
+
+/* ── Admin (Slice 2 Task 4) ── */
+.admin-section {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1rem 0 2rem;
+}
+.admin-current-theme {
+  color: var(--text-dim, #888);
+  margin-bottom: 1.25rem;
+}
+.admin-cards {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+.admin-card {
+  display: block;
+  padding: 1.25rem;
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  text-decoration: none;
+  color: inherit;
+}
+a.admin-card:hover {
+  border-color: var(--accent, #f59e0b);
+}
+.admin-card-disabled {
+  opacity: 0.6;
+}
+.admin-card h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+.admin-card p {
+  margin: 0;
+  color: var(--text-dim, #888);
+  font-size: 0.9rem;
+}
+.admin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+.admin-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-weight: 500;
+}
+.admin-form input[type="text"],
+.admin-form textarea {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+  font-size: 1rem;
+  font-family: inherit;
+}
+.admin-form input[type="color"] {
+  width: 3rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.theme-picker,
+.sections-picker {
+  border: 1px solid var(--border, #ccc);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.theme-option,
+.section-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 400;
+}
+
+/* ── Legal pages ── */
+.legal-section {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 1rem 0 2rem;
+}
+.legal-body {
+  white-space: pre-wrap;
+  line-height: 1.6;
+}

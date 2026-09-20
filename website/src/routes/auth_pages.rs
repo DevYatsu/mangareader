@@ -238,6 +238,7 @@ pub async fn register_submit(
             Err(_) => return render_failed(user.as_ref()),
         }
     };
+    let is_bootstrap_admin = role == Role::Admin;
     let password_hash = match hash_password(&form.password) {
         Ok(h) => h,
         Err(_) => return render_failed(user.as_ref()),
@@ -257,7 +258,7 @@ pub async fn register_submit(
             Ok(id) => id,
             Err(_) => return render_failed(user.as_ref()),
         };
-        if id == 1 {
+        if is_bootstrap_admin {
             tracing::warn!("first registered user bootstrapped as admin: {email}");
         }
         if mangaread_core::db::insert_session(&db, id, &token, &session_expires_at(), "web").is_err() {

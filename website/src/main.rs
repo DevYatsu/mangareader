@@ -123,6 +123,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/settings/profile", post(crate::routes::settings::profile_submit))
         .route("/settings/appearance", post(crate::routes::settings::appearance_submit))
         .route("/settings/password", post(crate::routes::settings::password_submit))
+        .route("/admin", get(crate::routes::admin::dashboard))
+        .route("/admin/branding", get(crate::routes::admin::branding_page).post(crate::routes::admin::branding_submit))
+        .route("/terms", get(crate::routes::legal::terms))
+        .route("/privacy", get(crate::routes::legal::privacy))
         .route("/source/{source}", get(crate::routes::source::source_list))
         .route("/manga/{id}", get(crate::routes::manga::manga_detail))
         .route(

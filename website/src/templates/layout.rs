@@ -1,5 +1,6 @@
 use crate::auth::AuthUser;
 use maud::{html, Markup, PreEscaped, DOCTYPE};
+use mangaread_core::domain::Role;
 
 /// Body class for a theme key, or `None` when no class applies.
 ///
@@ -48,7 +49,7 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                 link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap";
                 link rel="stylesheet" href="/static/style.css";
                 @if let Some(href) = &theme_link {
-                    link rel="stylesheet" href=(href);
+                    link id="theme-css" rel="stylesheet" href=(href);
                 }
                 link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
                 style { (PreEscaped(config_css.to_string())) }
@@ -94,6 +95,9 @@ pub fn base_layout(title: &str, content: Markup, sync_banner: Option<&str>, conf
                                 "Bookmarks"
                             }
                             @if let Some(u) = user {
+                                @if u.role == Role::Admin {
+                                    a href="/admin" { "Admin" }
+                                }
                                 a href="/settings" class="user-name" { (u.name) }
                                 form method="post" action="/logout" class="logout-form" {
                                     button type="submit" class="logout-btn" { "Logout" }
