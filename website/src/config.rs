@@ -83,7 +83,11 @@ fn parse_hex(hex: &str) -> (u8, u8, u8) {
 ///
 /// Used to translate the admin accent and background colours into the
 /// hue/saturation/lightness components Bulma derives its palettes from.
-/// Invalid input returns `(0.0, 0.0, 0.0)`, matching `parse_hex`.
+///
+/// A wrong-length string returns `(0.0, 0.0, 0.0)`. A right-length string
+/// whose byte pairs are not valid hex inherits `parse_hex`'s fallback: each
+/// unparseable pair becomes `0`, so `"ffzzzz"` is treated as `#ff0000` rather
+/// than rejected. Only the length check guarantees all-zero output.
 pub fn hex_to_hsl(hex: &str) -> (f64, f64, f64) {
     let (r, g, b) = parse_hex(hex);
     if hex.trim_start_matches('#').len() != 6 {
@@ -142,6 +146,12 @@ impl SiteConfig {
     /// are written: Bulma derives its palettes from them, so the composed
     /// colours recompute. `--bulma-primary-rgb` is a literal in Bulma and is
     /// therefore written by hand.
+    ///
+    /// The trailing `--accent*` / `--bg-page` variables are transitional
+    /// aliases, not part of the Ink & Ember identity: `reader.css` still reads
+    /// them, and Slice D rewrites that file onto `--bulma-primary` and deletes
+    /// them. They are re-emitted here so admin rebranding keeps reaching reader
+    /// pages until then.
     pub fn css_overrides(&self) -> String {
         let (h, s, l) = hex_to_hsl(&self.accent);
         let (_, _, bg_l) = hex_to_hsl(&self.bg_page);
@@ -150,16 +160,25 @@ impl SiteConfig {
         let bis = (bg_l + 2.0).min(100.0);
         let ter = (bg_l + 4.0).min(100.0);
         let background = (bg_l + 6.0).min(100.0);
+        let (ar, ag, ab) = (self.accent_r, self.accent_g, self.accent_b);
+        let accent = &self.accent;
+        let hover = &self.accent_hover;
+        // Legacy tokens composed exactly as the pre-migration block did:
+        // `--accent-dim` is the accent hex with an `14` (alpha ~8%) suffix.
+        let dim = format!("{accent}14");
+        let bg = &self.bg_page;
         // Whole-number precision matches the identity tokens in `theme.css`
         // (`38deg` / `92%` / `50%`), so the env defaults reproduce the
         // designed palette exactly rather than drifting by fractions of a
         // degree. `hex_to_hsl` stays exact; rounding happens at emission.
         format!(
             ":root[data-theme=\"dark\"]{{--bulma-primary-h:{h:.0}deg;--bulma-primary-s:{s:.0}%;\
---bulma-primary-l:{l:.0}%;--bulma-primary-rgb:{},{},{};--bulma-scheme-main-l:{bg_l:.0}%;\
+--bulma-primary-l:{l:.0}%;--bulma-primary-rgb:{ar},{ag},{ab};--bulma-scheme-main-l:{bg_l:.0}%;\
 --bulma-scheme-main-bis-l:{bis:.0}%;--bulma-scheme-main-ter-l:{ter:.0}%;\
---bulma-background-l:{background:.0}%;}}",
-            self.accent_r, self.accent_g, self.accent_b
+--bulma-background-l:{background:.0}%;\
+/* transitional: reader.css still reads these; Slice D deletes them */\
+--accent:{accent};--accent-hover:{hover};--accent-dim:{dim};--bg-page:{bg};\
+--accent-r:{ar};--accent-g:{ag};--accent-b:{ab};}}"
         )
     }
 
@@ -254,11 +273,16 @@ mod tests {
         // not a pure grey: 8% is the designed scheme saturation.
         assert!(s < 10.0, "expected a near-neutral saturation, got {s}");
         assert!((l - 7.0).abs() < 0.5, "lightness was {l}");
+        // A true grey exercises the achromatic early-return (`max == min`),
+        // which the warm #131210 above never reaches.
+        let (gh, gs, gl) = hex_to_hsl("#808080");
+        assert_eq!((gh, gs), (0.0, 0.0), "grey must report zero hue/saturation");
+        assert!((gl - 50.2).abs() < 0.5, "grey lightness was {gl}");
         assert_eq!(hex_to_hsl("nonsense"), (0.0, 0.0, 0.0));
     }
 
     #[test]
-    fn overrides_target_the_dark_scheme_block() {
+    fn overrides_emit_the_exact_dark_scheme_block() {
         let cfg = SiteConfig {
             site_title: "T".into(),
             accent: "#f59e0b".into(),
@@ -268,11 +292,46 @@ mod tests {
             accent_g: 158,
             accent_b: 11,
         };
+        // The exact string IS the contract: one assertion locks the selector,
+        // the emission format, the seven primary/surface components, and the
+        // transitional accent aliases together. The expected value below is
+        // the default config's output, which reproduces `theme.css` exactly.
+        assert_eq!(
+            cfg.css_overrides(),
+            concat!(
+                ":root[data-theme=\"dark\"]{--bulma-primary-h:38deg;--bulma-primary-s:92%;",
+                "--bulma-primary-l:50%;--bulma-primary-rgb:245,158,11;",
+                "--bulma-scheme-main-l:7%;--bulma-scheme-main-bis-l:9%;",
+                "--bulma-scheme-main-ter-l:11%;--bulma-background-l:13%;",
+                "/* transitional: reader.css still reads these; Slice D deletes them */",
+                "--accent:#f59e0b;--accent-hover:#fbbf24;--accent-dim:#f59e0b14;",
+                "--bg-page:#131210;--accent-r:245;--accent-g:158;--accent-b:11;}"
+            ),
+        );
+    }
+
+    #[test]
+    fn overrides_carry_the_configured_accent() {
+        // A non-default accent proves the legacy aliases are derived from
+        // config rather than hardcoded, so an admin rebrand cannot silently
+        // stop reaching reader.css.
+        let cfg = SiteConfig {
+            site_title: "T".into(),
+            accent: "#123456".into(),
+            accent_hover: "#abcdef".into(),
+            bg_page: "#0a0b0c".into(),
+            accent_r: 18,
+            accent_g: 52,
+            accent_b: 86,
+        };
         let css = cfg.css_overrides();
-        assert!(css.starts_with(":root[data-theme=\"dark\"]{"), "got {css}");
-        assert!(css.contains("--bulma-primary-h:38"), "got {css}");
-        assert!(css.contains("--bulma-primary-rgb:245,158,11"), "got {css}");
-        assert!(css.contains("--bulma-scheme-main-l:"), "got {css}");
+        assert!(css.contains("--accent:#123456;"), "got {css}");
+        assert!(css.contains("--accent-hover:#abcdef;"), "got {css}");
+        assert!(css.contains("--accent-dim:#12345614;"), "got {css}");
+        assert!(css.contains("--bg-page:#0a0b0c;"), "got {css}");
+        assert!(css.contains("--accent-r:18;"), "got {css}");
+        assert!(css.contains("--accent-g:52;"), "got {css}");
+        assert!(css.contains("--accent-b:86;"), "got {css}");
     }
 }
 
