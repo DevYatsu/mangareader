@@ -186,9 +186,27 @@ pub fn error_layout(heading: &str, message: &str, theme: &str) -> Markup {
 ///
 /// `theme` behaves as in [`base_layout`], except the body class is appended
 /// to the fixed `reader-page` class instead of replacing it.
-pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title: &str, user: Option<&AuthUser>, theme: &str) -> Markup {
+///
+/// `prefs` supplies the `data-r-*` body attributes via
+/// [`crate::routes::reader::body_prefs_attrs`], so the first paint already
+/// reflects the stored layout. The reader stylesheet and the deferred
+/// `reader.js` are loaded last.
+pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title: &str, user: Option<&AuthUser>, theme: &str, prefs: &mangaread_core::ReaderPrefs) -> Markup {
     let theme_class = theme_body_class(theme).map(|c| format!("reader-page {c}")).unwrap_or_else(|| "reader-page".to_string());
     let theme_link = crate::config::theme_css(theme);
+    // `body_prefs_attrs` returns raw attribute text. Maud 0.27 has no
+    // bare-attribute splice (its attribute parser stops at `(`), so the body
+    // opening tag is emitted through `PreEscaped`. The values are escaped by
+    // `body_prefs_attrs`/`attr_escape`; only trusted, non-user markup follows.
+    let user_attr = user
+        .map(|u| format!(" data-user-id=\"{}\"", u.id))
+        .unwrap_or_default();
+    let body_open = format!(
+        "<body class=\"{}\"{}{}>",
+        crate::routes::reader::attr_escape(&theme_class),
+        user_attr,
+        crate::routes::reader::body_prefs_attrs(prefs),
+    );
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -200,13 +218,15 @@ pub fn reader_layout(title: &str, content: Markup, config_css: &str, site_title:
                 @if let Some(href) = &theme_link {
                     link rel="stylesheet" href=(href);
                 }
+                link rel="stylesheet" href="/static/reader.css";
                 style { (PreEscaped(config_css.to_string())) }
             }
-            body class=(theme_class) data-user-id=[user.map(|u| u.id.to_string())] {
-                (content)
-                script src="/static/app.js" {}
-                script src="/static/auth.js" {}
-            }
+            (PreEscaped(body_open))
+            (content)
+            script src="/static/app.js" {}
+            script src="/static/auth.js" {}
+            script src="/static/reader.js" defer {}
+            (PreEscaped("</body>"))
         }
     }
 }
