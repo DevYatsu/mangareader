@@ -8,7 +8,9 @@
 //! | `SITE_COLOR` | `#f59e0b` | Primary accent color (hex) |
 //! | `SITE_BG` | `#131210` | Page background color |
 //!
-//! Colors `accent_hover`, `accent_dim`, `accent_glow` are auto-derived.
+//! Colors `accent_hover` and `accent_dim` are derived from the accent:
+//! `accent_hover` in [`SiteConfig::from_env`], `accent_dim` inline in
+//! [`SiteConfig::css_overrides`].
 //! Font, max-width, and other layout tokens are set in CSS variables
 //! (see `:root` in `style.css`) and can be overridden via a local
 //! override stylesheet or inline `<style>`.

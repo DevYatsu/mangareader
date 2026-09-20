@@ -1,7 +1,7 @@
 //! Public legal pages (`/terms`, `/privacy`).
 //!
 //! Both render the admin-edited plain text in the standard `base_layout`
-//! shell (the `error_layout`-style document shell with header and footer).
+//! shell (the shared document shell with header and footer).
 //! Maud escapes the text, so stored markup never renders as HTML.
 
 use axum::{extract::State, response::Html};
