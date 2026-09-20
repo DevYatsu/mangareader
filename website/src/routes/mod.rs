@@ -22,6 +22,8 @@ pub mod health;
 pub mod home;
 pub mod legal;
 pub mod manga;
+pub mod oauth;
+pub mod password_reset;
 pub mod reader;
 pub mod series;
 pub mod settings;

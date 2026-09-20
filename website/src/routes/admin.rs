@@ -334,3 +334,107 @@ pub async fn branding_submit(
     }
     Redirect::to("/admin/branding").into_response()
 }
+
+/// GET `/admin/users` — minimal user table with per-row reset-link generator.
+/// Full user management (roles, suspend, delete) is Slice 5 territory.
+pub async fn users_page(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    if require_role(&user, Role::Admin).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let (cfg, theme, users) = {
+        let db = state.db.lock().await;
+        let users = mangaread_core::db::list_users(&db).unwrap_or_default();
+        let providers: HashMap<i64, String> = users
+            .iter()
+            .map(|u| {
+                let p = mangaread_core::db::user_oauth_providers(&db, u.id)
+                    .unwrap_or_default()
+                    .join(",");
+                (u.id, p)
+            })
+            .collect();
+        (
+            crate::config::site_config(&db),
+            crate::config::resolve_theme(&db, Some(&user)),
+            users
+                .into_iter()
+                .map(|u| {
+                    let prov = providers.get(&u.id).cloned().unwrap_or_default();
+                    (u, prov)
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    let notice = match (q.get("reset_link"), q.get("for")) {
+        (Some(link), Some(id)) => {
+            // Only server-minted http(s) links get an anchor; anything else
+            // (e.g. `javascript:`) renders as inert text so a crafted query
+            // string cannot execute script in the admin origin.
+            let is_safe = link.starts_with("http://") || link.starts_with("https://");
+            if is_safe {
+                html! { p class="admin-notice" { "Reset link for user " (id) ": " a href=(link) { (link) } } }
+            } else {
+                html! { p class="admin-notice" { "Reset link for user " (id) ": " code { (link) } } }
+            }
+        }
+        _ => html! {},
+    };
+    let content = html! {
+        (notice)
+        table class="admin-table" {
+            tr { th { "ID" } th { "Name" } th { "Email" } th { "Role" } th { "OAuth" } th { "Created" } th { "Actions" } }
+            @for (u, prov) in &users {
+                tr {
+                    td { (u.id) } td { (u.name) } td { (u.email) } td { (u.role.as_str()) }
+                    td { (prov) } td { (u.created_at) }
+                    td { form method="post" action=(format!("/admin/users/{}/reset-link", u.id)) { button type="submit" { "Reset link" } } }
+                }
+            }
+        }
+        p { a href="/admin" { "Back to admin" } }
+    };
+    page(&cfg, &theme, "Users", content, Some(&user)).into_response()
+}
+
+/// POST `/admin/users/{id}/reset-link` — mint a 1h token, redirect back with the link.
+pub async fn user_reset_link(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Response {
+    if require_role(&user, Role::Admin).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let token = crate::auth::new_token();
+    {
+        let db = state.db.lock().await;
+        if mangaread_core::db::create_password_reset(
+            &db,
+            id,
+            &token,
+            &crate::routes::password_reset::reset_expires_at(),
+        )
+        .is_err()
+        {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    }
+    let link = format!("{}/reset/{token}", crate::oauth::base_url());
+    let query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("reset_link", &link)
+        .append_pair("for", &id.to_string())
+        .finish();
+    (
+        StatusCode::SEE_OTHER,
+        [(
+            axum::http::header::LOCATION,
+            format!("/admin/users?{query}"),
+        )],
+        "",
+    )
+        .into_response()
+}

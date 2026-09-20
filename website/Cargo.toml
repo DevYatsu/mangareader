@@ -20,5 +20,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 form_urlencoded = "1"
 bcrypt = "0.17"
+reqwest = { version = "0.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting", "macros", "std"] }

@@ -16,9 +16,35 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{
-    auth::{hash_password, new_token, session_expires_at, set_cookie_value, token_from_headers, verify_password, AuthUser},
+    auth::{
+        hash_password, lifetime_for_remember, new_token, session_expires_at, set_cookie_value,
+        token_from_headers, verify_password, AuthUser, REMEMBER_SESSION_MAX_AGE,
+    },
+    oauth::Provider,
     AppState,
 };
+
+/// Human-readable provider name for the login-page buttons.
+fn provider_label(p: &Provider) -> &'static str {
+    match p {
+        Provider::Google => "Google",
+        Provider::Github => "GitHub",
+        Provider::Discord => "Discord",
+    }
+}
+
+/// "Continue with X" links for the configured providers; empty when none.
+fn oauth_buttons(providers: &[Provider]) -> maud::Markup {
+    html! {
+        @if !providers.is_empty() {
+            div class="oauth-buttons" {
+                @for p in providers {
+                    a class="oauth-btn" href=(format!("/auth/{}", p.key())) { "Continue with " (provider_label(p)) }
+                }
+            }
+        }
+    }
+}
 
 #[derive(Deserialize)]
 pub struct RegisterForm {
@@ -31,6 +57,9 @@ pub struct RegisterForm {
 pub struct LoginForm {
     pub email: String,
     pub password: String,
+    /// Checkbox sends `remember=on` only when checked; `Option` keeps the form
+    /// parseable when the box is unchecked.
+    pub remember: Option<String>,
 }
 
 fn page(
@@ -56,7 +85,7 @@ fn page(
     )
 }
 
-fn login_form(error: Option<&str>) -> maud::Markup {
+fn login_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
     html! {
         section class="auth-section" {
             h1 class="page-title" { "Login" }
@@ -66,14 +95,17 @@ fn login_form(error: Option<&str>) -> maud::Markup {
             form method="post" action="/login" class="auth-form" {
                 label { "Email" input type="email" name="email" required=""; }
                 label { "Password" input type="password" name="password" required=""; }
+                label { input type="checkbox" name="remember" value="on"; " Remember me (30 days)" }
                 button type="submit" { "Login" }
             }
+            (oauth_buttons(providers))
             p { a href="/register" { "Create an account" } }
+            p { a href="/forgot" { "Forgot password?" } }
         }
     }
 }
 
-fn register_form(error: Option<&str>) -> maud::Markup {
+fn register_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
     html! {
         section class="auth-section" {
             h1 class="page-title" { "Register" }
@@ -86,6 +118,7 @@ fn register_form(error: Option<&str>) -> maud::Markup {
                 label { "Password (min 8 chars)" input type="password" name="password" required=""; }
                 button type="submit" { "Register" }
             }
+            (oauth_buttons(providers))
             p { a href="/login" { "Already have an account? Login" } }
         }
     }
@@ -115,7 +148,7 @@ pub async fn login_page(
             crate::config::resolve_theme(&db, user.as_ref()),
         )
     };
-    page(&cfg, &theme, "Login", login_form(None), user.as_ref())
+    page(&cfg, &theme, "Login", login_form(None, &crate::oauth::configured_providers()), user.as_ref())
 }
 
 /// POST `/login` — verify credentials, open a session, redirect home.
@@ -134,7 +167,7 @@ pub async fn login_submit(
     let render_401 = |user: Option<&AuthUser>| {
         (
             StatusCode::UNAUTHORIZED,
-            page(&cfg, &theme, "Login", login_form(Some("Invalid email or password")), user),
+            page(&cfg, &theme, "Login", login_form(Some("Invalid email or password"), &crate::oauth::configured_providers()), user),
         )
             .into_response()
     };
@@ -153,15 +186,16 @@ pub async fn login_submit(
         return render_401(user.as_ref());
     }
     let token = new_token();
+    let max_age = lifetime_for_remember(form.remember.as_deref() == Some("on"));
     {
         let db = state.db.lock().await;
-        if mangaread_core::db::insert_session(&db, found.0, &token, &session_expires_at(), "web")
+        if mangaread_core::db::insert_session(&db, found.0, &token, &session_expires_at(max_age), "web")
             .is_err()
         {
             return render_401(user.as_ref());
         }
     }
-    redirect_with_cookie("/", set_cookie_value(&token))
+    redirect_with_cookie("/", set_cookie_value(&token, max_age))
 }
 
 /// GET `/register` — render the registration form.
@@ -176,7 +210,7 @@ pub async fn register_page(
             crate::config::resolve_theme(&db, user.as_ref()),
         )
     };
-    page(&cfg, &theme, "Register", register_form(None), user.as_ref())
+    page(&cfg, &theme, "Register", register_form(None, &crate::oauth::configured_providers()), user.as_ref())
 }
 
 /// POST `/register` — validate, create the user, open a session, redirect home.
@@ -207,7 +241,7 @@ pub async fn register_submit(
     if let Some(msg) = invalid {
         return (
             StatusCode::BAD_REQUEST,
-            page(&cfg, &theme, "Register", register_form(Some(msg)), user.as_ref()),
+            page(&cfg, &theme, "Register", register_form(Some(msg), &crate::oauth::configured_providers()), user.as_ref()),
         )
             .into_response();
     }
@@ -221,7 +255,7 @@ pub async fn register_submit(
                 &cfg,
                 &theme,
                 "Register",
-                register_form(Some("could not create account")),
+                register_form(Some("could not create account"), &crate::oauth::configured_providers()),
                 user,
             ),
         )
@@ -261,11 +295,19 @@ pub async fn register_submit(
         if is_bootstrap_admin {
             tracing::warn!("first registered user bootstrapped as admin: {email}");
         }
-        if mangaread_core::db::insert_session(&db, id, &token, &session_expires_at(), "web").is_err() {
+        if mangaread_core::db::insert_session(
+            &db,
+            id,
+            &token,
+            &session_expires_at(REMEMBER_SESSION_MAX_AGE),
+            "web",
+        )
+        .is_err()
+        {
             return render_failed(user.as_ref());
         }
     }
-    redirect_with_cookie("/", set_cookie_value(&token))
+    redirect_with_cookie("/", set_cookie_value(&token, REMEMBER_SESSION_MAX_AGE))
 }
 
 /// POST `/logout` — close the session, expire the cookie, redirect home.

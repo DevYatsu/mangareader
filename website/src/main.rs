@@ -4,6 +4,7 @@
 
 mod auth;
 mod config;
+mod oauth;
 mod routes;
 mod scraper_helper;
 mod templates;
@@ -119,12 +120,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/login", get(crate::routes::auth_pages::login_page).post(crate::routes::auth_pages::login_submit))
         .route("/register", get(crate::routes::auth_pages::register_page).post(crate::routes::auth_pages::register_submit))
         .route("/logout", post(crate::routes::auth_pages::logout))
+        .route("/forgot", get(crate::routes::password_reset::forgot_page))
+        .route("/reset/{token}", get(crate::routes::password_reset::reset_page).post(crate::routes::password_reset::reset_submit))
+        .route("/auth/{provider}", get(crate::routes::oauth::oauth_start))
+        .route("/auth/{provider}/callback", get(crate::routes::oauth::oauth_callback))
         .route("/settings", get(crate::routes::settings::settings_page))
         .route("/settings/profile", post(crate::routes::settings::profile_submit))
         .route("/settings/appearance", post(crate::routes::settings::appearance_submit))
         .route("/settings/password", post(crate::routes::settings::password_submit))
         .route("/admin", get(crate::routes::admin::dashboard))
         .route("/admin/branding", get(crate::routes::admin::branding_page).post(crate::routes::admin::branding_submit))
+        .route("/admin/users", get(crate::routes::admin::users_page))
+        .route("/admin/users/{id}/reset-link", post(crate::routes::admin::user_reset_link))
         .route("/terms", get(crate::routes::legal::terms))
         .route("/privacy", get(crate::routes::legal::privacy))
         .route("/source/{source}", get(crate::routes::source::source_list))

@@ -85,6 +85,22 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
             device TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS oauth_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            provider TEXT NOT NULL,
+            provider_user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(provider, provider_user_id)
+        );
+        CREATE TABLE IF NOT EXISTS password_resets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            token TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS bookmarks (
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
@@ -718,6 +734,88 @@ pub fn delete_session(conn: &Connection, token: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Link an OAuth identity to a user. Idempotent: re-linking is a no-op.
+pub fn link_oauth_account(conn: &Connection, user_id: i64, provider: &str, provider_user_id: &str) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO oauth_accounts (user_id, provider, provider_user_id) VALUES (?1, ?2, ?3)
+         ON CONFLICT(provider, provider_user_id) DO NOTHING",
+        rusqlite::params![user_id, provider, provider_user_id],
+    )?;
+    Ok(())
+}
+
+/// Find the user owning an OAuth identity. `NotFound` when unlinked.
+pub fn find_user_by_oauth(conn: &Connection, provider: &str, provider_user_id: &str) -> Result<User, Error> {
+    conn.query_row(
+        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.theme, u.created_at
+         FROM users u JOIN oauth_accounts o ON o.user_id = u.id
+         WHERE o.provider = ?1 AND o.provider_user_id = ?2",
+        rusqlite::params![provider, provider_user_id],
+        map_user_row,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => {
+            Error::NotFound(format!("oauth {provider}"))
+        }
+        other => other.into(),
+    })
+}
+
+/// Provider keys linked to a user (e.g. `["google"]`). Empty when none.
+pub fn user_oauth_providers(conn: &Connection, user_id: i64) -> Result<Vec<String>, Error> {
+    let mut stmt = conn.prepare("SELECT provider FROM oauth_accounts WHERE user_id = ?1 ORDER BY provider")?;
+    let rows = stmt.query_map(rusqlite::params![user_id], |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for r in rows { out.push(r?); }
+    Ok(out)
+}
+
+/// Create a reset token; deletes the user's prior unused tokens first so only
+/// the newest link works.
+pub fn create_password_reset(conn: &Connection, user_id: i64, token: &str, expires_at: &str) -> Result<(), Error> {
+    conn.execute(
+        "DELETE FROM password_resets WHERE user_id = ?1 AND used = 0",
+        rusqlite::params![user_id],
+    )?;
+    conn.execute(
+        "INSERT INTO password_resets (user_id, token, expires_at) VALUES (?1, ?2, ?3)",
+        rusqlite::params![user_id, token, expires_at],
+    )?;
+    Ok(())
+}
+
+/// Consume a reset token: returns the `user_id`, marks it used. `NotFound`
+/// when missing, expired, or already used.
+pub fn consume_password_reset(conn: &Connection, token: &str, now: &str) -> Result<i64, Error> {
+    let user_id: i64 = conn.query_row(
+        "SELECT user_id FROM password_resets WHERE token = ?1 AND used = 0 AND expires_at > ?2",
+        rusqlite::params![token, now],
+        |row| row.get(0),
+    ).map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound("reset token".to_string()),
+        other => other.into(),
+    })?;
+    conn.execute("UPDATE password_resets SET used = 1 WHERE token = ?1", rusqlite::params![token])?;
+    Ok(user_id)
+}
+
+/// Delete all sessions of a user (used after password reset).
+pub fn delete_sessions_for_user(conn: &Connection, user_id: i64) -> Result<(), Error> {
+    conn.execute("DELETE FROM sessions WHERE user_id = ?1", rusqlite::params![user_id])?;
+    Ok(())
+}
+
+/// All users ordered by id (admin list).
+pub fn list_users(conn: &Connection) -> Result<Vec<User>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, email, password_hash, role, locale, theme, created_at FROM users ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map([], map_user_row)?;
+    let mut out = Vec::new();
+    for r in rows { out.push(r?); }
+    Ok(out)
+}
+
 /// Set or clear a bookmark.
 pub fn set_bookmark(
     conn: &Connection,
@@ -941,6 +1039,53 @@ mod tests {
         update_user_profile(&conn, id, "renamed", "fr", "asura").unwrap();
         let u = find_user_by_email(&conn, "r@x.io").unwrap();
         assert_eq!(u.name, "renamed");
+    }
+
+    #[test]
+    fn oauth_link_roundtrip() {
+        let conn = mem();
+        let id = create_user(&conn, &NewUser {
+            name: "o".into(), email: "o@x.io".into(),
+            password_hash: "OAUTH:google:1".into(), role: Role::Member,
+        }).unwrap();
+        link_oauth_account(&conn, id, "google", "gid-1").unwrap();
+        // idempotent re-link
+        link_oauth_account(&conn, id, "google", "gid-1").unwrap();
+        let u = find_user_by_oauth(&conn, "google", "gid-1").unwrap();
+        assert_eq!(u.id, id);
+        assert!(matches!(
+            find_user_by_oauth(&conn, "google", "nope"),
+            Err(crate::error::Error::NotFound(_))
+        ));
+        assert_eq!(user_oauth_providers(&conn, id).unwrap(), vec!["google".to_string()]);
+    }
+
+    #[test]
+    fn password_reset_single_use_expiry() {
+        let conn = mem();
+        let id = create_user(&conn, &NewUser {
+            name: "r".into(), email: "r@x.io".into(),
+            password_hash: "h".into(), role: Role::Member,
+        }).unwrap();
+        create_password_reset(&conn, id, "tok-a", "2099-01-01 00:00:00").unwrap();
+        // second request replaces the first
+        create_password_reset(&conn, id, "tok-b", "2099-01-01 00:00:00").unwrap();
+        assert!(matches!(
+            consume_password_reset(&conn, "tok-a", "2026-01-01 00:00:00"),
+            Err(crate::error::Error::NotFound(_))
+        ));
+        assert_eq!(consume_password_reset(&conn, "tok-b", "2026-01-01 00:00:00").unwrap(), id);
+        // single use
+        assert!(matches!(
+            consume_password_reset(&conn, "tok-b", "2026-01-01 00:00:00"),
+            Err(crate::error::Error::NotFound(_))
+        ));
+        // expired
+        create_password_reset(&conn, id, "tok-c", "2020-01-01 00:00:00").unwrap();
+        assert!(matches!(
+            consume_password_reset(&conn, "tok-c", "2026-01-01 00:00:00"),
+            Err(crate::error::Error::NotFound(_))
+        ));
     }
 
     #[test]

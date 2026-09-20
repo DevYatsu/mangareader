@@ -38,7 +38,7 @@ Non-goals:
 
 ## 3. Identity, accounts, sync
 
-- Auth: password + OAuth (Google, GitHub, Discord). Sessions in DB with `tower-sessions`. Remember-me. Password reset via mail or admin reset link.
+- Auth: password + OAuth (Google, GitHub, Discord). Sessions in DB with `tower-sessions`. Remember-me. Password reset via admin-issued reset links only — no email delivery anywhere in the app.
 - Roles: `anon`, `member`, `editor`, `admin`. Middleware per route.
 - Server tables: `users`, `sessions`, `bookmarks`, `progress (user_id, chapter_id, page, updated_at)`, `history`, `notes`. One account = one reader identity. No profiles.
 - Migration path: on account creation the current browser's localStorage (bookmarks, progress, history, shelf placement) merges into the account automatically, once. No manual import button exists. No export exists.
@@ -62,7 +62,7 @@ Non-goals:
 - Series page tabs: Chapters | Details | Related | Comments. No sync badges, no resync buttons, no source labels. Origin and freshness stay invisible to readers.
 - Shelves: built-in (Reading, Completed, On Hold, Dropped, Plan to Read) + unlimited custom shelves. Drag to reorder. Public/private toggle.
 - Bulk actions: mark read/unread, download, retag, move shelf.
-- Notifications: in-app bell + mail + RSS per series + webhook (Discord/Slack URL in settings). Digest frequency control.
+- Notifications: in-app bell + RSS per series + webhook (Discord/Slack URL in settings). Digest frequency control. No email channel.
 - Public feeds: global RSS, per-series RSS, JSON API (`/api/v1/*` with token), OPDS for Tachiyomi/Panels/KOReader.
 
 ## 6. User customization (`/settings`)
@@ -121,7 +121,7 @@ Non-goals:
 ## 12. Ops, performance, reliability (built-in)
 
 - DB: connection pool (`r2d2`), WAL kept, FTS5 index, nightly `VACUUM` + backup to `backups/` + optional S3 fields in admin.
-- Jobs table: `jobs(id,type,status,run_at,log)` powers sync, transcode, backup, mail digest. UI shows queue + retry.
+- Jobs table: `jobs(id,type,status,run_at,log)` powers sync, transcode, backup. UI shows queue + retry.
 - Cache: image resize disk cache (`cache/`), ETag + `Cache-Control`, chapter JSON pre-render.
 - Observability: `/health`, `/metrics` (Prometheus text), structured logs with request id, slow-query threshold setting.
 - Docker: non-root, healthcheck, bundled chromedriver auto-update flag, `MANGAREAD_*` env still works as boot overrides.

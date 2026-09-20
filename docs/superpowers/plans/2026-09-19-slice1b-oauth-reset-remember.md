@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add OAuth login (Google, GitHub, Discord), a password-reset flow (email when SMTP is configured, admin-generated link otherwise), and a remember-me checkbox controlling session lifetime.
+**Goal:** Add OAuth login (Google, GitHub, Discord), an admin-issued password-reset flow (no email delivery in the app), and a remember-me checkbox controlling session lifetime.
 
-**Architecture:** DB tables plus repository functions in `mangaread-core`; session-lifetime parameterization in `website/src/auth.rs`; a hand-rolled OAuth code flow with `reqwest` (no `oauth2` crate) in a new `website/src/oauth.rs`; reset pages plus a minimal admin users table in routes. No changes to the `users` table DDL.
+**Architecture:** DB tables plus repository functions in `mangaread-core`; session-lifetime parameterization in `website/src/auth.rs`; a hand-rolled OAuth code flow with `reqwest` (no `oauth2` crate) in a new `website/src/oauth.rs`; reset pages plus a minimal admin users table in routes. No email delivery anywhere: `/forgot` is a static contact-admin notice and reset links are minted only from the admin users table. No changes to the `users` table DDL.
 
-**Tech Stack:** Rust, Axum 0.8, rusqlite 0.32 (bundled), bcrypt 0.17, reqwest 0.12 with `json`, lettre 0.11 with `builder,smtp-transport`.
+**Tech Stack:** Rust, Axum 0.8, rusqlite 0.32 (bundled), bcrypt 0.17, reqwest 0.12 with `json`.
 
 **Spec:** `docs/superpowers/specs/2026-09-19-mangareader-customizable-website-design.md` (identity section: one account per person, OAuth providers, password reset; no import/export UI)
 
@@ -15,9 +15,9 @@
 - Rust edition 2024; workspace members `mangaread-core`, `scraper`, `website`.
 - Never hold the `state.db` Tokio `Mutex` guard across bcrypt hashing/verification or network calls. Lock, copy out, drop guard, then hash/fetch.
 - OAuth users store marker hash `OAUTH:<provider>:<provider_id>` in `password_hash` (never a real bcrypt hash). `verify_password` returns false for it, so password login always fails for OAuth-only accounts.
-- Registration/login failures render identical generic messages. Forgot-password POST always renders the same success text whether the email exists or not.
+- Registration/login failures render identical generic messages.
 - Theme/layout plumbing (`resolve_theme`, `site_config`, `page()` helper) is reused verbatim in every new page handler.
-- New deps pinned in `website/Cargo.toml`: `reqwest = { version = "0.12", features = ["json"] }`, `lettre = { version = "0.11", features = ["builder", "smtp-transport"] }`.
+- New dep pinned in `website/Cargo.toml`: `reqwest = { version = "0.12", features = ["json"] }`. No email/SMTP dependency.
 - TDD: failing test first, then minimal implementation, then commit per task.
 
 ---
@@ -30,10 +30,15 @@
 - `website/src/oauth.rs` (create): provider config from env, authorize-URL builder, token exchange + userinfo fetch via `reqwest`, normalized `OAuthProfile`.
 - `website/src/routes/auth_pages.rs` (modify): `remember` checkbox on login form; provider buttons on login/register (only when configured); `login_submit`/`register_submit` pass the chosen lifetime.
 - `website/src/routes/oauth.rs` (create): `GET /auth/{provider}`, `GET /auth/{provider}/callback`, find-or-create + link + session + redirect.
-- `website/src/routes/password_reset.rs` (create): `GET/POST /forgot`, `GET/POST /reset/{token}`.
-- `website/src/mail.rs` (create): `send_reset_email(to, link)` — no-op `Ok(())` when `MANGAREAD_SMTP_HOST` is unset; `lettre` send inside `spawn_blocking` otherwise.
-- `website/src/routes/admin.rs` (modify): `GET /admin/users` minimal table + `POST /admin/users/{id}/reset-link`.
-- `website/src/main.rs` (modify): `mod mail; mod oauth;` + new routes.
+- `website/src/routes/password_reset.rs` (create): `GET /forgot` (static contact-admin notice), `GET/POST /reset/{token}`.
+- `website/src/routes/admin.rs` (modify): `GET /admin/users` minimal table + `POST /admin/users/{id}/reset-link` (the only reset-link mint path).
+- `website/src/main.rs` (modify): `mod oauth;` + new routes.
+
+> **Amendment (owner decision, post-execution):** email/SMTP delivery was removed from the
+> app. `website/src/mail.rs` and the `lettre` dependency were deleted; `POST /forgot` and
+> `ForgotForm` were removed. The Task 4 section below is retained as the original design
+> record, but its mail-related instructions are superseded by
+> `.superpowers/sdd/2026-09-19-slice1b-oauth-reset-remember/task-4amendment-brief.md`.
 
 ---
 
