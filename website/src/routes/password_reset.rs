@@ -44,13 +44,31 @@ fn page(
     )
 }
 
-fn reset_form() -> maud::Markup {
+/// Shared markup for the initial render and the error re-render, so the two
+/// cannot drift.
+fn reset_form(action: &str, error: Option<&str>) -> maud::Markup {
     html! {
-        section class="auth-section" {
-            h1 class="page-title" { "Set a new password" }
-            form method="post" class="auth-form" {
-                label { "New password (min 8 chars)" input type="password" name="password" required=""; }
-                button type="submit" { "Set password" }
+        div class="columns is-centered" {
+            div class="column is-5-desktop is-6-tablet" {
+                div class="box" {
+                    h1 class="title is-3" { "Set a new password" }
+                    @if let Some(msg) = error {
+                        div class="notification is-danger is-light" { (msg) }
+                    }
+                    form method="post" action=(action) {
+                        div class="field" {
+                            label class="label" { "New password (min 8 chars)" }
+                            div class="control" {
+                                input class="input" type="password" name="password" required="";
+                            }
+                        }
+                        div class="field" {
+                            div class="control" {
+                                button type="submit" class="button is-primary is-fullwidth" { "Set password" }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -69,10 +87,17 @@ pub async fn forgot_page(
         &cfg,
         "Forgot password",
         html! {
-            section class="auth-section" {
-                h1 class="page-title" { "Forgot password" }
-                p { "Password resets are handled by an administrator. Please contact the site administrator to request a reset link." }
-                p { a href="/login" { "Back to login" } }
+            div class="columns is-centered" {
+                div class="column is-5-desktop is-6-tablet" {
+                    div class="box" {
+                        h1 class="title is-3" { "Forgot password" }
+                        p class="content" {
+                            "Password resets are issued by an administrator for this instance. "
+                            "Ask an admin to generate a reset link for your account."
+                        }
+                        a class="button is-primary is-fullwidth" href="/login" { "Back to login" }
+                    }
+                }
             }
         },
         user.as_ref(),
@@ -83,13 +108,18 @@ pub async fn forgot_page(
 pub async fn reset_page(
     State(state): State<Arc<AppState>>,
     user: Option<AuthUser>,
-    Path(_token): Path<String>,
+    Path(token): Path<String>,
 ) -> Html<String> {
     let cfg = {
         let db = state.db.lock().await;
         crate::config::site_config(&db)
     };
-    page(&cfg, "Set a new password", reset_form(), user.as_ref())
+    page(
+        &cfg,
+        "Set a new password",
+        reset_form(&format!("/reset/{token}"), None),
+        user.as_ref(),
+    )
 }
 
 #[derive(Deserialize)]
@@ -114,7 +144,7 @@ pub async fn reset_submit(
             page(
                 &cfg,
                 "Set a new password",
-                html! { section class="auth-section" { p class="auth-error" { (msg) } } ({ reset_form() }) },
+                reset_form(&format!("/reset/{token}"), Some(msg)),
                 user.as_ref(),
             ),
         )
