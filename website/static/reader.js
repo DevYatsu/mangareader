@@ -468,9 +468,13 @@
     setSlider('swipeThreshold', p.swipeThreshold);
 
     // Fit precedence disables the width slider (stored value is preserved).
+    // The test is `activeFit`, not the raw pref: on `strip` fit does not apply
+    // (controller ruling), so a stored `fit` must not lock the width slider —
+    // the fit control is inert there too, which would leave no in-sheet escape.
+    var activeFit = p.layout === 'strip' ? '' : p.fit;
     var widthSlider = $('input.reader-slider[data-pref="maxW"]');
     if (widthSlider) {
-      var disabled = !!p.fit;
+      var disabled = !!activeFit;
       widthSlider.disabled = disabled;
       widthSlider.setAttribute('aria-disabled', disabled ? 'true' : 'false');
     }

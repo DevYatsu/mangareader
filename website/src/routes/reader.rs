@@ -37,7 +37,9 @@ pub fn body_prefs_attrs(prefs: &mangaread_core::ReaderPrefs) -> String {
     let mut a = String::new();
     a.push_str(&format!(" data-r-layout=\"{}\"", attr_escape(&prefs.layout)));
     a.push_str(&format!(" data-r-direction=\"{}\"", attr_escape(&prefs.direction)));
-    if !prefs.fit.is_empty() {
+    // Fit does not apply to `strip` (controller ruling); omitting the attribute
+    // keeps first paint consistent with what `reader.js` applies on init.
+    if !prefs.fit.is_empty() && prefs.layout != "strip" {
         a.push_str(&format!(" data-r-fit=\"{}\"", attr_escape(&prefs.fit)));
     }
     a.push_str(&format!(" data-r-bg=\"{}\"", attr_escape(&prefs.bg)));
@@ -714,6 +716,18 @@ mod tests {
         let a = body_prefs_attrs(&p);
         assert!(!a.contains("data-r-fit=\"\""), "{a}");
         assert!(!a.contains("data-r-frame"), "{a}");
+    }
+
+    /// Fit does not apply to `strip` (controller ruling), so a stored fit must
+    /// not reach the first paint there — `reader.js` would remove it on init
+    /// anyway, and emitting it risks a flash of viewport-capped strip pages.
+    #[test]
+    fn body_attrs_omit_fit_on_strip() {
+        let mut p = ReaderPrefs::default(); // layout == "strip"
+        p.fit = "height".into();
+        let a = body_prefs_attrs(&p);
+        assert!(a.contains(r#"data-r-layout="strip""#), "{a}");
+        assert!(!a.contains("data-r-fit"), "{a}");
     }
 
     #[test]
