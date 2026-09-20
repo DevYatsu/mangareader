@@ -48,7 +48,7 @@
     'page.prev': ['ArrowLeft', 'ArrowUp', 'PageUp'],
     'chapter.next': ['Shift+ArrowRight', 'KeyN'],
     'chapter.prev': ['Shift+ArrowLeft', 'KeyP'],
-    'ui.toggle': ['KeyS', 'Escape'],
+    'ui.toggle': ['KeyS', 'Escape', '?'],
     'ui.focus': ['KeyF'],
     'ui.fitCycle': ['KeyW'],
     'layout.cycle': ['KeyL'],
@@ -304,21 +304,116 @@
     var remember = $('#reader-remember-series');
     if (remember) remember.checked = !!state.seriesPrefs;
 
-    if (isLoggedIn()) fetchServerPrefs();
+    // The anon→account merge is sequenced AFTER the server read so a late
+    // GET response cannot clobber the merged blob in memory (finding 1).
+    if (isLoggedIn()) fetchServerPrefs(maybeMergeLocalPrefs);
   }
 
-  /** Logged-in only: the server blob is authoritative. */
-  function fetchServerPrefs() {
+  /**
+   * Logged-in only: the server blob is authoritative. `after` receives the
+   * server prefs object once known, or `null` when the read failed.
+   */
+  function fetchServerPrefs(after) {
     try {
       fetch('/api/reader-prefs', { headers: { 'Accept': '*/*' }, credentials: 'same-origin' })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (data) {
-          if (!data || !data.prefs) return;
-          state.basePrefs = normalizePrefs(data.prefs);
-          applyPrefs();
+          if (data && data.prefs) {
+            state.basePrefs = normalizePrefs(data.prefs);
+            applyPrefs();
+          }
+          if (after) after(data && data.prefs ? data.prefs : null);
         })
-        .catch(function () { /* localStorage/island fallback stands */ });
-    } catch (_) { /* ignore */ }
+        .catch(function () {
+          if (after) after(null);
+        });
+    } catch (_) {
+      if (after) after(null);
+    }
+  }
+
+  // ============================================================
+  //  ANON → ACCOUNT PREF MERGE (contract §3.4 / spec §16, finding 1)
+  // ============================================================
+
+  /** One-shot flag, mirroring `mangaread_migrated` in auth.js. */
+  function prefsMigratedKey() {
+    var uid = document.body && document.body.dataset ? document.body.dataset.userId : '';
+    return 'mangaread_reader_prefs_migrated' + (uid ? '_' + uid : '');
+  }
+
+  /** True when a blob carries nothing the user chose (ReaderPrefs defaults). */
+  function isDefaultBlob(raw) {
+    if (!raw || typeof raw !== 'object') return true;
+    var p = normalizePrefs(raw);
+    var d = defaultPrefs();
+    return p.layout === d.layout &&
+      p.direction === d.direction &&
+      p.fit === d.fit &&
+      p.maxW === d.maxW &&
+      p.gap === d.gap &&
+      p.bg === d.bg &&
+      p.frame === d.frame &&
+      p.doubleCover === d.doubleCover &&
+      p.autoNext === d.autoNext &&
+      p.autoPrev === d.autoPrev &&
+      p.hideDelay === d.hideDelay &&
+      p.dimDelay === d.dimDelay &&
+      p.showNotes === d.showNotes;
+  }
+
+  /**
+   * Mirror of auth.js's one-shot `mangaread_migrated` pattern, for reader
+   * prefs. An anonymous reader's local blob is pushed to the account once, but
+   * only when the account has no real preferences of its own; a non-default
+   * server blob always wins and is never overwritten.
+   *
+   * `serverBlob` is null when the server read failed — in that case the merge
+   * is skipped and retried on the next load, so a network blip can never
+   * overwrite an account's settings.
+   *
+   * @param {Object|null} serverBlob prefs as returned by GET /api/reader-prefs
+   */
+  function maybeMergeLocalPrefs(serverBlob) {
+    if (!isLoggedIn() || !serverBlob) return;
+    var flagKey = prefsMigratedKey();
+    try {
+      if (localStorage.getItem(flagKey)) return;
+    } catch (_) {
+      return;
+    }
+
+    // The account already has real preferences: it wins, do not overwrite.
+    if (!isDefaultBlob(serverBlob)) {
+      try { localStorage.setItem(flagKey, '1'); } catch (_) { /* ignore */ }
+      return;
+    }
+
+    var localBlob = readJSON(localStorage, LS_PREFS, null);
+    if (!localBlob || typeof localBlob !== 'object') {
+      try { localStorage.setItem(flagKey, '1'); } catch (_) { /* ignore */ }
+      return;
+    }
+
+    var merged = normalizePrefs(localBlob);
+    try {
+      fetch('/api/reader-prefs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': '*/*' },
+        credentials: 'same-origin',
+        body: JSON.stringify(merged)
+      })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data || !data.prefs) return; // leave the flag unset: retry later
+          if (!state.seriesPrefs) {
+            state.basePrefs = normalizePrefs(data.prefs);
+            applyPrefs();
+          }
+          try { localStorage.setItem(flagKey, '1'); } catch (_) { /* ignore */ }
+        })
+        .catch(function () { /* local blob stays intact; retry on next load */ });
+    } catch (_) { /* never block page load */ }
   }
 
   // ============================================================
@@ -328,10 +423,13 @@
   function applyPrefs() {
     var p = effectivePrefs();
     var b = document.body;
+    // Controller ruling: fit modes do not apply to `strip`. The stored fit
+    // pref is preserved but never reaches the body on that layout.
+    var activeFit = p.layout === 'strip' ? '' : p.fit;
 
     b.setAttribute('data-r-layout', p.layout);
     b.setAttribute('data-r-direction', p.direction);
-    if (p.fit) b.setAttribute('data-r-fit', p.fit);
+    if (activeFit) b.setAttribute('data-r-fit', activeFit);
     else b.removeAttribute('data-r-fit');
     b.setAttribute('data-r-bg', p.bg);
     if (p.bg === 'custom') b.style.setProperty('--r-bg-custom', p.bgCustom);
@@ -342,7 +440,7 @@
     b.style.setProperty('--r-zoom', String((state.local && state.local.zoom) || 1));
     b.style.setProperty('--r-dim', String(state.dimmed ? p.dimOpacity : 0));
     // Fit wins over width but the stored width is never cleared (contract §2.2).
-    b.style.setProperty('--r-max-w', p.fit ? '100%' : p.maxW + 'px');
+    b.style.setProperty('--r-max-w', activeFit ? '100%' : p.maxW + 'px');
 
     syncControls();
     applyZoneWidths();
@@ -377,6 +475,16 @@
       widthSlider.setAttribute('aria-disabled', disabled ? 'true' : 'false');
     }
 
+    // Controller ruling: fit is not applicable on `strip`, so the fit
+    // segmented control is inert there. The stored fit pref is preserved.
+    var fitBtns = $$('.reader-seg-btn[data-pref="fit"]');
+    for (var fi = 0; fi < fitBtns.length; fi++) {
+      var fitOff = p.layout === 'strip';
+      fitBtns[fi].setAttribute('aria-disabled', fitOff ? 'true' : 'false');
+      if (fitOff) fitBtns[fi].setAttribute('title', 'Fit applies to paged layouts only');
+      else fitBtns[fi].removeAttribute('title');
+    }
+
     // The double layout is disallowed on phone widths (§8.1).
     var doubleBtn = $('.reader-seg-btn[data-pref="layout"][data-value="double"]');
     if (doubleBtn) {
@@ -385,6 +493,26 @@
       doubleBtn.setAttribute('aria-disabled', narrow ? 'true' : 'false');
       if (narrow) doubleBtn.setAttribute('title', 'Double page needs a wider screen');
       else doubleBtn.removeAttribute('title');
+    }
+
+    // The cover-alone toggle only means anything for the double layout.
+    var coverBtns = $$('.reader-seg-btn[data-pref="doubleCover"]');
+    for (var ci = 0; ci < coverBtns.length; ci++) {
+      var coverOff = p.layout !== 'double';
+      coverBtns[ci].setAttribute('aria-disabled', coverOff ? 'true' : 'false');
+      if (coverOff) coverBtns[ci].setAttribute('title', 'Only applies to the double layout');
+      else coverBtns[ci].removeAttribute('title');
+    }
+
+    // The custom colour input is only meaningful for the custom background.
+    var colorInput = $('input.reader-color[data-pref="bgCustom"]');
+    if (colorInput) {
+      var customOn = p.bg === 'custom';
+      colorInput.value = p.bgCustom;
+      colorInput.disabled = !customOn;
+      colorInput.setAttribute('aria-disabled', customOn ? 'false' : 'true');
+      var colorRow = colorInput.parentNode;
+      if (colorRow) colorRow.style.display = customOn ? '' : 'none';
     }
 
     // Zone editor handles.
@@ -630,6 +758,7 @@
     if (el.classList.contains('reader-seg-btn')) {
       el.addEventListener('click', function () {
         if (el.disabled) return;
+        if (el.getAttribute('aria-disabled') === 'true') return;
         var value = el.getAttribute('data-value');
         var patch = {};
         patch[pref] = BOOL_PREFS[pref] ? (value === 'on') : value;
@@ -646,6 +775,15 @@
         var value = parseFloat(el.value);
         var patch = {};
         patch[pref] = pref === 'dimOpacity' ? value : Math.round(value);
+        applyPrefPatch(patch);
+      });
+      return;
+    }
+
+    if (el.type === 'color') {
+      el.addEventListener('input', function () {
+        var patch = {};
+        patch[pref] = el.value;
         applyPrefPatch(patch);
       });
       return;
@@ -724,6 +862,57 @@
     bindPrefControls();
   }
 
+  /**
+   * Strip replaces the center tap zone with the HUD (contract §4.1, finding 6):
+   * a long-press (≥400ms, matching the note long-press) opens the sheet, and
+   * Enter/Space activate it for keyboard users. A short tap is deliberately
+   * inert so it does not fight the hide-chrome behavior.
+   */
+  function initHudTrigger() {
+    var hud = document.getElementById('reader-hud');
+    if (!hud) return;
+    var pressTimer = null;
+    var longPressed = false;
+
+    function beginPress() {
+      longPressed = false;
+      if (pressTimer) clearTimeout(pressTimer);
+      pressTimer = setTimeout(function () {
+        pressTimer = null;
+        longPressed = true;
+        openSheet();
+      }, 400);
+    }
+
+    function endPress() {
+      if (pressTimer) {
+        clearTimeout(pressTimer);
+        pressTimer = null;
+      }
+    }
+
+    hud.addEventListener('pointerdown', beginPress);
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (evt) {
+      hud.addEventListener(evt, endPress);
+    });
+    // A short tap must not open the sheet; only suppress the click after a
+    // long-press so no other handler double-fires.
+    hud.addEventListener('click', function (e) {
+      if (longPressed) {
+        longPressed = false;
+        e.stopPropagation();
+      }
+    });
+
+    hud.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();
+        e.stopPropagation();
+        openSheet();
+      }
+    });
+  }
+
   // ============================================================
   //  NAVIGATOR (contract §1)
   // ============================================================
@@ -764,7 +953,7 @@
   }
 
   function visibleIndexes(p) {
-    if (p.layout === 'single' || p.layout === 'vertical') return [state.currentPage];
+    if (p.layout === 'single') return [state.currentPage];
     if (p.layout === 'double') {
       var start = spreadStart(state.currentPage, p);
       // The cover (page 1 when `doubleCover` is set) renders alone (§1.1).
@@ -773,7 +962,7 @@
       if (start + 1 <= state.totalPages) out.push(start + 1);
       return out;
     }
-    return null; // strip: everything is visible
+    return null; // strip/vertical: visibility is owned by the scroll container
   }
 
   function renderLayout() {
@@ -781,7 +970,12 @@
     var p = effectivePrefs();
     syncZoneMode(p.layout);
 
-    if (p.layout === 'strip') {
+    // `strip` and `vertical` are both scroll-driven; their pages must all stay
+    // in the document so the container can scroll (contract §1.1: `vertical`
+    // is "stacked in a scroll-snap container" and differs from `single` only
+    // by "the scroll container and snap"). Hiding pages there collapses the
+    // scroller to one screen and loses the scroll position (finding 2).
+    if (p.layout === 'strip' || p.layout === 'vertical') {
       for (var s = 0; s < state.pageEls.length; s++) state.pageEls[s].hidden = false;
       updateIndicator();
       return;
@@ -1248,6 +1442,9 @@
 
   /** Cycle fit: none → height → screen (contract §4.3). */
   function cycleFit() {
+    // Fit does not apply to strip (controller ruling), so the cycle is a no-op
+    // there rather than a silent pref change the layout ignores.
+    if (effectivePrefs().layout === 'strip') return;
     var order = ['', 'height', 'screen'];
     var next = order[(order.indexOf(effectivePrefs().fit) + 1) % order.length];
     applyPrefPatch({ fit: next });
@@ -1400,16 +1597,52 @@
     }
   }
 
+  /** `#reader-nextup-pages` carries the first 3 page URLs per upcoming chapter. */
+  function nextupPages() {
+    var el = document.getElementById('reader-nextup-pages');
+    if (!el) return {};
+    var parsed = null;
+    try { parsed = JSON.parse(el.textContent || '{}'); } catch (_) { parsed = null; }
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  }
+
   function initPrefetch() {
+    var pages = nextupPages();
     var items = $$('.reader-nextup-prefetch');
     for (var i = 0; i < items.length; i++) {
       (function (btn) {
+        var item = btn.closest && btn.closest('.reader-nextup-item');
+        var chapterId = item ? item.getAttribute('data-chapter-id') : null;
+        var urls = chapterId && pages[String(chapterId)] ? pages[String(chapterId)] : [];
+
+        // No resolvable URLs means the warm-up cannot happen. Say so instead of
+        // flipping to "ready" for work that was never attempted.
+        if (!urls.length) {
+          btn.disabled = true;
+          btn.setAttribute('data-prefetch-state', 'unavailable');
+          btn.setAttribute('aria-label', 'No pages to warm up');
+          btn.setAttribute('title', 'No pages available to warm up yet');
+          return;
+        }
+
         btn.addEventListener('click', function () {
           if (btn.getAttribute('data-prefetch-state') === 'prefetching') return;
+          if (btn.getAttribute('data-prefetch-state') === 'ready') return;
           btn.setAttribute('data-prefetch-state', 'prefetching');
-          // Warm the browser cache; no proxy exists, so this is honest about
-          // being a warm-up, not an offline copy (contract §5.5).
-          setTimeout(function () { btn.setAttribute('data-prefetch-state', 'ready'); }, 600);
+          // Warm the first 3 page URLs; a failed fetch still counts as
+          // "attempted" (contract §5.5), so `ready` does not depend on success.
+          var pending = [];
+          for (var u = 0; u < urls.length; u++) {
+            try {
+              pending.push(fetch(urls[u], { mode: 'no-cors' }).catch(function () { return null; }));
+            } catch (_) { /* a synchronous throw still counts as attempted */ }
+          }
+          var settle = pending.length
+            ? Promise.all(pending)
+            : Promise.resolve([]);
+          settle.then(function () {
+            btn.setAttribute('data-prefetch-state', 'ready');
+          });
         });
       })(items[i]);
     }
@@ -1897,7 +2130,13 @@
   function rememberScrollPosition() {
     if (!state.local) return;
     var p = effectivePrefs();
-    if (p.layout === 'strip' || p.layout === 'vertical') {
+    if (p.layout === 'vertical') {
+      // `vertical` scrolls inside `#reader-images` (a y-snap container), not
+      // the window, so `window.scrollY` stays ~0 (finding 2). Read the
+      // container, matching `scrollPageIntoView`.
+      var container = document.getElementById('reader-images');
+      state.local.scrollPositions[String(state.chapterId)] = container ? (container.scrollTop || 0) : 0;
+    } else if (p.layout === 'strip') {
       state.local.scrollPositions[String(state.chapterId)] = window.scrollY || 0;
     } else {
       state.local.scrollPositions[String(state.chapterId)] = state.currentPage;
@@ -2064,13 +2303,32 @@
     var chapterId = state.chapterId;
     var p = effectivePrefs();
     var saved = state.local && state.local.scrollPositions ? state.local.scrollPositions[String(chapterId)] : 0;
-    if (!saved) return;
-    // Prime index (server-provided resume) wins; local scroll position is the
-    // device-local complement (contract §2.3).
+    if (!saved || typeof saved !== 'number') return;
+
+    // An explicit server prime (`data-prime-idx > 1`) is an intentional jump.
+    // `initResumeBadge` already performed it, so never override it here.
+    if (state.primeIdx > 1) return;
+
+    // The scroll-driven layouts store a byte offset, which is a more precise
+    // device-local resume than the page the read-state happens to name — and
+    // in `vertical` that page is only ever a rounded snapshot of the offset.
+    // Restore the container's own offset first, before the page guard below
+    // (which exists for the paged layouts).
+    if (p.layout === 'vertical') {
+      var container = document.getElementById('reader-images');
+      if (container && saved > 0 && container.scrollTo) {
+        container.scrollTo({ top: saved, behavior: 'auto' });
+      }
+      return;
+    }
+    if (p.layout === 'strip') {
+      if (saved > 0) window.scrollTo(0, saved);
+      return;
+    }
+
+    // Prime index (server-provided resume) wins for the paged layouts.
     if (state.resumePage > 1) return;
-    if (p.layout === 'strip' || p.layout === 'vertical') {
-      if (typeof saved === 'number' && saved > 0) window.scrollTo(0, saved);
-    } else if (typeof saved === 'number' && saved > 1) {
+    if (saved > 1) {
       goToPage(saved);
     }
   }
@@ -2108,6 +2366,7 @@
     indexPages();
     applyPrefs();
     initSheet();
+    initHudTrigger();
     initZones();
     initZoneEditor();
     initKeybinds();

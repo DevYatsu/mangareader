@@ -228,13 +228,15 @@ body[data-r-layout="strip"] #reader-zones {
    Precedence: a fit mode wins over the width slider. `[data-r-fit]` forces
    --r-max-w to 100%; the stored width is never cleared and reapplies on
    toggle-off. The slider is `aria-disabled` in the UI while a fit is active.
-   Applied to every layout: on `strip` a fit simply constrains each page in
-   the stack, which is the same rule the contract states globally in §2.2. */
-body[data-r-fit] {
+   CONTROLLER RULING (supersedes contract §2.2): fit modes do NOT apply to the
+   `strip` layout. Strip is the default layout whose whole purpose is a
+   seamless continuous webtoon column, so a fit mode must never cap its pages
+   to the viewport. Every rule below is scoped to exclude strip. */
+body:not([data-r-layout="strip"])[data-r-fit] {
   --r-max-w: 100%;
 }
 
-body[data-r-fit] #reader-images {
+body:not([data-r-layout="strip"])[data-r-fit] #reader-images {
   max-width: 100%;
   justify-content: center;
 }
@@ -248,33 +250,33 @@ body:not([data-r-layout="strip"])[data-r-fit] #reader-images {
 
 /* Page boxes accept the fit-mode layout; the image inside is what gets sized,
    so the box stays a centred flex item. */
-body[data-r-fit="height"] .reader-page,
-body[data-r-fit="screen"] .reader-page {
+body:not([data-r-layout="strip"])[data-r-fit="height"] .reader-page,
+body:not([data-r-layout="strip"])[data-r-fit="screen"] .reader-page {
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-body[data-r-fit="height"] .reader-page {
+body:not([data-r-layout="strip"])[data-r-fit="height"] .reader-page {
   width: auto;
   max-width: none;
 }
 
-body[data-r-fit="height"] .reader-page img {
+body:not([data-r-layout="strip"])[data-r-fit="height"] .reader-page img {
   max-height: calc(100dvh * var(--r-zoom, 1));
   width: auto;
   max-width: 100%;
   margin: 0 auto;
 }
 
-body[data-r-fit="screen"] .reader-page {
+body:not([data-r-layout="strip"])[data-r-fit="screen"] .reader-page {
   width: calc(100dvw * var(--r-zoom, 1));
   height: calc(100dvh * var(--r-zoom, 1));
   max-width: calc(100dvw * var(--r-zoom, 1));
   max-height: calc(100dvh * var(--r-zoom, 1));
 }
 
-body[data-r-fit="screen"] .reader-page img {
+body:not([data-r-layout="strip"])[data-r-fit="screen"] .reader-page img {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -282,11 +284,32 @@ body[data-r-fit="screen"] .reader-page img {
 }
 
 /* The double spread keeps its pairing width so both pages stay side by side. */
-body[data-r-fit][data-r-layout="double"] .reader-page {
+body:not([data-r-layout="strip"])[data-r-fit][data-r-layout="double"] .reader-page {
   flex: 0 0 50%;
   width: 50%;
   height: auto;
   max-width: none;
+}
+
+/* Custom background colour input (§2.2): native colour swatch, sized to the
+   reader's 44px touch floor. Hidden unless `bg === 'custom'`.
+   (The inert treatment for a disabled `.reader-seg-btn` already exists in the
+   segmented-control block; no duplicate rule is added here.) */
+.reader-color {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.reader-color[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* ============================================
@@ -1108,6 +1131,13 @@ body[data-r-focus="1"]:where(:has(#reader-notes-toggle[aria-pressed="true"], #re
   color: var(--accent, #f59e0b);
   border-color: var(--accent, #f59e0b);
   cursor: default;
+}
+
+/* No page URLs were resolvable, so the warm-up cannot run: the button is
+   disabled rather than pretending a warm-up happened (finding 3). */
+.reader-nextup-prefetch[data-prefetch-state="unavailable"] {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* ── 4.4 Auto-next countdown ──

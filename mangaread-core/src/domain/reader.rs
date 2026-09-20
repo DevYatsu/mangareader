@@ -28,12 +28,16 @@ pub const ACTION_IDS: &[&str] = &[
 
 /// Default bindings. Keys are `KeyboardEvent.code` values; modifiers are a
 /// `+`-joined prefix in a stable order.
+///
+/// `"?"` is the one entry that is a `KeyboardEvent.key` value rather than a
+/// code: the question-mark character has no dedicated code, so the client
+/// matches it on `key` (contract §3.1 lists `?` alongside `KeyS`).
 pub const DEFAULT_KEYBINDS: &[(&str, &[&str])] = &[
     ("page.next", &["ArrowRight", "ArrowDown", "Space", "PageDown"]),
     ("page.prev", &["ArrowLeft", "ArrowUp", "PageUp"]),
     ("chapter.next", &["Shift+ArrowRight", "KeyN"]),
     ("chapter.prev", &["Shift+ArrowLeft", "KeyP"]),
-    ("ui.toggle", &["KeyS", "Escape"]),
+    ("ui.toggle", &["KeyS", "Escape", "?"]),
     ("ui.focus", &["KeyF"]),
     ("ui.fitCycle", &["KeyW"]),
     ("layout.cycle", &["KeyL"]),

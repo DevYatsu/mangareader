@@ -61,6 +61,22 @@ pub fn prefs_json_for_script(prefs: &mangaread_core::ReaderPrefs) -> String {
     prefs.to_json().replace('<', "\\u003c")
 }
 
+/// Serialize the first page URLs of each upcoming chapter for the Next-up
+/// prefetch warm-up (contract §5.5).
+///
+/// Shape: `{"<chapter_id>": ["<url>", ...]}`, capped at 3 URLs per chapter.
+/// `<` is escaped to `\u003c` for the same script-breakout reason as
+/// [`prefs_json_for_script`].
+pub fn nextup_pages_json_for_script(pairs: &[(i64, Vec<String>)]) -> String {
+    let map: std::collections::HashMap<String, &Vec<String>> = pairs
+        .iter()
+        .map(|(id, urls)| (id.to_string(), urls))
+        .collect();
+    serde_json::to_string(&map)
+        .unwrap_or_else(|_| "{}".into())
+        .replace('<', "\\u003c")
+}
+
 /// A segmented control: `.reader-seg` with one `.reader-seg-btn` per option.
 ///
 /// Every button carries `data-pref`, the single binding point between CSS, JS,
@@ -217,6 +233,21 @@ pub async fn chapter_reader(
         .map(|i| all_chapters.iter().skip(i + 1).take(3).collect())
         .unwrap_or_default();
 
+    // First 3 page URLs per upcoming chapter, so the Next-up prefetch button
+    // can actually warm them (contract §5.5). The same guard covers it.
+    let nextup_pages: Vec<(i64, Vec<String>)> = upcoming
+        .iter()
+        .map(|c| {
+            let urls = mangaread_core::db::list_pages_by_chapter(&db, c.id)
+                .unwrap_or_default()
+                .into_iter()
+                .take(3)
+                .map(|p| p.image_url)
+                .collect::<Vec<_>>();
+            (c.id, urls)
+        })
+        .collect();
+
     // Keybind rows in a stable order (HashMap iteration is not deterministic).
     let keybind_rows: Vec<(&str, Vec<String>)> = mangaread_core::ACTION_IDS
         .iter()
@@ -287,7 +318,11 @@ if(++a>=20)clearInterval(iv)
         }
 
         // ── Floating page counter, shown while scrolling (strip) ──
-        div id="reader-hud" class="reader-hud" aria-hidden="true" {
+        // Interactive on strip, where it replaces the center tap zone (§4.1):
+        // a long-press opens the settings sheet, so it is exposed as a button
+        // rather than hidden from assistive tech.
+        div id="reader-hud" class="reader-hud" role="button" tabindex="0"
+            aria-label="Reader menu" {
             "1 / " (total_pages)
         }
 
@@ -512,6 +547,10 @@ if(++a>=20)clearInterval(iv)
                             ("rtl", "Right to left"),
                         ]))
                     }
+                    div {
+                        span { "Cover page alone" }
+                        (toggle("doubleCover", prefs.double_cover, "Off", "On"))
+                    }
                 }
 
                 // Group: fit
@@ -535,6 +574,12 @@ if(++a>=20)clearInterval(iv)
                             ("sepia", "Sepia"),
                             ("custom", "Custom"),
                         ]))
+                    }
+                    div {
+                        span { "Custom colour" }
+                        input id="reader-bg-custom" class="reader-color" type="color"
+                            data-pref="bgCustom" aria-label="Custom background colour"
+                            value=(prefs.bg_custom);
                     }
                     div {
                         span { "Page border" }
@@ -621,6 +666,11 @@ if(++a>=20)clearInterval(iv)
         script type="application/json" id="reader-prefs" {
             (maud::PreEscaped(prefs_json_for_script(&prefs)))
         }
+
+        // ── First page URLs per upcoming chapter, for the Next-up warm-up ──
+        script type="application/json" id="reader-nextup-pages" {
+            (maud::PreEscaped(nextup_pages_json_for_script(&nextup_pages)))
+        }
     };
 
     let cfg = crate::config::site_config(&db);
@@ -702,5 +752,34 @@ mod tests {
         let body_start = out.find("<body").expect("body tag");
         let body_end = out[body_start..].find('>').expect("tag end") + body_start;
         assert!(out[body_start..body_end].contains("data-r-layout"), "{out}");
+    }
+
+    /// The Next-up prefetch island maps chapter ids to their first page URLs,
+    /// and must not be terminable by `</script>` from page data.
+    #[test]
+    fn nextup_pages_json_shape_and_escaping() {
+        let pairs = vec![
+            (12i64, vec!["/a.svg".to_string(), "/b.svg".to_string()]),
+            (13i64, vec!["</script><script>alert(1)</script>".to_string()]),
+        ];
+        let json = nextup_pages_json_for_script(&pairs);
+        assert!(json.contains(r#""12":["/a.svg","/b.svg"]"#), "{json}");
+        assert!(!json.contains("</script>"), "{json}");
+        assert!(json.contains(r"\u003c/script"), "{json}");
+        // Empty input degrades to an empty object, never invalid JSON.
+        assert_eq!(nextup_pages_json_for_script(&[]), "{}");
+    }
+
+    /// `?` is the one default binding stored as a `KeyboardEvent.key` value
+    /// rather than a code (§3.1 lists it alongside `KeyS`).
+    #[test]
+    fn ui_toggle_defaults_include_question_mark() {
+        let binding = mangaread_core::DEFAULT_KEYBINDS
+            .iter()
+            .find(|(a, _)| *a == "ui.toggle")
+            .map(|(_, keys)| *keys)
+            .expect("ui.toggle default");
+        assert!(binding.contains(&"KeyS"), "{binding:?}");
+        assert!(binding.contains(&"?"), "{binding:?}");
     }
 }
