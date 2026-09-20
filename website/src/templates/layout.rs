@@ -81,7 +81,12 @@ pub fn base_layout(
                             span { (site_title) }
                         }
                         // Bulma ships no JavaScript; app.js drives the burger.
-                        a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false" data-target="m-nav-menu" {
+                        // A real button, not the `<a role="button">` Bulma's own
+                        // snippet uses: below Bulma's 1024px breakpoint the menu
+                        // is hidden, so the primary navigation must be reachable
+                        // and activatable by keyboard. A button is natively
+                        // focusable and fires `click` on Enter/Space.
+                        button type="button" class="navbar-burger" aria-label="menu" aria-expanded="false" data-target="m-nav-menu" {
                             span aria-hidden="true" {}
                             span aria-hidden="true" {}
                             span aria-hidden="true" {}
