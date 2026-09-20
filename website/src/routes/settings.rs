@@ -206,7 +206,7 @@ pub async fn profile_submit(
             current_profile(&db, user.id),
         )
     };
-    if name.is_empty() || name.len() > 32 {
+    if name.is_empty() || name.chars().count() > 32 {
         return render_400(
             &cfg,
             &theme,
@@ -338,11 +338,9 @@ pub async fn password_submit(
             Some(&user),
         )
     };
-    if form.new.len() < 8 {
-        return render_failed(&cfg, &theme, &current);
-    }
-    // Lock only for the hash lookup; bcrypt verification runs without the
-    // guard so concurrent requests are not serialized behind hashing.
+    // Verify the current password first: lock only for the hash lookup;
+    // bcrypt verification runs without the guard so concurrent requests
+    // are not serialized behind hashing.
     let stored_hash = {
         let db = state.db.lock().await;
         match db.query_row(
@@ -355,6 +353,9 @@ pub async fn password_submit(
         }
     };
     if !crate::auth::verify_password(&form.current, &stored_hash) {
+        return render_failed(&cfg, &theme, &current);
+    }
+    if form.new.len() < 8 {
         return render_failed(&cfg, &theme, &current);
     }
     let new_hash = match crate::auth::hash_password(&form.new) {
