@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(n.hide_delay, 10);
         assert_eq!(n.dim_opacity, 0.8);
         assert_eq!(n.swipe_threshold, 40);
-        assert_eq!(n.click_zones, vec![10, 20]); // second forced to first+10
+        assert_eq!(n.click_zones, vec![10, 90]); // each boundary clamped independently
     }
 
     #[test]
