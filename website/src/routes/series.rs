@@ -45,7 +45,7 @@ pub async fn series_detail(
                 &css,
                 &cfg.site_title,
                 user.as_ref(),
-                crate::templates::layout::Nav::None,
+                crate::templates::layout::Nav::Series,
             ).0);
         }
     };

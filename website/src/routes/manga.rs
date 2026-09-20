@@ -29,7 +29,7 @@ pub async fn manga_detail(
                     &css,
                     &cfg.site_title,
                     None,
-                    crate::templates::layout::Nav::None,
+                    crate::templates::layout::Nav::Series,
                 ).0,
             ))
         }
