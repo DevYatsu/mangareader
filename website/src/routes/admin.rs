@@ -371,7 +371,15 @@ pub async fn users_page(
     };
     let notice = match (q.get("reset_link"), q.get("for")) {
         (Some(link), Some(id)) => {
-            html! { p class="admin-notice" { "Reset link for user " (id) ": " a href=(link) { (link) } } }
+            // Only server-minted http(s) links get an anchor; anything else
+            // (e.g. `javascript:`) renders as inert text so a crafted query
+            // string cannot execute script in the admin origin.
+            let is_safe = link.starts_with("http://") || link.starts_with("https://");
+            if is_safe {
+                html! { p class="admin-notice" { "Reset link for user " (id) ": " a href=(link) { (link) } } }
+            } else {
+                html! { p class="admin-notice" { "Reset link for user " (id) ": " code { (link) } } }
+            }
         }
         _ => html! {},
     };
