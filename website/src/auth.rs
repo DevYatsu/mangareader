@@ -1,7 +1,7 @@
 // website/src/auth.rs
 use axum::{
     extract::{FromRequestParts, OptionalFromRequestParts},
-    http::{header::COOKIE, request::Parts, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header::COOKIE, request::Parts},
     response::{IntoResponse, Json, Redirect, Response},
 };
 use mangaread_core::{db, domain::Role, error::Error};
@@ -46,13 +46,16 @@ pub fn session_expires_at(max_age_secs: i64) -> String {
 
 /// `true` → 30-day session, `false` → 24-hour session.
 pub fn lifetime_for_remember(remember: bool) -> i64 {
-    if remember { REMEMBER_SESSION_MAX_AGE } else { SHORT_SESSION_MAX_AGE }
+    if remember {
+        REMEMBER_SESSION_MAX_AGE
+    } else {
+        SHORT_SESSION_MAX_AGE
+    }
 }
 
 pub fn set_cookie_value(token: &str, max_age_secs: i64) -> String {
-    let mut value = format!(
-        "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}"
-    );
+    let mut value =
+        format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}");
     if std::env::var("MANGAREAD_COOKIE_SECURE").as_deref() == Ok("1") {
         value.push_str("; Secure");
     }

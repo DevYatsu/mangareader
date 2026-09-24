@@ -5,23 +5,23 @@
 //! so duplicate emails cannot be enumerated.
 
 use axum::{
-    extract::State,
-    http::{header, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
     Form,
+    extract::State,
+    http::{HeaderMap, StatusCode, header},
+    response::{Html, IntoResponse, Response},
 };
-use maud::html;
 use mangaread_core::domain::{NewUser, Role};
+use maud::html;
 use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{
+    AppState,
     auth::{
-        hash_password, lifetime_for_remember, new_token, session_expires_at, set_cookie_value,
-        token_from_headers, verify_password, AuthUser, REMEMBER_SESSION_MAX_AGE,
+        AuthUser, REMEMBER_SESSION_MAX_AGE, hash_password, lifetime_for_remember, new_token,
+        session_expires_at, set_cookie_value, token_from_headers, verify_password,
     },
     oauth::Provider,
-    AppState,
 };
 
 /// Human-readable provider name for the login-page buttons.
@@ -196,7 +196,12 @@ pub async fn login_page(
         let db = state.db.lock().await;
         crate::config::site_config(&db)
     };
-    page(&cfg, "Login", login_form(None, &crate::oauth::configured_providers()), user.as_ref())
+    page(
+        &cfg,
+        "Login",
+        login_form(None, &crate::oauth::configured_providers()),
+        user.as_ref(),
+    )
 }
 
 /// POST `/login` — verify credentials, open a session, redirect home.
@@ -212,7 +217,15 @@ pub async fn login_submit(
     let render_401 = |user: Option<&AuthUser>| {
         (
             StatusCode::UNAUTHORIZED,
-            page(&cfg, "Login", login_form(Some("Invalid email or password"), &crate::oauth::configured_providers()), user),
+            page(
+                &cfg,
+                "Login",
+                login_form(
+                    Some("Invalid email or password"),
+                    &crate::oauth::configured_providers(),
+                ),
+                user,
+            ),
         )
             .into_response()
     };
@@ -234,8 +247,14 @@ pub async fn login_submit(
     let max_age = lifetime_for_remember(form.remember.as_deref() == Some("on"));
     {
         let db = state.db.lock().await;
-        if mangaread_core::db::insert_session(&db, found.0, &token, &session_expires_at(max_age), "web")
-            .is_err()
+        if mangaread_core::db::insert_session(
+            &db,
+            found.0,
+            &token,
+            &session_expires_at(max_age),
+            "web",
+        )
+        .is_err()
         {
             return render_401(user.as_ref());
         }
@@ -252,7 +271,12 @@ pub async fn register_page(
         let db = state.db.lock().await;
         crate::config::site_config(&db)
     };
-    page(&cfg, "Register", register_form(None, &crate::oauth::configured_providers()), user.as_ref())
+    page(
+        &cfg,
+        "Register",
+        register_form(None, &crate::oauth::configured_providers()),
+        user.as_ref(),
+    )
 }
 
 /// POST `/register` — validate, create the user, open a session, redirect home.
@@ -280,7 +304,12 @@ pub async fn register_submit(
     if let Some(msg) = invalid {
         return (
             StatusCode::BAD_REQUEST,
-            page(&cfg, "Register", register_form(Some(msg), &crate::oauth::configured_providers()), user.as_ref()),
+            page(
+                &cfg,
+                "Register",
+                register_form(Some(msg), &crate::oauth::configured_providers()),
+                user.as_ref(),
+            ),
         )
             .into_response();
     }
@@ -293,7 +322,10 @@ pub async fn register_submit(
             page(
                 &cfg,
                 "Register",
-                register_form(Some("could not create account"), &crate::oauth::configured_providers()),
+                register_form(
+                    Some("could not create account"),
+                    &crate::oauth::configured_providers(),
+                ),
                 user,
             ),
         )

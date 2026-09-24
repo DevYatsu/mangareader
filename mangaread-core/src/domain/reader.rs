@@ -33,7 +33,10 @@ pub const ACTION_IDS: &[&str] = &[
 /// code: the question-mark character has no dedicated code, so the client
 /// matches it on `key` (contract §3.1 lists `?` alongside `KeyS`).
 pub const DEFAULT_KEYBINDS: &[(&str, &[&str])] = &[
-    ("page.next", &["ArrowRight", "ArrowDown", "Space", "PageDown"]),
+    (
+        "page.next",
+        &["ArrowRight", "ArrowDown", "Space", "PageDown"],
+    ),
     ("page.prev", &["ArrowLeft", "ArrowUp", "PageUp"]),
     ("chapter.next", &["Shift+ArrowRight", "KeyN"]),
     ("chapter.prev", &["Shift+ArrowLeft", "KeyP"]),
@@ -99,7 +102,12 @@ impl Default for ReaderPrefs {
 fn default_keybinds() -> HashMap<String, Vec<String>> {
     DEFAULT_KEYBINDS
         .iter()
-        .map(|(k, v)| ((*k).to_string(), v.iter().map(|s| (*s).to_string()).collect()))
+        .map(|(k, v)| {
+            (
+                (*k).to_string(),
+                v.iter().map(|s| (*s).to_string()).collect(),
+            )
+        })
         .collect()
 }
 
@@ -202,10 +210,10 @@ mod tests {
     #[test]
     fn defaults_match_current_behavior() {
         let p = ReaderPrefs::default();
-        assert_eq!(p.layout, "strip");      // preserve today's long-strip default
+        assert_eq!(p.layout, "strip"); // preserve today's long-strip default
         assert_eq!(p.direction, "ltr");
-        assert_eq!(p.fit, "");              // "" = width mode
-        assert_eq!(p.max_w, 700);           // matches .reader-images max-width:700px
+        assert_eq!(p.fit, ""); // "" = width mode
+        assert_eq!(p.max_w, 700); // matches .reader-images max-width:700px
         assert_eq!(p.gap, 0);
         assert_eq!(p.bg, "black");
         assert_eq!(p.hide_delay, 3);
@@ -220,14 +228,14 @@ mod tests {
     #[test]
     fn normalization_clamps_and_rejects_unknown() {
         let mut p = ReaderPrefs::default();
-        p.layout = "hologram".into();       // unknown -> default
-        p.direction = "diagonal".into();    // unknown -> default
-        p.max_w = 99_999;                   // clamp to 1400
-        p.gap = 9_999;                      // clamp to 64
-        p.hide_delay = 99;                  // clamp to 10
-        p.dim_opacity = 5.0;                // clamp to 0.8
-        p.swipe_threshold = 1;              // clamp to 40
-        p.click_zones = vec![5, 99];        // clamp to 10..90, >=10 apart
+        p.layout = "hologram".into(); // unknown -> default
+        p.direction = "diagonal".into(); // unknown -> default
+        p.max_w = 99_999; // clamp to 1400
+        p.gap = 9_999; // clamp to 64
+        p.hide_delay = 99; // clamp to 10
+        p.dim_opacity = 5.0; // clamp to 0.8
+        p.swipe_threshold = 1; // clamp to 40
+        p.click_zones = vec![5, 99]; // clamp to 10..90, >=10 apart
         let n = p.normalized();
         assert_eq!(n.layout, "strip");
         assert_eq!(n.direction, "ltr");
@@ -254,7 +262,11 @@ mod tests {
         assert!(!n.keybinds.contains_key("bogus.action"));
         assert_eq!(
             n.keybinds["page.prev"],
-            vec!["ArrowLeft".to_string(), "ArrowUp".to_string(), "PageUp".to_string()]
+            vec![
+                "ArrowLeft".to_string(),
+                "ArrowUp".to_string(),
+                "PageUp".to_string()
+            ]
         );
         // every action present, defaults restored for the missing ones
         assert_eq!(n.keybinds.len(), ACTION_IDS.len());

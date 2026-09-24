@@ -1,9 +1,9 @@
 use axum::extract::{Path, State};
 use axum::response::Html;
-use maud::{html, Markup};
+use maud::{Markup, html};
 use std::sync::Arc;
 
-use crate::{auth::AuthUser, AppState};
+use crate::{AppState, auth::AuthUser};
 
 /// HTML-escape a value before it is placed inside a double-quoted attribute.
 ///
@@ -35,8 +35,18 @@ pub fn attr_escape(v: &str) -> String {
 /// way the user-chosen color can reach CSS.
 pub fn body_prefs_attrs(prefs: &mangaread_core::ReaderPrefs) -> String {
     let mut a = String::new();
-    a.push_str(&format!(" data-r-layout=\"{}\"", attr_escape(&prefs.layout)));
-    a.push_str(&format!(" data-r-direction=\"{}\"", attr_escape(&prefs.direction)));
+    a.push_str(&format!(
+        " data-r-layout=\"{}\"",
+        attr_escape(&prefs.layout)
+    ));
+    a.push_str(&format!(
+        " data-r-preset=\"{}\"",
+        preset_for_layout(&prefs.layout)
+    ));
+    a.push_str(&format!(
+        " data-r-direction=\"{}\"",
+        attr_escape(&prefs.direction)
+    ));
     // Fit does not apply to `strip` (controller ruling); omitting the attribute
     // keeps first paint consistent with what `reader.js` applies on init.
     if !prefs.fit.is_empty() && prefs.layout != "strip" {
@@ -79,13 +89,28 @@ pub fn nextup_pages_json_for_script(pairs: &[(i64, Vec<String>)]) -> String {
         .replace('<', "\\u003c")
 }
 
-/// A segmented control: `.reader-seg` with one `.reader-seg-btn` per option.
+/// Map the four existing layout values to the small curated preset surface.
 ///
-/// Every button carries `data-pref`, the single binding point between CSS, JS,
-/// and the prefs blob (design contract §3.2).
+/// `vertical` remains supported by the navigator, but the public surface maps
+/// it to the single-page preset because it has the same page-at-a-time job.
+pub fn preset_for_layout(layout: &str) -> &'static str {
+    match layout {
+        "double" => "spread",
+        "single" | "vertical" => "page",
+        _ => "flow",
+    }
+}
+
+/// A compact segmented control for the two high-value secondary choices.
 fn seg(pref: &str, current: &str, options: &[(&str, &str)]) -> Markup {
+    let class = if pref == "bg" {
+        "reader-seg reader-tone-seg"
+    } else {
+        "reader-seg"
+    };
     html! {
-        div class="reader-seg" {
+        div class=(class) role="group"
+            aria-label=(if pref == "direction" { "Reading order" } else { "Page tone" }) {
             @for (value, label) in options {
                 button class="reader-seg-btn" type="button"
                     data-pref=(pref) data-value=(value)
@@ -97,54 +122,27 @@ fn seg(pref: &str, current: &str, options: &[(&str, &str)]) -> Markup {
     }
 }
 
-/// A two-state segmented control (`off`/`on`) bound to a boolean prefs key.
-///
-/// `on_id` optionally labels the `on` half, which is how §6.2's
-/// `#reader-notes-toggle` hook is satisfied while keeping the `data-pref`
-/// binding uniform.
-fn toggle_with_id(
-    pref: &str,
-    on: bool,
-    off_label: &str,
-    on_label: &str,
-    on_id: Option<&str>,
-) -> Markup {
-    html! {
-        div class="reader-seg" {
-            button class="reader-seg-btn" type="button"
-                data-pref=(pref) data-value="off"
-                aria-pressed=(if on { "false" } else { "true" }) { (off_label) }
-            button class="reader-seg-btn" type="button"
-                id=[on_id] data-pref=(pref) data-value="on"
-                aria-pressed=(if on { "true" } else { "false" }) { (on_label) }
-        }
-    }
-}
-
-fn toggle(pref: &str, on: bool, off_label: &str, on_label: &str) -> Markup {
-    toggle_with_id(pref, on, off_label, on_label, None)
-}
-
-/// A labelled range input with a live `output.reader-slider-value` sibling.
-///
-/// The row is a bare `div` + `span`: Task 5's CSS styles `.reader-sheet-group >
-/// div` and `> span:first-child` by element, so no row class is invented.
-fn slider(
-    pref: &str,
+fn preset_button(
+    id: &str,
     label: &str,
-    min: f64,
-    max: f64,
-    step: f64,
-    value: String,
-    unit: &str,
+    description: &str,
+    visual_class: &str,
+    lines: usize,
+    selected: bool,
 ) -> Markup {
-    let id = format!("reader-slider-{pref}");
+    let visual_class = format!("reader-preset-visual {}", visual_class);
     html! {
-        div {
-            span { (label) }
-            input id=(id) class="reader-slider" type="range" data-pref=(pref)
-                aria-label=(label) min=(min) max=(max) step=(step) value=(value);
-            output class="reader-slider-value" for=(id) { (value) (unit) }
+        button class="reader-preset-btn" type="button" data-r-preset=(id)
+            aria-pressed=(if selected { "true" } else { "false" }) {
+            span class=(visual_class) aria-hidden="true" {
+                @for _ in 0..lines {
+                    span {}
+                }
+            }
+            span class="reader-preset-copy" {
+                strong { (label) }
+                small { (description) }
+            }
         }
     }
 }
@@ -173,18 +171,21 @@ pub async fn chapter_reader(
             Err(_) => {
                 let cfg = crate::config::site_config(&db);
                 let css = cfg.css_overrides();
-                return Html(crate::templates::layout::base_layout(
-                    "Not Found",
-                    crate::templates::layout::error_content(
+                return Html(
+                    crate::templates::layout::base_layout(
                         "Not Found",
-                        "This manga doesn't exist or may have been removed.",
-                    ),
-                    None,
-                    &css,
-                    &cfg.site_title,
-                    user.as_ref(),
-                    crate::templates::layout::Nav::None,
-                ).0);
+                        crate::templates::layout::error_content(
+                            "Not Found",
+                            "This manga doesn't exist or may have been removed.",
+                        ),
+                        None,
+                        &css,
+                        &cfg.site_title,
+                        user.as_ref(),
+                        crate::templates::layout::Nav::None,
+                    )
+                    .0,
+                );
             }
         };
         let chapter = match mangaread_core::db::get_chapter_by_id(&db, chapter_id) {
@@ -192,18 +193,21 @@ pub async fn chapter_reader(
             Err(_) => {
                 let cfg = crate::config::site_config(&db);
                 let css = cfg.css_overrides();
-                return Html(crate::templates::layout::base_layout(
-                    "Not Found",
-                    crate::templates::layout::error_content(
+                return Html(
+                    crate::templates::layout::base_layout(
                         "Not Found",
-                        "This chapter doesn't exist or may have been removed.",
-                    ),
-                    None,
-                    &css,
-                    &cfg.site_title,
-                    user.as_ref(),
-                    crate::templates::layout::Nav::None,
-                ).0);
+                        crate::templates::layout::error_content(
+                            "Not Found",
+                            "This chapter doesn't exist or may have been removed.",
+                        ),
+                        None,
+                        &css,
+                        &cfg.site_title,
+                        user.as_ref(),
+                        crate::templates::layout::Nav::None,
+                    )
+                    .0,
+                );
             }
         };
         let pages = mangaread_core::db::list_pages_by_chapter(&db, chapter.id).unwrap_or_default();
@@ -231,7 +235,9 @@ pub async fn chapter_reader(
     let all_chapters =
         mangaread_core::db::list_chapters_by_manga(&db, manga_id).unwrap_or_default();
     let current_idx = all_chapters.iter().position(|c| c.id == chapter.id);
-    let prev_chapter = current_idx.and_then(|i| i.checked_sub(1)).and_then(|i| all_chapters.get(i));
+    let prev_chapter = current_idx
+        .and_then(|i| i.checked_sub(1))
+        .and_then(|i| all_chapters.get(i));
     let next_chapter = current_idx.and_then(|i| all_chapters.get(i + 1));
     let total_pages = pages.len();
 
@@ -268,17 +274,6 @@ pub async fn chapter_reader(
         })
         .collect();
 
-    // Keybind rows in a stable order (HashMap iteration is not deterministic).
-    let keybind_rows: Vec<(&str, Vec<String>)> = mangaread_core::ACTION_IDS
-        .iter()
-        .map(|action| {
-            (
-                *action,
-                prefs.keybinds.get(*action).cloned().unwrap_or_default(),
-            )
-        })
-        .collect();
-
     let reload_script = if syncing {
         Some(format!(
             r#"<script>
@@ -295,6 +290,48 @@ if(++a>=20)clearInterval(iv)
     } else {
         None
     };
+
+    let selected_preset = preset_for_layout(&prefs.layout);
+    let flow_preset = preset_button(
+        "flow",
+        "Flow",
+        "Long, seamless scroll",
+        "reader-preset-visual-flow",
+        3,
+        selected_preset == "flow",
+    );
+    let page_preset = preset_button(
+        "page",
+        "Page",
+        "One page at a time",
+        "reader-preset-visual-page",
+        1,
+        selected_preset == "page",
+    );
+    let spread_preset = preset_button(
+        "spread",
+        "Spread",
+        "Book-like pairs",
+        "reader-preset-visual-spread",
+        2,
+        selected_preset == "spread",
+    );
+    let direction_control = seg(
+        "direction",
+        &prefs.direction,
+        &[("ltr", "Left to right"), ("rtl", "Right to left")],
+    );
+    let tone_options = if prefs.bg == "custom" {
+        vec![
+            ("black", "Dark"),
+            ("sepia", "Paper"),
+            ("white", "Light"),
+            ("custom", "Custom"),
+        ]
+    } else {
+        vec![("black", "Dark"), ("sepia", "Paper"), ("white", "Light")]
+    };
+    let tone_control = seg("bg", &prefs.bg, &tone_options);
 
     let content = html! {
         @if let Some(script) = reload_script {
@@ -333,7 +370,7 @@ if(++a>=20)clearInterval(iv)
                     aria-expanded="false" aria-controls="reader-sheet"
                     aria-label="Reader settings" { "⚙" }
                 button id="reader-focus-btn" class="reader-icon-btn" type="button"
-                    aria-label="Toggle focus mode" { "◱" }
+                    aria-label="Toggle focus mode" aria-pressed="false" data-focus-toggle="true" { "◱" }
             }
         }
 
@@ -344,6 +381,10 @@ if(++a>=20)clearInterval(iv)
         div id="reader-hud" class="reader-hud" role="button" tabindex="0"
             aria-label="Reader menu" {
             "1 / " (total_pages)
+        }
+        button id="reader-focus-exit" class="reader-focus-exit" type="button"
+            aria-label="Exit focus mode" aria-pressed="true" data-focus-toggle="true" {
+            "Exit focus"
         }
 
         // ── Resume affordance (revealed by JS when local progress > page 1) ──
@@ -430,7 +471,9 @@ if(++a>=20)clearInterval(iv)
 
             // Subtle hint that fades out (existing element; kept per the
             // contract's "existing elements keep their ids and classes").
-            div id="reader-hint" class="reader-hint" { "Tap sides to navigate pages" }
+            div id="reader-hint" class="reader-hint" {
+                @if prefs.layout == "strip" { "Scroll to read" } @else { "Tap sides to navigate pages" }
+            }
 
             // ── End-of-chapter overlay for paged layouts ──
             div id="reader-chapter-nav" class="reader-chapter-nav" hidden {
@@ -526,159 +569,67 @@ if(++a>=20)clearInterval(iv)
             }
         }
 
-        // ── Settings sheet ──
+        // ── Reading settings: three curated modes, not a settings framework ──
         div id="reader-sheet" class="reader-sheet" hidden {
             div class="reader-sheet-backdrop" data-r-close {}
             div class="reader-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="reader-sheet-title" {
-                h2 id="reader-sheet-title" { "Reader settings" }
-
-                // Per-series override sits above the tabs so it applies to
-                // whatever group follows (design contract §3.4).
-                label class="reader-series-remember" {
-                    input id="reader-remember-series" type="checkbox" {}
-                    "Remember for this series"
+                header class="reader-sheet-header" {
+                    div {
+                        p { "Make the page feel right" }
+                        h2 id="reader-sheet-title" { "Reading style" }
+                    }
+                    button class="reader-sheet-close" type="button" data-r-close aria-label="Close reading style" { "✕" }
                 }
 
-                div class="reader-sheet-tabs" role="tablist" {
-                    @for (g, label) in [("layout", "Layout"), ("fit", "Fit"), ("input", "Input"), ("comfort", "Comfort"), ("thisSeries", "This series")] {
-                        button class="reader-sheet-tab" type="button" role="tab"
-                            data-group=(g) aria-selected=(if g == "layout" { "true" } else { "false" }) {
-                            (label)
+                div class="reader-sheet-group" data-group="reading" role="group" aria-label="Reading style" {
+                    div class="reader-setting-intro" {
+                        h3 id="reader-preset-title" { "Choose a pace" }
+                        p { "Flow is recommended. The reader handles the rest." }
+                    }
+
+                    div class="reader-preset-grid" {
+                        (flow_preset)
+                        (page_preset)
+                        (spread_preset)
+                    }
+                    p id="reader-spread-note" class="reader-preset-note" hidden {
+                        "Spread needs a screen at least 768px wide."
+                    }
+
+                    div class="reader-compact-setting" {
+                        span { "Reading order" }
+                        (direction_control)
+                    }
+                    div class="reader-compact-setting" {
+                        span { "Page tone" }
+                        (tone_control)
+                    }
+                }
+
+                div class="reader-utility-row" role="group" aria-label="Reader utilities" {
+                    button id="reader-focus-toggle" class="reader-utility-btn" type="button"
+                        data-action="ui.focus" data-focus-toggle="true" aria-pressed="false" {
+                        "Focus mode"
+                    }
+                    button class="reader-utility-btn" type="button" data-action="note.add" {
+                        "Add note"
+                    }
+                }
+
+                div class="reader-sheet-footer" role="group" aria-label="Reading preference scope" {
+                    label class="reader-series-remember" {
+                        input id="reader-remember-series" type="checkbox" {}
+                        span {
+                            strong { "Keep for this series" }
+                            small class="reader-series-remember-note" data-series-title=(manga.title) { (manga.title) }
                         }
                     }
+                    button class="reader-restore-btn" type="button" data-action="ui.restoreDefaults" {
+                        "Restore recommended settings"
+                    }
+                    p id="reader-settings-status" class="reader-settings-status" role="status" aria-live="polite" {}
                 }
 
-                // Group: layout
-                section class="reader-sheet-group" data-group="layout" {
-                    h3 { "Layout" }
-                    div {
-                        span { "Arrangement" }
-                        (seg("layout", &prefs.layout, &[
-                            ("single", "Single"),
-                            ("double", "Double"),
-                            ("strip", "Strip"),
-                            ("vertical", "Vertical"),
-                        ]))
-                    }
-                    div {
-                        span { "Direction" }
-                        (seg("direction", &prefs.direction, &[
-                            ("ltr", "Left to right"),
-                            ("rtl", "Right to left"),
-                        ]))
-                    }
-                    div {
-                        span { "Cover page alone" }
-                        (toggle("doubleCover", prefs.double_cover, "Off", "On"))
-                    }
-                }
-
-                // Group: fit
-                section class="reader-sheet-group" data-group="fit" {
-                    h3 { "Fit" }
-                    div {
-                        span { "Fit mode" }
-                        (seg("fit", &prefs.fit, &[
-                            ("", "Width"),
-                            ("height", "Height"),
-                            ("screen", "Screen"),
-                        ]))
-                    }
-                    (slider("maxW", "Width", 400.0, 1400.0, 10.0, prefs.max_w.to_string(), "px"))
-                    (slider("gap", "Page gap", 0.0, 64.0, 1.0, prefs.gap.to_string(), "px"))
-                    div {
-                        span { "Background" }
-                        (seg("bg", &prefs.bg, &[
-                            ("black", "Black"),
-                            ("white", "White"),
-                            ("sepia", "Sepia"),
-                            ("custom", "Custom"),
-                        ]))
-                    }
-                    div {
-                        span { "Custom colour" }
-                        input id="reader-bg-custom" class="reader-color" type="color"
-                            data-pref="bgCustom" aria-label="Custom background colour"
-                            value=(prefs.bg_custom);
-                    }
-                    div {
-                        span { "Page border" }
-                        (toggle("frame", prefs.frame, "Off", "On"))
-                    }
-                }
-
-                // Group: input
-                section class="reader-sheet-group" data-group="input" {
-                    h3 { "Input" }
-                    div {
-                        span { "Tap zones" }
-                        div id="reader-zone-editor" class="reader-zone-editor" data-pref="clickZones" {
-                            span class="reader-zone-handle" data-edge="left" role="slider" tabindex="0"
-                                aria-label="Left zone boundary"
-                                aria-valuenow=(prefs.click_zones.first().copied().unwrap_or(30))
-                                aria-valuemin="10" aria-valuemax="90" {}
-                            span class="reader-zone-handle" data-edge="right" role="slider" tabindex="0"
-                                aria-label="Right zone boundary"
-                                aria-valuenow=(prefs.click_zones.get(1).copied().unwrap_or(70))
-                                aria-valuemin="10" aria-valuemax="90" {}
-                        }
-                    }
-                    @for (action, keys) in &keybind_rows {
-                        div class="reader-keybind-row" data-action=(action) data-pref="keybinds" {
-                            span { (action) }
-                            @for (ki, key) in keys.iter().enumerate() {
-                                button class="reader-keybind-key" type="button" data-key-index=(ki) { (key) }
-                            }
-                            button class="reader-keybind-reset" type="button" { "Reset" }
-                        }
-                    }
-                    (slider("swipeThreshold", "Swipe distance", 40.0, 160.0, 5.0, prefs.swipe_threshold.to_string(), "px"))
-                    div {
-                        span { "Auto next chapter" }
-                        (toggle("autoNext", prefs.auto_next, "Off", "On"))
-                    }
-                    div {
-                        span { "Auto previous chapter" }
-                        (toggle("autoPrev", prefs.auto_prev, "Off", "On"))
-                    }
-                }
-
-                // Group: comfort
-                section class="reader-sheet-group" data-group="comfort" {
-                    h3 { "Comfort" }
-                    div {
-                        span { "Focus mode" }
-                        button class="reader-seg-btn" type="button" data-action="ui.focus" { "Toggle" }
-                    }
-                    (slider("hideDelay", "Hide controls after", 1.0, 10.0, 1.0, prefs.hide_delay.to_string(), "s"))
-                    div {
-                        span { "Dim after idle" }
-                        (seg("dimDelay", &prefs.dim_delay.to_string(), &[
-                            ("0", "Off"),
-                            ("15", "15s"),
-                            ("30", "30s"),
-                            ("60", "60s"),
-                        ]))
-                    }
-                    (slider("dimOpacity", "Dim strength", 0.2, 0.8, 0.1, format!("{:.1}", prefs.dim_opacity), ""))
-                    div {
-                        span { "Show notes" }
-                        // `#reader-notes-toggle` is named by contract §6.2 (the
-                        // focus-mode pin exception) but missing from the §9
-                        // index; the `on` half carries it so the CSS hook works.
-                        (toggle_with_id("showNotes", prefs.show_notes, "Off", "On", Some("reader-notes-toggle")))
-                    }
-                }
-
-                // Group: thisSeries
-                section class="reader-sheet-group" data-group="thisSeries" {
-                    h3 { "This series" }
-                    p class="reader-series-remember-note" data-series-title=(manga.title) {
-                        "Remembering for " (manga.title)
-                    }
-                }
-
-                button class="reader-sheet-close" type="button" data-r-close aria-label="Close settings" { "✕" }
             }
         }
 
@@ -695,14 +646,17 @@ if(++a>=20)clearInterval(iv)
 
     let cfg = crate::config::site_config(&db);
     let css = cfg.css_overrides();
-    Html(crate::templates::layout::reader_layout(
-        &format!("Ch. {} — {}", chapter.number, manga.title),
-        content,
-        &css,
-        &cfg.site_title,
-        user.as_ref(),
-        &prefs,
-    ).0)
+    Html(
+        crate::templates::layout::reader_layout(
+            &format!("Ch. {} — {}", chapter.number, manga.title),
+            content,
+            &css,
+            &cfg.site_title,
+            user.as_ref(),
+            &prefs,
+        )
+        .0,
+    )
 }
 
 #[cfg(test)]
@@ -720,10 +674,23 @@ mod tests {
         p.frame = true;
         let a = body_prefs_attrs(&p);
         assert!(a.contains(r#"data-r-layout="double""#), "{a}");
+        assert!(a.contains(r#"data-r-preset="spread""#), "{a}");
         assert!(a.contains(r#"data-r-direction="rtl""#), "{a}");
         assert!(a.contains(r#"data-r-fit="height""#), "{a}");
         assert!(a.contains(r#"data-r-bg="white""#), "{a}");
         assert!(a.contains(r#"data-r-frame="on""#), "{a}");
+    }
+
+    #[test]
+    fn curated_presets_cover_every_existing_layout() {
+        assert_eq!(preset_for_layout("strip"), "flow");
+        assert_eq!(preset_for_layout("single"), "page");
+        assert_eq!(preset_for_layout("vertical"), "page");
+        assert_eq!(preset_for_layout("double"), "spread");
+        assert_eq!(preset_for_layout("future-layout"), "flow");
+
+        let a = body_prefs_attrs(&ReaderPrefs::default());
+        assert!(a.contains(r#"data-r-preset="flow""#), "{a}");
     }
 
     #[test]
@@ -760,8 +727,10 @@ mod tests {
     #[test]
     fn prefs_json_escapes_script_close() {
         let mut p = ReaderPrefs::default();
-        p.keybinds
-            .insert("page.next".into(), vec!["</script><script>alert(1)</script>".into()]);
+        p.keybinds.insert(
+            "page.next".into(),
+            vec!["</script><script>alert(1)</script>".into()],
+        );
         let json = prefs_json_for_script(&p);
         assert!(!json.contains("</script>"), "{json}");
         assert!(json.contains(r"\u003c/script"), "{json}");
@@ -773,9 +742,8 @@ mod tests {
     #[test]
     fn reader_layout_body_carries_prefs_attrs() {
         let p = ReaderPrefs::default();
-        let out = crate::templates::layout::reader_layout(
-            "t", maud::html! {}, "", "S", None, &p,
-        ).into_string();
+        let out = crate::templates::layout::reader_layout("t", maud::html! {}, "", "S", None, &p)
+            .into_string();
         assert!(out.contains("data-r-layout=\"strip\""), "{out}");
         assert!(out.contains("/static/reader.css"), "{out}");
         assert!(out.contains("/static/reader.js"), "{out}");
@@ -790,7 +758,10 @@ mod tests {
     fn nextup_pages_json_shape_and_escaping() {
         let pairs = vec![
             (12i64, vec!["/a.svg".to_string(), "/b.svg".to_string()]),
-            (13i64, vec!["</script><script>alert(1)</script>".to_string()]),
+            (
+                13i64,
+                vec!["</script><script>alert(1)</script>".to_string()],
+            ),
         ];
         let json = nextup_pages_json_for_script(&pairs);
         assert!(json.contains(r#""12":["/a.svg","/b.svg"]"#), "{json}");

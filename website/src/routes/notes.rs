@@ -11,8 +11,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::auth::AuthUser;
 use crate::AppState;
+use crate::auth::AuthUser;
 
 /// Max note length, mirrored in the client's `maxlength` and the design contract.
 const MAX_NOTE_LEN: usize = 2000;
@@ -44,7 +44,11 @@ pub fn validate_page(page: i64) -> Result<i64, ()> {
 }
 
 fn bad(msg: &str) -> Response {
-    (StatusCode::BAD_REQUEST, Json(json!({"ok": false, "error": msg}))).into_response()
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"ok": false, "error": msg})),
+    )
+        .into_response()
 }
 
 /// GET `/api/notes?chapter_id=N` — the caller's notes on a chapter.
@@ -57,7 +61,13 @@ pub async fn list_notes(
         let db = state.db.lock().await;
         match mangaread_core::db::list_notes(&db, user.id, q.chapter_id) {
             Ok(n) => n,
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false}))).into_response(),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"ok": false})),
+                )
+                    .into_response();
+            }
         }
     };
     let items: Vec<_> = notes

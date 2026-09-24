@@ -3,7 +3,7 @@ use axum::response::Html;
 use maud::html;
 use std::sync::Arc;
 
-use crate::{auth::AuthUser, AppState};
+use crate::{AppState, auth::AuthUser, templates::content};
 
 /// Convert a SQLite datetime string (e.g. "2026-07-09 12:00:00") into a
 /// human-friendly relative time like "5h ago", "2d ago".
@@ -13,7 +13,6 @@ fn relative_time(dt: &str) -> String {
         .unwrap_or_default()
         .as_secs() as i64;
 
-    // Parse "YYYY-MM-DD HH:MM:SS"
     let parts: Vec<&str> = dt.split(|c| c == ' ' || c == '-' || c == ':').collect();
     if parts.len() != 6 {
         return dt.to_string();
@@ -26,7 +25,6 @@ fn relative_time(dt: &str) -> String {
     let minute = parts[4].parse::<i64>().unwrap_or(0);
     let second = parts[5].parse::<i64>().unwrap_or(0);
 
-    // Simple day-counting (not leap-year perfect, but good enough for relative time)
     let days_in_month = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut total_days = (year - 1970) * 365 + (year - 1969) / 4;
     for m in 1..month {
@@ -58,32 +56,27 @@ fn relative_time(dt: &str) -> String {
 }
 
 /// GET `/` — render the landing page.
-///
-/// Queries series count, chapter count, unique sources, and the 30 most
-/// recently updated chapters, then renders them inside the `base_layout`.
 pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) -> Html<String> {
     let banner = {
         let p = state.auto_sync.lock().await;
         if p.running && p.total > 0 {
             let pct = p.current * 100 / p.total;
-            Some(format!("Syncing series\u{2026} {} of {} ({}%)", p.current, p.total, pct))
+            Some(format!(
+                "Syncing series\u{2026} {} of {} ({}%)",
+                p.current, p.total, pct
+            ))
         } else {
             None
         }
     };
 
     let db = state.db.lock().await;
-
-    let series_count = mangaread_core::db::count_manga_with_chapters(&db)
-        .unwrap_or(0);
+    let series_count = mangaread_core::db::count_manga_with_chapters(&db).unwrap_or(0);
     let chapter_count: i64 = db
         .query_row("SELECT COUNT(*) FROM chapters", [], |row| row.get(0))
         .unwrap_or(0);
     let recent = mangaread_core::db::list_recent_chapters(&db, 30).unwrap_or_default();
 
-    // Homepage sections enabled by the admin `home_sections` CSV. Keys match
-    // the branding-form checkbox values (`latest`, `popular`, `continue`);
-    // an empty/missing value means all sections (current behavior).
     let enabled: Vec<String> = mangaread_core::db::get_setting(&db, "home_sections")
         .ok()
         .flatten()
@@ -95,24 +88,28 @@ pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) ->
     let show = |key: &str| enabled.is_empty() || enabled.iter().any(|s| s == key);
 
     let content = html! {
-        // ── Hero Section ──
-        section class="hero-section" {
-            div class="hero-content" {
-                h1 class="hero-title" { "MangaRead" }
-                p class="hero-tagline" { "Your personal manga library. Read, track, and discover." }
-                div class="hero-stats" {
-                    div class="hero-stat" {
-                        span class="hero-stat-value" { (series_count) }
-                        span class="hero-stat-label" { "Series" }
+        section class="hero" {
+            div class="hero-body" {
+                h1 class="title is-1" { "MangaRead" }
+                p class="subtitle is-4 m-text-muted" {
+                    "Your personal manga library. Read, track, and discover."
+                }
+                div class="level is-mobile" {
+                    div class="level-item has-text-centered" {
+                        div {
+                            p class="heading" { (series_count) }
+                            p class="title is-7" { "Series" }
+                        }
                     }
-                    div class="hero-stat-divider" {}
-                    div class="hero-stat" {
-                        span class="hero-stat-value" { (chapter_count) }
-                        span class="hero-stat-label" { "Chapters" }
+                    div class="level-item has-text-centered" {
+                        div {
+                            p class="heading" { (chapter_count) }
+                            p class="title is-7" { "Chapters" }
+                        }
                     }
                 }
-                a href="/series" class="browse-btn" {
-                    svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
+                a href="/series" class="button is-primary is-medium" {
+                    svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" {
                         path d="M5 12h14M12 5l7 7-7 7" {}
                     }
                     "Browse All Series"
@@ -120,40 +117,43 @@ pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) ->
             }
         }
 
-        // ── Continue Reading ──
         @if show("continue") {
-            div id="continue-reading-container" class="continue-section" {}
+            section id="continue-reading-container" {}
         }
 
-        // ── Recent Chapters ──
         @if show("latest") {
-        h2 class="section-title" { "Recently Updated" }
-        @if recent.is_empty() {
-            div class="empty-state" {
-                span class="empty-state-icon" {}
-                p { "No chapters yet. The sync loop is fetching series in the background." }
-            }
-        } @else {
-            ul class="recent-list" {
-                @for ch in &recent {
-                    li class="recent-item" {
-                        a href={"/read/"(ch.manga_id)"/"(ch.chapter_id)} {
-                            @if let Some(ref cover) = ch.cover_url {
-                                img class="recent-thumb" src=(cover) alt="" loading="lazy";
-                            }
-                            div class="recent-body" {
-                                span class="recent-title" { (ch.series_title) }
-                                div class="recent-chapter" {
-                                    span class="recent-chapter-num" { "Ch. " (ch.chapter_number) }
-                                    @if let Some(ref t) = ch.chapter_title {
-                                        span class="recent-chapter-title" { (t) }
+            h2 class="title is-3" { "Recently Updated" }
+            @if recent.is_empty() {
+                (content::empty_state(
+                    "No chapters yet. The sync loop is fetching series in the background.",
+                    true,
+                ))
+            } @else {
+                ul id="recent-chapters" {
+                    @for ch in &recent {
+                        li {
+                            a class="media" href={"/read/"(ch.manga_id)"/"(ch.chapter_id)} {
+                                @if let Some(ref cover) = ch.cover_url {
+                                    span class="media-left" {
+                                        div class="image is-64x64" {
+                                            img src=(cover) alt="" loading="lazy" {}
+                                        }
                                     }
                                 }
-                            }
-                            span class="recent-time" { (relative_time(&ch.created_at)) }
-                            span class="recent-arrow" {
-                                svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
-                                    path d="M5 12h14M12 5l7 7-7 7" {}
+                                span class="media-content" {
+                                    span class="title is-6" { (ch.series_title) }
+                                    span class="subtitle is-7" {
+                                        "Ch. " (ch.chapter_number)
+                                        @if let Some(ref t) = ch.chapter_title { (t) }
+                                    }
+                                }
+                                span class="media-right" {
+                                    span class="m-text-muted" { (relative_time(&ch.created_at)) }
+                                    span aria-hidden="true" {
+                                        svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
+                                            path d="M5 12h14M12 5l7 7-7 7" {}
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -161,10 +161,20 @@ pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) ->
                 }
             }
         }
-        }
     };
 
     let cfg = crate::config::site_config(&db);
     let css = cfg.css_overrides();
-    Html(crate::templates::layout::base_layout("Home", content, banner.as_deref(), &css, &cfg.site_title, user.as_ref(), crate::templates::layout::Nav::Home).0)
+    Html(
+        crate::templates::layout::base_layout(
+            "Home",
+            content,
+            banner.as_deref(),
+            &css,
+            &cfg.site_title,
+            user.as_ref(),
+            crate::templates::layout::Nav::Home,
+        )
+        .0,
+    )
 }

@@ -38,6 +38,35 @@
   var BGS = ['black', 'white', 'sepia', 'custom'];
   var DIM_DELAYS = [0, 15, 30, 60];
 
+  /**
+   * Curated reading styles. Each preset only adjusts the choices it owns;
+   * page order, tone, notes, and progress remain independent so existing
+   * stored preferences are not lost when someone changes pace.
+   */
+  var PRESETS = {
+    flow: {
+      layout: 'strip',
+      fit: '',
+      maxW: 700,
+      gap: 0,
+      doubleCover: false
+    },
+    page: {
+      layout: 'single',
+      fit: 'height',
+      maxW: 900,
+      gap: 0,
+      doubleCover: false
+    },
+    spread: {
+      layout: 'double',
+      fit: 'height',
+      maxW: 1400,
+      gap: 0,
+      doubleCover: true
+    }
+  };
+
   var ACTION_IDS = [
     'page.next', 'page.prev', 'chapter.next', 'chapter.prev',
     'ui.toggle', 'ui.focus', 'ui.fitCycle', 'layout.cycle', 'note.add'
@@ -217,6 +246,8 @@
     dimmed: false,
     progressTimer: null,
     prefsSaveTimer: null,
+    pendingServerPrefs: null,
+    serverWriteId: 0,
     writeFailures: 0,
     offlineHooked: false,
     finished: false,
@@ -420,14 +451,40 @@
   //  APPLYING PREFS TO THE DOM
   // ============================================================
 
-  function applyPrefs() {
+  /** Map the existing layout contract to the public, three-mode surface. */
+  function activePreset(p) {
+    if (p.layout === 'double') return 'spread';
+    if (p.layout === 'single' || p.layout === 'vertical') return 'page';
+    return 'flow';
+  }
+
+  /**
+   * A saved Spread remains stored, but phones render the safer Page surface.
+   * Persistence still uses effectivePrefs(), so resizing back to a wide
+   * viewport restores the saved Spread without rewriting the user's choice.
+   */
+  function layoutPrefs() {
     var p = effectivePrefs();
+    if (window.innerWidth < 768 && p.layout === 'double') {
+      var safe = clonePrefs(p);
+      safe.layout = 'single';
+      safe.fit = 'height';
+      safe.maxW = 900;
+      safe.doubleCover = false;
+      return safe;
+    }
+    return p;
+  }
+
+  function applyPrefs() {
+    var p = layoutPrefs();
     var b = document.body;
     // Controller ruling: fit modes do not apply to `strip`. The stored fit
     // pref is preserved but never reaches the body on that layout.
     var activeFit = p.layout === 'strip' ? '' : p.fit;
 
     b.setAttribute('data-r-layout', p.layout);
+    b.setAttribute('data-r-preset', activePreset(p));
     b.setAttribute('data-r-direction', p.direction);
     if (activeFit) b.setAttribute('data-r-fit', activeFit);
     else b.removeAttribute('data-r-fit');
@@ -435,6 +492,7 @@
     if (p.bg === 'custom') b.style.setProperty('--r-bg-custom', p.bgCustom);
     if (p.frame) b.setAttribute('data-r-frame', 'on');
     else b.removeAttribute('data-r-frame');
+    b.setAttribute('data-r-notes', p.showNotes ? 'on' : 'off');
 
     b.style.setProperty('--r-gap', p.gap + 'px');
     b.style.setProperty('--r-zoom', String((state.local && state.local.zoom) || 1));
@@ -448,84 +506,35 @@
     renderLayout();
   }
 
-  /** Two-way bind every `[data-pref]` control to the effective prefs. */
+  /** Two-way bind the compact preference surface to the effective prefs. */
   function syncControls() {
-    var p = effectivePrefs();
+    var p = layoutPrefs();
+    setSegment('direction', p.direction);
+    setSegment('bg', p.bg);
 
-    // Segmented controls (strings + booleans).
-    var segKeys = ['layout', 'direction', 'fit', 'bg', 'dimDelay', 'frame', 'doubleCover', 'autoNext', 'autoPrev', 'showNotes'];
-    for (var s = 0; s < segKeys.length; s++) {
-      var key = segKeys[s];
-      var value = BOOL_PREFS[key] ? (p[key] ? 'on' : 'off') : String(p[key]);
-      setSegment(key, value);
+    var selected = activePreset(p);
+    var presetBtns = $$('.reader-preset-btn[data-r-preset]');
+    for (var i = 0; i < presetBtns.length; i++) {
+      var btn = presetBtns[i];
+      var id = btn.getAttribute('data-r-preset');
+      btn.setAttribute('aria-pressed', id === selected ? 'true' : 'false');
+
+      // A book spread on a phone halves already-small artwork, so it remains
+      // a saved value but cannot be selected there.
+      var spreadTooNarrow = id === 'spread' && window.innerWidth < 768;
+      btn.disabled = spreadTooNarrow;
+      btn.setAttribute('aria-disabled', spreadTooNarrow ? 'true' : 'false');
+      if (spreadTooNarrow) btn.setAttribute('title', 'Spread needs a wider screen');
+      else btn.removeAttribute('title');
     }
+    var spreadNote = document.getElementById('reader-spread-note');
+    if (spreadNote) spreadNote.hidden = window.innerWidth >= 768;
 
-    // Sliders.
-    setSlider('maxW', p.maxW);
-    setSlider('gap', p.gap);
-    setSlider('hideDelay', p.hideDelay);
-    setSlider('dimOpacity', p.dimOpacity);
-    setSlider('swipeThreshold', p.swipeThreshold);
-
-    // Fit precedence disables the width slider (stored value is preserved).
-    // The test is `activeFit`, not the raw pref: on `strip` fit does not apply
-    // (controller ruling), so a stored `fit` must not lock the width slider —
-    // the fit control is inert there too, which would leave no in-sheet escape.
-    var activeFit = p.layout === 'strip' ? '' : p.fit;
-    var widthSlider = $('input.reader-slider[data-pref="maxW"]');
-    if (widthSlider) {
-      var disabled = !!activeFit;
-      widthSlider.disabled = disabled;
-      widthSlider.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+    var focusOn = document.body && document.body.getAttribute('data-r-focus') === '1';
+    var focusControls = $$('[data-focus-toggle]');
+    for (var f = 0; f < focusControls.length; f++) {
+      focusControls[f].setAttribute('aria-pressed', focusOn ? 'true' : 'false');
     }
-
-    // Controller ruling: fit is not applicable on `strip`, so the fit
-    // segmented control is inert there. The stored fit pref is preserved.
-    var fitBtns = $$('.reader-seg-btn[data-pref="fit"]');
-    for (var fi = 0; fi < fitBtns.length; fi++) {
-      var fitOff = p.layout === 'strip';
-      fitBtns[fi].setAttribute('aria-disabled', fitOff ? 'true' : 'false');
-      if (fitOff) fitBtns[fi].setAttribute('title', 'Fit applies to paged layouts only');
-      else fitBtns[fi].removeAttribute('title');
-    }
-
-    // The double layout is disallowed on phone widths (§8.1).
-    var doubleBtn = $('.reader-seg-btn[data-pref="layout"][data-value="double"]');
-    if (doubleBtn) {
-      var narrow = window.innerWidth < 768;
-      doubleBtn.disabled = narrow;
-      doubleBtn.setAttribute('aria-disabled', narrow ? 'true' : 'false');
-      if (narrow) doubleBtn.setAttribute('title', 'Double page needs a wider screen');
-      else doubleBtn.removeAttribute('title');
-    }
-
-    // The cover-alone toggle only means anything for the double layout.
-    var coverBtns = $$('.reader-seg-btn[data-pref="doubleCover"]');
-    for (var ci = 0; ci < coverBtns.length; ci++) {
-      var coverOff = p.layout !== 'double';
-      coverBtns[ci].setAttribute('aria-disabled', coverOff ? 'true' : 'false');
-      if (coverOff) coverBtns[ci].setAttribute('title', 'Only applies to the double layout');
-      else coverBtns[ci].removeAttribute('title');
-    }
-
-    // The custom colour input is only meaningful for the custom background.
-    var colorInput = $('input.reader-color[data-pref="bgCustom"]');
-    if (colorInput) {
-      var customOn = p.bg === 'custom';
-      colorInput.value = p.bgCustom;
-      colorInput.disabled = !customOn;
-      colorInput.setAttribute('aria-disabled', customOn ? 'false' : 'true');
-      var colorRow = colorInput.parentNode;
-      if (colorRow) colorRow.style.display = customOn ? '' : 'none';
-    }
-
-    // Zone editor handles.
-    setHandle('left', p.clickZones[0]);
-    setHandle('right', p.clickZones[1]);
-
-    // Notes toggle keeps `aria-pressed` (reader.css:939 keys on it).
-    var notesToggle = document.getElementById('reader-notes-toggle');
-    if (notesToggle) notesToggle.setAttribute('aria-pressed', p.showNotes ? 'true' : 'false');
   }
 
   function setSegment(pref, value) {
@@ -584,7 +593,7 @@
    *
    * @param {Object} patch one or more prefs keys in wire (camelCase) shape
    */
-  function applyPrefPatch(patch) {
+  function applyPrefPatch(patch, immediate) {
     var prefs = clonePrefs(effectivePrefs());
     for (var key in patch) {
       if (Object.prototype.hasOwnProperty.call(patch, key)) prefs[key] = patch[key];
@@ -601,13 +610,14 @@
       if (isLoggedIn()) {
         // Contract §9: `mangaread_reader_prefs` is the anonymous blob; when
         // logged in the server blob is authoritative, so write through only.
-        queueServerSave(prefs);
+        queueServerSave(prefs, immediate);
       } else {
         writeJSON(localStorage, LS_PREFS, prefs);
       }
     }
 
     applyPrefs();
+    updateNavigationHint();
     if (state.local && state.local.lastUsedLayout !== prefs.layout) {
       state.local.lastUsedLayout = prefs.layout;
       saveDeviceLocal();
@@ -618,36 +628,101 @@
     showChrome();
   }
 
-  function queueServerSave(prefs) {
+  function sendServerPrefs(prefs) {
+    var writeId = ++state.serverWriteId;
+    try {
+      fetch('/api/reader-prefs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': '*/*' },
+        credentials: 'same-origin',
+        body: JSON.stringify(prefs)
+      })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (!data || !data.prefs) return;
+          // The server echoes the normalized blob; adopt it only when no
+          // series override is active, so a local override still wins.
+          if (!state.seriesPrefs && writeId === state.serverWriteId) {
+            state.basePrefs = normalizePrefs(data.prefs);
+            applyPrefs();
+          }
+        })
+        .catch(function () { /* localStorage stays authoritative */ });
+    } catch (_) { /* ignore */ }
+  }
+
+  function queueServerSave(prefs, immediate) {
+    state.pendingServerPrefs = prefs;
     if (state.prefsSaveTimer) clearTimeout(state.prefsSaveTimer);
+    if (immediate) {
+      state.prefsSaveTimer = null;
+      var pending = state.pendingServerPrefs;
+      state.pendingServerPrefs = null;
+      sendServerPrefs(pending);
+      return;
+    }
     state.prefsSaveTimer = setTimeout(function () {
       state.prefsSaveTimer = null;
-      try {
-        fetch('/api/reader-prefs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Accept': '*/*' },
-          credentials: 'same-origin',
-          body: JSON.stringify(prefs)
-        })
-          .then(function (r) { return r.ok ? r.json() : null; })
-          .then(function (data) {
-            if (!data || !data.prefs) return;
-            // The server echoes the normalized blob; adopt it only when no
-            // series override is active, so a local override still wins.
-            if (!state.seriesPrefs) {
-              state.basePrefs = normalizePrefs(data.prefs);
-              applyPrefs();
-            }
-          })
-          .catch(function () { /* localStorage stays authoritative */ });
-      } catch (_) { /* ignore */ }
+      var pending = state.pendingServerPrefs;
+      state.pendingServerPrefs = null;
+      if (pending) sendServerPrefs(pending);
     }, 400);
+  }
+
+  function flushPendingPrefs() {
+    if (state.prefsSaveTimer) {
+      clearTimeout(state.prefsSaveTimer);
+      state.prefsSaveTimer = null;
+    }
+    var pending = state.pendingServerPrefs;
+    state.pendingServerPrefs = null;
+    if (pending) sendServerPrefs(pending);
   }
 
   /** Public `save` alias; merges when called with no argument. */
   function savePrefs(patch) {
     if (patch && typeof patch === 'object') applyPrefPatch(patch);
     else applyPrefPatch({});
+  }
+
+  function announceSetting(message) {
+    var status = document.getElementById('reader-settings-status');
+    if (!status) return;
+    status.textContent = message;
+  }
+
+  function applyPreset(id) {
+    var preset = PRESETS[id];
+    if (!preset || (id === 'spread' && window.innerWidth < 768)) return;
+    var preservedPage = clampInt(state.currentPage, 1, state.totalPages || 1, 1);
+    var patch = {};
+    for (var key in preset) {
+      if (Object.prototype.hasOwnProperty.call(preset, key)) patch[key] = preset[key];
+    }
+    applyPrefPatch(patch, true);
+    var nextPrefs = layoutPrefs();
+    var nextPage = nextPrefs.layout === 'double' ? spreadStart(preservedPage, nextPrefs) : preservedPage;
+    goToPage(nextPage);
+    var label = id === 'flow' ? 'Flow' : (id === 'page' ? 'Page' : 'Spread');
+    announceSetting(label + ' selected.');
+  }
+
+  function restoreDefaults() {
+    // Restore only the curated surface. Hidden legacy settings stay intact so
+    // restoring style never destroys a keymap, tap zones, notes, or auto-next.
+    var current = effectivePrefs();
+    var recommendedTone = current.bg === 'custom' ? 'custom' : 'black';
+    var recommended = {
+      layout: PRESETS.flow.layout,
+      fit: PRESETS.flow.fit,
+      maxW: PRESETS.flow.maxW,
+      gap: PRESETS.flow.gap,
+      doubleCover: PRESETS.flow.doubleCover,
+      direction: 'ltr',
+      bg: recommendedTone
+    };
+    applyPrefPatch(recommended, true);
+    announceSetting('Recommended settings restored.');
   }
 
   /** `#reader-remember-series` writes or deletes the per-series override. */
@@ -704,12 +779,14 @@
     state.sheetOpen = false;
     var sheet = document.getElementById('reader-sheet');
     if (sheet) sheet.hidden = true;
+    var focusOn = document.body && document.body.getAttribute('data-r-focus') === '1';
+    if (!focusOn) showChrome();
+    var focusTarget = focusOn
+      ? document.getElementById('reader-focus-exit')
+      : document.getElementById('reader-settings-btn');
     var btn = document.getElementById('reader-settings-btn');
-    if (btn) {
-      btn.setAttribute('aria-expanded', 'false');
-      // Contract §8.2: focus returns to the settings button on close.
-      btn.focus();
-    }
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    if (focusTarget) focusTarget.focus();
     // The idle timers were suppressed while the sheet was open; re-arm them.
     resetDimTimer();
   }
@@ -769,7 +846,7 @@
         if (pref === 'dimDelay') patch[pref] = parseInt(value, 10) || 0;
         if (pref === 'layout' && value === 'double' && window.innerWidth < 768) return;
         if (el.getAttribute('aria-pressed') === 'true' && !BOOL_PREFS[pref]) return;
-        applyPrefPatch(patch);
+        applyPrefPatch(patch, pref === 'direction' || pref === 'bg');
       });
       return;
     }
@@ -797,9 +874,17 @@
   function bindPrefControls() {
     var controls = $$('[data-pref]');
     for (var i = 0; i < controls.length; i++) {
-      if (controls[i].id === 'reader-zone-editor') continue; // handled by the zone editor
-      if (controls[i].classList.contains('reader-keybind-row')) continue; // handled by the keymap UI
+      if (controls[i].id === 'reader-zone-editor') continue; // kept for older reader markup
+      if (controls[i].classList.contains('reader-keybind-row')) continue; // kept for older reader markup
       bindPrefControl(controls[i]);
+    }
+
+    var presets = $$('.reader-preset-btn[data-r-preset]');
+    for (var p = 0; p < presets.length; p++) {
+      presets[p].addEventListener('click', function (e) {
+        e.stopPropagation();
+        applyPreset(e.currentTarget.getAttribute('data-r-preset'));
+      });
     }
   }
 
@@ -815,6 +900,13 @@
     var focusBtn = document.getElementById('reader-focus-btn');
     if (focusBtn) {
       focusBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        toggleFocus();
+      });
+    }
+    var focusExit = document.getElementById('reader-focus-exit');
+    if (focusExit) {
+      focusExit.addEventListener('click', function (e) {
         e.stopPropagation();
         toggleFocus();
       });
@@ -839,7 +931,7 @@
         selectSheetGroup(e.currentTarget.getAttribute('data-group'));
       });
     }
-    selectSheetGroup('layout');
+    selectSheetGroup('reading');
 
     var remember = $('#reader-remember-series');
     if (remember) {
@@ -853,7 +945,7 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Tab') trapFocus(e);
     });
-    var actionEls = $$('.reader-sheet-group [data-action]');
+    var actionEls = $$('.reader-sheet-panel [data-action]');
     for (var ai = 0; ai < actionEls.length; ai++) {
       if (actionEls[ai].classList.contains('reader-keybind-row')) continue;
       actionEls[ai].addEventListener('click', function (e) {
@@ -971,7 +1063,7 @@
 
   function renderLayout() {
     if (!state.isReader) return;
-    var p = effectivePrefs();
+    var p = layoutPrefs();
     syncZoneMode(p.layout);
 
     // `strip` and `vertical` are both scroll-driven; their pages must all stay
@@ -1007,7 +1099,7 @@
 
   function scrollPageIntoView(el, block) {
     if (!el) return;
-    var p = effectivePrefs();
+    var p = layoutPrefs();
     if (p.layout === 'vertical') {
       var container = document.getElementById('reader-images');
       if (container && container.scrollTo) {
@@ -1045,7 +1137,7 @@
     state.navigated = true;
     state.currentPage = idx;
 
-    var p = effectivePrefs();
+    var p = layoutPrefs();
     if (p.layout !== 'strip') renderLayout();
     scrollPageIntoView(pageElByIndex(idx) || pageElByIndex(spreadStart(idx, p)), 'start');
     updateIndicator();
@@ -1082,7 +1174,7 @@
 
   /** Advance/retreat by one page-step, honouring the chapter boundaries. */
   function step(delta) {
-    var p = effectivePrefs();
+    var p = layoutPrefs();
     var size = p.layout === 'double' ? 2 : 1;
     var target = state.currentPage + (delta > 0 ? size : -size);
     if (p.layout === 'double') target = spreadStart(target, p);
@@ -1090,7 +1182,7 @@
   }
 
   function navigateTo(target, forward) {
-    var p = effectivePrefs();
+    var p = layoutPrefs();
     var total = state.totalPages;
 
     if (target < 1) {
@@ -1439,27 +1531,24 @@
       case 'ui.focus': toggleFocus(); break;
       case 'ui.fitCycle': cycleFit(); break;
       case 'layout.cycle': cycleLayout(); break;
+      case 'ui.restoreDefaults': restoreDefaults(); break;
       case 'note.add': openComposer(); break;
       default: break;
     }
   }
 
-  /** Cycle fit: none → height → screen (contract §4.3). */
+  /** Fit shortcuts now cycle the public preset model, never a hidden fit mode. */
   function cycleFit() {
-    // Fit does not apply to strip (controller ruling), so the cycle is a no-op
-    // there rather than a silent pref change the layout ignores.
-    if (effectivePrefs().layout === 'strip') return;
-    var order = ['', 'height', 'screen'];
-    var next = order[(order.indexOf(effectivePrefs().fit) + 1) % order.length];
-    applyPrefPatch({ fit: next });
+    cycleLayout();
   }
 
   function cycleLayout() {
-    var next = LAYOUTS[(LAYOUTS.indexOf(effectivePrefs().layout) + 1) % LAYOUTS.length];
-    if (next === 'double' && window.innerWidth < 768) {
-      next = LAYOUTS[(LAYOUTS.indexOf(next) + 1) % LAYOUTS.length];
-    }
-    applyPrefPatch({ layout: next });
+    var ids = ['flow', 'page', 'spread'];
+    var current = activePreset(layoutPrefs());
+    var index = ids.indexOf(current);
+    var next = ids[(index + 1) % ids.length];
+    if (next === 'spread' && window.innerWidth < 768) next = 'flow';
+    applyPreset(next);
   }
 
   function onKeydown(e) {
@@ -1497,7 +1586,7 @@
       if (isEditable(e.target)) { tracking = false; return; }
       // Vertical layouts are scroll-driven; a horizontal swipe has no page to
       // step (§4.4).
-      var layout = effectivePrefs().layout;
+      var layout = layoutPrefs().layout;
       if (layout === 'strip' || layout === 'vertical') { tracking = false; return; }
       startX = e.touches[0].clientX;
       startY = e.touches[0].clientY;
@@ -1554,7 +1643,7 @@
   }
 
   function maybeAutoNextStrip() {
-    var p = effectivePrefs();
+    var p = layoutPrefs();
     if (!p.autoNext || !state.nextUrl) return;
     if (autoNextCancelled()) return;
     var last = pageElByIndex(state.totalPages);
@@ -1571,7 +1660,7 @@
   }
 
   function maybeEndOfChapter() {
-    var p = effectivePrefs();
+    var p = layoutPrefs();
     var boundary = p.layout === 'double' ? lastSpreadIndex(p) : state.totalPages;
     if (state.currentPage >= boundary) {
       if (p.layout !== 'strip') revealChapterNav();
@@ -1708,6 +1797,7 @@
     var on = document.body.getAttribute('data-r-focus') !== '1';
     if (on) document.body.setAttribute('data-r-focus', '1');
     else document.body.removeAttribute('data-r-focus');
+    syncControls();
     showChrome();
   }
 
@@ -1786,9 +1876,17 @@
     return '';
   }
 
+  function updateNavigationHint() {
+    var hint = document.getElementById('reader-hint');
+    if (!hint) return;
+    var layout = layoutPrefs().layout;
+    hint.textContent = layout === 'strip' ? 'Scroll to read' : 'Tap sides to navigate pages';
+  }
+
   function initHint() {
     var hint = document.getElementById('reader-hint');
     if (!hint) return;
+    updateNavigationHint();
     if (state.local && state.local.hintSeen) {
       hint.classList.add('hidden');
       return;
@@ -2121,10 +2219,6 @@
       }, { passive: true });
     });
 
-    // Sheet button that opens the composer (the server markup has none today;
-    // the lookup is null-safe so a later template change lights it up).
-    var addBtn = $('.reader-sheet-group [data-action="note.add"]');
-    if (addBtn) addBtn.addEventListener('click', function (e) { e.stopPropagation(); openComposer(); });
   }
 
   // ============================================================
@@ -2133,7 +2227,7 @@
 
   function rememberScrollPosition() {
     if (!state.local) return;
-    var p = effectivePrefs();
+    var p = layoutPrefs();
     if (p.layout === 'vertical') {
       // `vertical` scrolls inside `#reader-images` (a y-snap container), not
       // the window, so `window.scrollY` stays ~0 (finding 2). Read the
@@ -2305,7 +2399,7 @@
 
   function initResumeFromScroll() {
     var chapterId = state.chapterId;
-    var p = effectivePrefs();
+    var p = layoutPrefs();
     var saved = state.local && state.local.scrollPositions ? state.local.scrollPositions[String(chapterId)] : 0;
     if (!saved || typeof saved !== 'number') return;
 
@@ -2384,7 +2478,7 @@
 
     // Navigation and input.
     window.addEventListener('scroll', function () {
-      if (effectivePrefs().layout === 'strip') {
+      if (layoutPrefs().layout === 'strip') {
         if (state.scrollTimer) return;
         state.scrollTimer = setTimeout(function () {
           state.scrollTimer = null;
@@ -2403,7 +2497,7 @@
     var snapContainer = document.getElementById('reader-images');
     if (snapContainer) {
       snapContainer.addEventListener('scroll', function () {
-        if (effectivePrefs().layout !== 'vertical') return;
+        if (layoutPrefs().layout !== 'vertical') return;
         state.currentPage = computeStripPage() || state.currentPage;
         state.navigated = true;
         updateIndicator();
@@ -2419,7 +2513,9 @@
       applyPrefs();
       selectSheetGroup(currentGroup());
     });
+    window.addEventListener('pagehide', flushPendingPrefs);
     window.addEventListener('beforeunload', function () {
+      flushPendingPrefs();
       // Preserve a resume page the reader never navigated away from; only a
       // real page step updates the stored position.
       var page = state.navigated ? state.currentPage : (state.resumePage || state.currentPage);
@@ -2449,7 +2545,7 @@
 
   function currentGroup() {
     var selected = $('.reader-sheet-tab[aria-selected="true"]');
-    return selected ? selected.getAttribute('data-group') : 'layout';
+    return selected ? selected.getAttribute('data-group') : 'reading';
   }
 
   buildApi();

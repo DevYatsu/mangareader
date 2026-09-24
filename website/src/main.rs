@@ -10,8 +10,8 @@ mod scraper_helper;
 mod templates;
 
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use mangaread_core::db;
 use std::collections::HashMap;
@@ -65,8 +65,6 @@ pub struct AppState {
     pub adapter_health: Mutex<HashMap<String, AdapterHealth>>,
 }
 
-
-
 /// Application entrypoint.
 ///
 /// Initializes tracing, opens the SQLite database (with WAL mode and a busy
@@ -76,8 +74,9 @@ pub struct AppState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let conn = db::open_db()?;
@@ -90,22 +89,32 @@ async fn main() -> anyhow::Result<()> {
         db: Mutex::new(conn),
         sync_error: Mutex::new(None),
         syncing_manga_ids: Mutex::new(Vec::new()),
-        auto_sync: Mutex::new(SyncProgress { running: false, total: 0, current: 0 }),
+        auto_sync: Mutex::new(SyncProgress {
+            running: false,
+            total: 0,
+            current: 0,
+        }),
         adapter_health: Mutex::new(HashMap::from([
-            ("demonicscans".into(), AdapterHealth {
-                source: "demonicscans".into(),
-                healthy: true,
-                consecutive_failures: 0,
-                last_attempt: "never".into(),
-                last_error: None,
-            }),
-            ("manhuaplus".into(), AdapterHealth {
-                source: "manhuaplus".into(),
-                healthy: true,
-                consecutive_failures: 0,
-                last_attempt: "never".into(),
-                last_error: None,
-            }),
+            (
+                "demonicscans".into(),
+                AdapterHealth {
+                    source: "demonicscans".into(),
+                    healthy: true,
+                    consecutive_failures: 0,
+                    last_attempt: "never".into(),
+                    last_error: None,
+                },
+            ),
+            (
+                "manhuaplus".into(),
+                AdapterHealth {
+                    source: "manhuaplus".into(),
+                    healthy: true,
+                    consecutive_failures: 0,
+                    last_attempt: "never".into(),
+                    last_error: None,
+                },
+            ),
         ])),
     });
 
@@ -118,21 +127,51 @@ async fn main() -> anyhow::Result<()> {
         .route("/series", get(crate::routes::series::series_list))
         .route("/series/{id}", get(crate::routes::series::series_detail))
         .route("/bookmarks", get(crate::routes::bookmarks::bookmarks_page))
-        .route("/login", get(crate::routes::auth_pages::login_page).post(crate::routes::auth_pages::login_submit))
-        .route("/register", get(crate::routes::auth_pages::register_page).post(crate::routes::auth_pages::register_submit))
+        .route(
+            "/login",
+            get(crate::routes::auth_pages::login_page)
+                .post(crate::routes::auth_pages::login_submit),
+        )
+        .route(
+            "/register",
+            get(crate::routes::auth_pages::register_page)
+                .post(crate::routes::auth_pages::register_submit),
+        )
         .route("/logout", post(crate::routes::auth_pages::logout))
         .route("/forgot", get(crate::routes::password_reset::forgot_page))
-        .route("/reset/{token}", get(crate::routes::password_reset::reset_page).post(crate::routes::password_reset::reset_submit))
+        .route(
+            "/reset/{token}",
+            get(crate::routes::password_reset::reset_page)
+                .post(crate::routes::password_reset::reset_submit),
+        )
         .route("/auth/{provider}", get(crate::routes::oauth::oauth_start))
-        .route("/auth/{provider}/callback", get(crate::routes::oauth::oauth_callback))
+        .route(
+            "/auth/{provider}/callback",
+            get(crate::routes::oauth::oauth_callback),
+        )
         .route("/settings", get(crate::routes::settings::settings_page))
-        .route("/settings/profile", post(crate::routes::settings::profile_submit))
-        .route("/settings/appearance", post(crate::routes::settings::appearance_submit))
-        .route("/settings/password", post(crate::routes::settings::password_submit))
+        .route(
+            "/settings/profile",
+            post(crate::routes::settings::profile_submit),
+        )
+        .route(
+            "/settings/appearance",
+            post(crate::routes::settings::appearance_submit),
+        )
+        .route(
+            "/settings/password",
+            post(crate::routes::settings::password_submit),
+        )
         .route("/admin", get(crate::routes::admin::dashboard))
-        .route("/admin/branding", get(crate::routes::admin::branding_page).post(crate::routes::admin::branding_submit))
+        .route(
+            "/admin/branding",
+            get(crate::routes::admin::branding_page).post(crate::routes::admin::branding_submit),
+        )
         .route("/admin/users", get(crate::routes::admin::users_page))
-        .route("/admin/users/{id}/reset-link", post(crate::routes::admin::user_reset_link))
+        .route(
+            "/admin/users/{id}/reset-link",
+            post(crate::routes::admin::user_reset_link),
+        )
         .route("/terms", get(crate::routes::legal::terms))
         .route("/privacy", get(crate::routes::legal::privacy))
         .route("/source/{source}", get(crate::routes::source::source_list))
@@ -141,25 +180,44 @@ async fn main() -> anyhow::Result<()> {
             "/read/{manga_id}/{chapter_id}",
             get(crate::routes::reader::chapter_reader),
         )
-        .route("/api/check-manga/{id}", get(crate::routes::check::check_manga))
-        .route("/api/check-chapter/{id}", get(crate::routes::check::check_chapter))
+        .route(
+            "/api/check-manga/{id}",
+            get(crate::routes::check::check_manga),
+        )
+        .route(
+            "/api/check-chapter/{id}",
+            get(crate::routes::check::check_chapter),
+        )
         .route("/api/sync-status", get(crate::routes::api::sync_status))
         .route("/api/sync-manga/{id}", post(crate::routes::api::sync_manga))
-        .route("/api/progress-series", get(crate::routes::api::progress_series))
-        .route("/api/bookmarks", get(crate::routes::sync::get_bookmarks).post(crate::routes::sync::set_bookmark))
-        .route("/api/progress", get(crate::routes::sync::get_progress).post(crate::routes::sync::post_progress))
+        .route(
+            "/api/progress-series",
+            get(crate::routes::api::progress_series),
+        )
+        .route(
+            "/api/bookmarks",
+            get(crate::routes::sync::get_bookmarks).post(crate::routes::sync::set_bookmark),
+        )
+        .route(
+            "/api/progress",
+            get(crate::routes::sync::get_progress).post(crate::routes::sync::post_progress),
+        )
         .route("/api/history", post(crate::routes::sync::post_history))
         .route("/api/migrate", post(crate::routes::sync::post_migrate))
         .route(
             "/api/reader-prefs",
-            get(crate::routes::reader_prefs::get_prefs).post(crate::routes::reader_prefs::post_prefs),
+            get(crate::routes::reader_prefs::get_prefs)
+                .post(crate::routes::reader_prefs::post_prefs),
         )
         .route(
             "/api/notes",
             get(crate::routes::notes::list_notes).post(crate::routes::notes::create_note),
         )
         .route("/health", get(crate::routes::health::health))
-        .route("/favicon.ico", get(|| async { axum::response::Redirect::permanent("/static/favicon.svg") }))
+        .route(
+            "/favicon.ico",
+            get(|| async { axum::response::Redirect::permanent("/static/favicon.svg") }),
+        )
         .nest_service(
             "/static",
             ServeDir::new(

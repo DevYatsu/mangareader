@@ -12,14 +12,14 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
 };
-use maud::{html, Markup};
 use mangaread_core::domain::Role;
+use maud::{Markup, html};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    auth::{require_role, AuthUser},
     AppState,
+    auth::{AuthUser, require_role},
 };
 
 /// Homepage sections the branding form offers as checkboxes (stored CSV).
@@ -190,10 +190,7 @@ fn branding_content(
 }
 
 /// GET `/admin` — dashboard with section links + current theme name.
-pub async fn dashboard(
-    State(state): State<Arc<AppState>>,
-    user: AuthUser,
-) -> Response {
+pub async fn dashboard(State(state): State<Arc<AppState>>, user: AuthUser) -> Response {
     if require_role(&user, Role::Admin).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -214,10 +211,7 @@ pub async fn dashboard(
 }
 
 /// GET `/admin/branding` — branding form prefilled from stored settings.
-pub async fn branding_page(
-    State(state): State<Arc<AppState>>,
-    user: AuthUser,
-) -> Response {
+pub async fn branding_page(State(state): State<Arc<AppState>>, user: AuthUser) -> Response {
     if require_role(&user, Role::Admin).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -262,7 +256,10 @@ pub async fn branding_submit(
         ("seo_description".into(), form.seo_description.clone()),
         ("legal_terms".into(), form.legal_terms.clone()),
         ("legal_privacy".into(), form.legal_privacy.clone()),
-        ("home_sections".into(), normalize_sections(&form.home_sections).join(",")),
+        (
+            "home_sections".into(),
+            normalize_sections(&form.home_sections).join(","),
+        ),
     ]);
     let checked = normalize_sections(&form.home_sections);
     let render_400 = |msg: &str| {

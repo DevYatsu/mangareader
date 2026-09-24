@@ -30,7 +30,10 @@ pub trait SiteAdapter: Send + Sync {
     /// # Returns
     /// A list of discovered manga entries. The [`MangaListing::detail_url`] is passed to
     /// [`fetch_manga`] during the second phase.
-    async fn discover_manga(&self, driver: &thirtyfour::WebDriver) -> anyhow::Result<Vec<MangaListing>>;
+    async fn discover_manga(
+        &self,
+        driver: &thirtyfour::WebDriver,
+    ) -> anyhow::Result<Vec<MangaListing>>;
 
     /// Visit a manga detail page and extract full metadata plus chapter listings.
     ///

@@ -11,6 +11,52 @@
    The contrast test in src/config.rs reads this file.
    ========================================================================== */
 
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/inter-var-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/inter-var-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("/static/fonts/space-grotesk-var-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("/static/fonts/space-grotesk-var-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 /* --------------------------------------------------------------------------
    Part 1 — Bulma palette and scheme overrides
    -------------------------------------------------------------------------- */
@@ -35,9 +81,8 @@
   --bulma-focus-l: var(--bulma-primary-l);
 
   /* Bulma renders anchor color from --bulma-link-* (its factory 233deg /
-     100% / 63% is the blue). The pre-migration `style.css` painted every
-     unclassed anchor with `color: var(--accent)` and `a:hover` with
-     `color: var(--accent-hover)`, so leaving these at Bulma's defaults
+     100% / 63% is the blue). The pre-migration theme painted every unclassed
+     anchor with an accent color, so leaving these at Bulma's defaults
      silently drops links out of the identity. §4.3 keeps the accent
      admin-rebrandable, so bind rather than copy: an admin rebrand moves the
      link color with the accent. */
@@ -69,6 +114,13 @@
   --bulma-family-primary: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --bulma-family-secondary: "Space Grotesk", var(--bulma-family-primary);
   --bulma-body-family: var(--bulma-family-primary);
+
+  /* Content surfaces are quiet paper stock, not glowing panels. */
+  --bulma-shadow-h: 0deg;
+  --bulma-shadow-s: 0%;
+  --bulma-shadow-l: 0%;
+  --bulma-card-background-color: var(--bulma-scheme-main-bis);
+  --bulma-box-background-color: var(--bulma-scheme-main-bis);
 
   /* Calmer corners than Bulma's defaults. */
   --bulma-radius: 0.5rem;
@@ -134,6 +186,14 @@
   color: var(--bulma-text-weak);
 }
 
+.card {
+  --bulma-card-background-color: var(--bulma-scheme-main-bis);
+}
+
+.box {
+  --bulma-box-background-color: var(--bulma-scheme-main-bis);
+}
+
 /* Bulma has no empty-state component. */
 .m-empty {
   padding: 3rem 1.5rem;
@@ -142,11 +202,243 @@
 }
 
 .m-empty-icon {
+  display: inline-flex;
+  width: 2.5rem;
+  height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bulma-border);
+  border-radius: 50%;
   margin-bottom: 1rem;
   color: var(--bulma-border);
 }
 
-/* Site chrome: the wordmark pairs the logo mark with the display face. */
+/* Shared cover frame: a fixed 2:3 crop keeps grid rhythm across surfaces. */
+.m-cover {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  margin: 0;
+  border-radius: var(--m-cover-radius);
+  background: var(--bulma-scheme-main-ter);
+  box-shadow: none;
+}
+
+.m-cover > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.m-cover [data-cover-placeholder] {
+  position: absolute;
+  inset: 0;
+  background: var(--bulma-scheme-main-ter);
+}
+
+.m-cover [data-cover-initial] {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--bulma-text-weak);
+  font-family: var(--m-font-display);
+  font-size: clamp(2rem, 12vw, 4rem);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.m-cover [data-cover-badge] {
+  position: absolute;
+  right: 0.5rem;
+  bottom: 0.5rem;
+  z-index: 2;
+}
+
+.m-cover [data-cover-overlay] {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--bulma-scheme-main);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--m-dur) var(--m-ease);
+}
+
+.card:hover .m-cover [data-cover-overlay] {
+  opacity: 0.28;
+}
+
+.card-image > a,
+.card-image > .m-cover {
+  display: block;
+}
+
+.card-content .title {
+  margin-bottom: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+ul#recent-chapters {
+  padding-left: 0;
+  list-style: none;
+}
+
+#series-detail-hero {
+  align-items: flex-start;
+  margin-bottom: 2.5rem;
+}
+
+#series-detail-hero .media-left {
+  flex: 0 0 clamp(7rem, 22vw, 15rem);
+  margin-right: 1.5rem;
+}
+
+#series-detail-hero .media-content {
+  min-width: 0;
+}
+
+#continue-reading-container .columns.is-flex-wrap-nowrap {
+  overflow-x: auto;
+  padding-bottom: 0.75rem;
+  scrollbar-width: thin;
+}
+
+.m-chapter-row {
+  list-style: none;
+  border-bottom: 1px solid var(--bulma-border);
+}
+
+.m-chapter-row > a {
+  display: flex;
+  min-height: 3rem;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  color: var(--bulma-text-strong);
+}
+
+.m-chapter-row > a:hover {
+  background: var(--bulma-scheme-main-ter);
+}
+
+.m-chapter-row .ch-status-icon {
+  flex: 0 0 0.5rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border: 1px solid var(--bulma-border);
+  border-radius: 50%;
+}
+
+.m-chapter-row.ch-unread .ch-status-icon {
+  background: var(--bulma-primary);
+  border-color: var(--bulma-primary);
+}
+
+.m-chapter-row.ch-finished .ch-status-icon {
+  background: var(--bulma-text-weak);
+  border-color: var(--bulma-text-weak);
+}
+
+.m-chapter-row.ch-started > a {
+  background: var(--bulma-scheme-main-bis);
+  box-shadow: inset 3px 0 0 var(--bulma-primary);
+}
+
+.m-chapter-row .chapter-num {
+  min-width: 4.5rem;
+  font-weight: 600;
+}
+
+.m-chapter-row .chapter-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.m-chapter-row .ch-resume {
+  color: var(--bulma-primary);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.m-chapter-row .chapter-arrow {
+  margin-left: auto;
+}
+
+.m-source-toggle {
+  cursor: pointer;
+}
+
+#toast-container {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: calc(100vw - 2rem);
+}
+
+[data-toast] {
+  position: static;
+  max-width: min(24rem, calc(100vw - 2rem));
+  margin-bottom: 0;
+  box-shadow: none;
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity var(--m-dur) var(--m-ease), transform var(--m-dur) var(--m-ease);
+}
+
+[data-toast].removing {
+  opacity: 0;
+  transform: translateY(0.5rem);
+}
+
+.m-legal-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.7;
+}
+
+@media (max-width: 767px) {
+  #series-detail-hero {
+    display: block;
+  }
+
+  #series-detail-hero .media-left {
+    width: min(12rem, 70%);
+    margin: 0 0 1.25rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .m-chapter-row > a {
+    flex-wrap: wrap;
+  }
+
+  .m-chapter-row .chapter-num {
+    min-width: 3.5rem;
+  }
+
+  .m-chapter-row .chapter-source {
+    max-width: 8rem;
+  }
+
+  .m-chapter-row .ch-resume {
+    margin-left: 1.25rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-toast],
+  .m-cover [data-cover-overlay] {
+    transition: none;
+  }
+}
+
 .m-wordmark {
   gap: 0.625rem;
   font-family: var(--m-font-display);

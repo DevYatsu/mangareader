@@ -5,16 +5,16 @@
 //! `400` and an inline error message.
 
 use axum::{
+    Form,
     extract::State,
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
-    Form,
 };
-use maud::{html, Markup};
+use maud::{Markup, html};
 use serde::Deserialize;
 use std::sync::Arc;
 
-use crate::{auth::AuthUser, AppState};
+use crate::{AppState, auth::AuthUser};
 
 /// Locales the profile form accepts. The page stays English until
 /// Slice 6 i18n; anything else is a `400` re-render.
@@ -62,7 +62,11 @@ fn current_profile(conn: &rusqlite::Connection, user_id: i64) -> CurrentProfile 
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     );
     match row {
-        Ok((name, locale, theme)) => CurrentProfile { name, locale, theme },
+        Ok((name, locale, theme)) => CurrentProfile {
+            name,
+            locale,
+            theme,
+        },
         Err(_) => CurrentProfile {
             name: String::new(),
             locale: "en".into(),
@@ -71,11 +75,7 @@ fn current_profile(conn: &rusqlite::Connection, user_id: i64) -> CurrentProfile 
     }
 }
 
-fn page(
-    cfg: &crate::config::SiteConfig,
-    content: Markup,
-    user: Option<&AuthUser>,
-) -> Html<String> {
+fn page(cfg: &crate::config::SiteConfig, content: Markup, user: Option<&AuthUser>) -> Html<String> {
     let banner: Option<String> = None;
     let css = cfg.css_overrides();
     Html(
@@ -154,10 +154,7 @@ fn settings_content(
 }
 
 /// GET `/settings` — profile + appearance + password forms on one page.
-pub async fn settings_page(
-    State(state): State<Arc<AppState>>,
-    user: AuthUser,
-) -> Html<String> {
+pub async fn settings_page(State(state): State<Arc<AppState>>, user: AuthUser) -> Html<String> {
     let (cfg, current) = {
         let db = state.db.lock().await;
         (
@@ -165,7 +162,11 @@ pub async fn settings_page(
             current_profile(&db, user.id),
         )
     };
-    page(&cfg, settings_content(&current, None, None, None), Some(&user))
+    page(
+        &cfg,
+        settings_content(&current, None, None, None),
+        Some(&user),
+    )
 }
 
 fn render_400(
@@ -312,8 +313,7 @@ pub async fn password_submit(
             current_profile(&db, user.id),
         )
     };
-    let render_failed = |cfg: &crate::config::SiteConfig,
-                         current: &CurrentProfile| {
+    let render_failed = |cfg: &crate::config::SiteConfig, current: &CurrentProfile| {
         render_400(
             cfg,
             current,

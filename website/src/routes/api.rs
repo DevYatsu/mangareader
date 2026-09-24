@@ -96,9 +96,12 @@ pub async fn sync_manga(
             {
                 Ok(d) => d,
                 Err(e) => {
-                    *state_clone.sync_error.lock().await =
-                        Some(format!("WebDriver error: {e}"));
-                    state_clone.syncing_manga_ids.lock().await.retain(|&x| x != id);
+                    *state_clone.sync_error.lock().await = Some(format!("WebDriver error: {e}"));
+                    state_clone
+                        .syncing_manga_ids
+                        .lock()
+                        .await
+                        .retain(|&x| x != id);
                     return;
                 }
             };
@@ -106,9 +109,12 @@ pub async fn sync_manga(
             let db = match crate::scraper_helper::open_db() {
                 Ok(db) => db,
                 Err(e) => {
-                    *state_clone.sync_error.lock().await =
-                        Some(format!("DB error: {e}"));
-                    state_clone.syncing_manga_ids.lock().await.retain(|&x| x != id);
+                    *state_clone.sync_error.lock().await = Some(format!("DB error: {e}"));
+                    state_clone
+                        .syncing_manga_ids
+                        .lock()
+                        .await
+                        .retain(|&x| x != id);
                     let _ = driver.quit().await;
                     return;
                 }
@@ -123,7 +129,11 @@ pub async fn sync_manga(
                 tracing::warn!("api sync: driver quit error: {:?}", e);
             }
 
-            state_clone.syncing_manga_ids.lock().await.retain(|&x| x != id);
+            state_clone
+                .syncing_manga_ids
+                .lock()
+                .await
+                .retain(|&x| x != id);
             tracing::info!("api sync: manga {} complete", id);
         });
     });
@@ -166,12 +176,10 @@ pub async fn progress_series(
             continue;
         };
 
-        let chapters =
-            mangaread_core::db::list_chapters_by_manga(&db, m.id).unwrap_or_default();
+        let chapters = mangaread_core::db::list_chapters_by_manga(&db, m.id).unwrap_or_default();
         // Return the first chapter as the resume point
         if let Some(ch) = chapters.first() {
-            let pages =
-                mangaread_core::db::list_pages_by_chapter(&db, ch.id).unwrap_or_default();
+            let pages = mangaread_core::db::list_pages_by_chapter(&db, ch.id).unwrap_or_default();
             results.push(ProgressSeriesItem {
                 id: series_id,
                 title: series.title,

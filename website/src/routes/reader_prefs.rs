@@ -10,8 +10,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::auth::AuthUser;
 use crate::AppState;
+use crate::auth::AuthUser;
 
 /// GET `/api/reader-prefs` — the current user's preferences.
 pub async fn get_prefs(State(state): State<Arc<AppState>>, user: AuthUser) -> Response {
@@ -19,7 +19,13 @@ pub async fn get_prefs(State(state): State<Arc<AppState>>, user: AuthUser) -> Re
         let db = state.db.lock().await;
         match mangaread_core::db::get_reader_prefs(&db, user.id) {
             Ok(p) => p,
-            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false}))).into_response(),
+            Err(_) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"ok": false})),
+                )
+                    .into_response();
+            }
         }
     };
     Json(json!({ "prefs": prefs })).into_response()
@@ -38,7 +44,11 @@ pub async fn post_prefs(
     {
         let db = state.db.lock().await;
         if mangaread_core::db::set_reader_prefs(&db, user.id, &prefs).is_err() {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false}))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"ok": false})),
+            )
+                .into_response();
         }
     }
     Json(json!({ "ok": true, "prefs": prefs })).into_response()

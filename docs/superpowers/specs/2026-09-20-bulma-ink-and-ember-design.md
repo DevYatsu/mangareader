@@ -140,21 +140,73 @@ The ember accent carries hierarchy. That only works if it stays scarce:
 | Screen | Bulma components |
 |---|---|
 | Nav + footer | `navbar`, `navbar-brand`, `navbar-burger`, `navbar-menu`, `navbar-start`, `navbar-end`, `navbar-item`, `footer`, `content` |
-| Home | `hero`, `hero-body`, `title`, `subtitle`, `tags` (stats), `button is-primary is-medium`, `media` (recent rows) |
-| Series list | `field has-addons` (search), `columns is-multiline` + `column is-*-3`, `card` + `image is-2by3` + `tag` |
-| Series detail | `breadcrumb has-arrow-separator`, `media`, `level` (actions), `tabs is-toggle` (source filter), `panel` (chapter list) |
-| Bookmarks | as series list |
+| Home | `hero`, `hero-body`, `title`, `subtitle is-4 m-text-muted`, `level` + `tag` (stats), `button is-primary is-medium`, `media` (recent rows) |
+| Series list | `box`, `level`, `field has-addons` (search), `columns is-mobile is-multiline` + exact 2/3/4 columns, `card` + `image is-2by3 m-cover` + `tag` |
+| Series detail | shared `breadcrumb has-arrow-separator`, `media`, `m-cover`, `level` (actions), independent `checkbox.m-source-toggle` filters, `loader`, `ul > li.m-chapter-row` |
+| Bookmarks | as series list; server shell plus client-rendered shared cards |
 | Source list | as series list |
 | Auth / reset / OAuth | `box` in `columns is-centered`, `field`, `control`, `input`, `button is-fullwidth`, `notification is-danger` (errors), `buttons` (OAuth) |
 | Settings | `box` per group, `field is-horizontal`, `select`, `notification is-danger` |
 | Admin dashboard | `box` / `card` grid |
 | Admin branding | `field`, `input`, `input[type=color]`, `radio`, `checkbox`, `textarea` |
 | Admin users | `table is-fullwidth is-hoverable` in `table-container` |
-| Legal / error | `content`, `hero is-fullheight`, `title`, `subtitle`, `button` |
+| Legal | `columns is-centered`, `column is-8-desktop is-10-tablet`, `content`, `m-legal-body` |
+| Error | existing `error_content` path and error primitives remain separate from legal `m-legal-body` |
 
 Bulma defines no navbar "current page" style, so active nav gets exactly one custom
-class (`m-nav-active`). Bulma has no empty-state or list-row primitive, so `m-empty`
-and `m-chapter-row` remain, built from tokens.
+class (`m-nav-active`). Bulma has no empty-state or list-row primitive, so `m-empty`,
+`m-empty-icon`, and `m-chapter-row` remain, built from tokens.
+
+### 5.1 Slice B content rulings
+
+These decisions are binding for the public content routes. They preserve the existing
+routes, forms, links, data hooks, APIs, localStorage keys, and reader behavior.
+
+- **Shared cards and ownership.** Rust and `app.js` render the same manga card
+  structure: `columns is-mobile is-multiline`, `column is-6-mobile is-4-tablet
+  is-3-desktop`, `card`, `card-image`, and `figure.image.is-2by3.m-cover`. The
+  server card helper and browser builders share the same cover, title-link, badge,
+  and empty-state vocabulary. `m-empty`, `m-empty-icon`, and `m-cover` are used by
+  both Rust and `app.js`. Bookmarks are client-rendered through the shared JS card
+  builder; the server does not add bookmark queries.
+- **Covers.** `m-cover` owns the fixed `2:3` frame, placeholder and initial states,
+  badge, and overlay. Its visual state uses only `data-cover-placeholder`,
+  `data-cover-initial`, `data-cover-badge`, and `data-cover-overlay`; the bookmark
+  button/label hooks remain `data-bookmark-button` and `data-bookmark-label`.
+- **Source filters.** Source selection uses independent checkboxes inside
+  `#source-toggles`: each filter is a `p.control` containing
+  `label.checkbox.m-source-toggle` and its input. It does not use `tabs is-toggle`.
+  `#source-reset`, the `mangaread_sources` localStorage key, source values,
+  independent filtering, and reset behavior are preserved.
+- **Chapter rows.** Chapter navigation is `ul > li.m-chapter-row`. The row retains
+  the `ch-status-icon`, `chapter-num`, `chapter-source`, `ch-resume`, and
+  `chapter-arrow` child hooks, plus the existing `data-series-id`, `data-sources`,
+  `data-source`, and `data-chapter-id` hooks. The `ch-unread`, `ch-started`,
+  `ch-finished`, and `ch-resume` state hooks, read URLs, and inline filtering
+  contract are preserved. `data-pages` remains absent; a started chapter remains
+  `Resume p.N`, and a page-total resume suffix remains deferred.
+- **Headers, breadcrumbs, and fallbacks.** Series, source, and bookmarks list
+  headers use a Bulma `level`. Detail and source routes use the shared breadcrumb
+  helper and `breadcrumb has-arrow-separator`. Existing `/series/{id}` links and
+  `/manga/{id}` fallback links remain unchanged.
+- **Home and loading.** Home recent chapters use `ul#recent-chapters` with
+  `media` rows, `media-content`, `media-right`, and the existing relative-time
+  text. Home stats use `level` and `tag`; continue reading remains a client-rendered
+  scroll strip. Series loading uses `.loader`, with `.m-text-muted` for its hint.
+  `m-text-muted` also covers home time text and source counts.
+- **Search contract.** The `/series` form remains server-rendered with the same
+  action, method, `name="q"`, reflected value, `q.trim()` filtering,
+  zero-chapter filtering, and no-JavaScript behavior. No client filter, pagination,
+  or query parameter is added.
+- **Legal content.** Legal pages use `m-legal-body` inside a centered Bulma
+  content column. It is separate from the existing `error_content` path; legal
+  plain text remains escaped and preserves newlines.
+- **Responsive grid.** Every shared content grid uses the exact
+  `columns is-mobile is-multiline` plus `is-6-mobile is-4-tablet is-3-desktop`
+  column modifiers: two columns on mobile, three on tablet, and four on desktop.
+- **Surface treatment.** The transparent shadow-token decision is
+  `--bulma-shadow-h: 0deg`, `--bulma-shadow-s: 0%`, and `--bulma-shadow-l: 0%`.
+  Cards and boxes use the scheme's raised surface rather than a glow.
 
 ## 6. Custom primitives (complete list)
 
@@ -167,13 +219,15 @@ being listed here first.
 | `m-empty` | No empty-state component | home, series, bookmarks, source |
 | `m-empty-icon` | No muted icon slot inside an empty state | empty states |
 | `m-chapter-row` | No data-row primitive for a dense chapter list | series detail |
-| `m-cover` | Fixed 2:3 cover frame with placeholder fallback | grids, series hero |
+| `m-source-toggle` | No independent multi-source checkbox group primitive | series detail source filters |
+| `m-cover` | Fixed 2:3 cover frame with placeholder/initial, badge, and overlay states | grids, series hero |
+| `m-legal-body` | No legal plain-text body primitive that preserves wrapped source newlines | legal pages |
 | `m-range` | Bulma does not style `input[type=range]` | reader width/gap, zone editor |
 | `m-reader-*` | Fullscreen surface, HUD, click zones, dim, offline, next-up, countdown, sheet geometry, note pins | reader only (§7.1) |
 | `m-display` | Bulma emits no font-family for `.title` (`--bulma-title-family` is false), so the display face needs an explicit hook | display headings |
 | `m-wordmark` | No site-chrome wordmark component | navbar brand |
 | `m-footer` | No footer-spacing primitive | footer |
-| `m-text-muted` | Bulma's `has-text-grey*` utilities emit hardcoded cool hex: `--bulma-grey*` is a literal **no rule consumes**, so the tokens are dead. `has-text-grey` measures 3.99:1 on `scheme-main` and 3.81:1 on `scheme-main-bis`, below WCAG AA 4.5:1. `m-text-muted` binds `var(--bulma-text-weak)`, the token the `config.rs` contrast guard models (5.02:1 on `--bulma-background-l`) | footer, auth link blocks |
+| `m-text-muted` | Bulma's `has-text-grey*` utilities emit hardcoded cool hex: `--bulma-grey*` is a literal **no rule consumes**, so the tokens are dead. `has-text-grey` measures 3.99:1 on `scheme-main` and 3.81:1 on `scheme-main-bis`, below WCAG AA 4.5:1. `m-text-muted` binds `var(--bulma-text-weak)`, the token the `config.rs` contrast guard models (5.02:1 on `--bulma-background-l`) | footer, auth link blocks, home time, loading hints, source counts |
 
 The four Slice-A additions `m-display`, `m-wordmark`, `m-footer`, and `m-empty-icon`
 exist in `theme.css` but were absent from the original list above; they are recorded

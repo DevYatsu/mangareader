@@ -5,17 +5,17 @@
 //! format as the session helpers in `crate::auth`).
 
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use mangaread_core::{db, domain::Progress};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{auth::AuthUser, AppState};
+use crate::{AppState, auth::AuthUser};
 
 /// Last-write-wins guard: true = incoming row wins (string `>=` on ISO8601
 /// `updated_at`, which orders chronologically in this fixed-width format).
@@ -80,10 +80,7 @@ fn validate_progress(page: i64, status: &str) -> Option<Response> {
 }
 
 /// GET /api/bookmarks → `{"series":[ids]}`.
-pub async fn get_bookmarks(
-    State(state): State<Arc<AppState>>,
-    user: AuthUser,
-) -> Response {
+pub async fn get_bookmarks(State(state): State<Arc<AppState>>, user: AuthUser) -> Response {
     let series = {
         let conn = state.db.lock().await;
         db::list_bookmarks(&conn, user.id)
@@ -281,17 +278,17 @@ pub async fn post_migrate(
         return db_error(e);
     }
     match tx.commit() {
-        Ok(()) => Json(
-            serde_json::json!({"ok": true, "bookmarks": n_bookmarks, "progress": n_progress}),
-        )
-        .into_response(),
+        Ok(()) => {
+            Json(serde_json::json!({"ok": true, "bookmarks": n_bookmarks, "progress": n_progress}))
+                .into_response()
+        }
         Err(e) => db_error(e),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_progress, validate_progress, valid_status};
+    use super::{merge_progress, valid_status, validate_progress};
 
     #[test]
     fn newer_incoming_wins() {

@@ -158,6 +158,22 @@ Segmented controls: `div.reader-seg` with `button.reader-seg-btn[data-value][ari
 - Sheet panel: `max-height: 80dvh`, `overflow-y: auto`, `padding-bottom: max(1rem, env(safe-area-inset-bottom))`.
 - Tabs scroll horizontally with `scroll-snap-type: x mandatory`, no scrollbar.
 
+### 3.3.1 Curated reader surface (current product ruling)
+
+The reader exposes three opinionated reading styles instead of a dense matrix of independent low-level controls:
+
+| Preset | Layout | Behavior |
+|---|---|---|
+| `flow` (default) | `strip` | Long, seamless vertical scroll; tap zones are hidden. |
+| `page` | `single` | One page at a time. `vertical` is treated as the same public preset. |
+| `spread` | `double` | Book-like pairs; unavailable below `768px`. |
+
+The visible sheet retains only reading order, page tone, focus mode, add note, per-series memory, and restore recommended settings. The existing preference blob continues to store advanced fields (`keybinds`, `clickZones`, `swipeThreshold`, auto-next, dim, notes, and fit values) so existing behavior and stored data are not lost, but those fields are intentionally hidden from the public settings surface. `L` and the legacy fit shortcut cycle the same three public preset IDs; neither introduces a hidden fourth layout or fit state.
+
+Custom backgrounds remain compatible: when `bg=custom` is already stored, the sheet shows a selected, non-editable **Custom** tone. The stored `bgCustom` value is never replaced by a color picker. Restore recommended settings resets only the curated preset, tone, and reading-order fields; it preserves hidden legacy preferences and preserves a custom tone.
+
+On screens narrower than `768px`, a stored Spread is rendered as Page without rewriting the stored preference. Resizing back to a wide viewport restores the saved Spread. The navigation hint is layout-aware: Flow says “Scroll to read”; Page and Spread say “Tap sides to navigate pages.” Notes remain discoverable through the sheet’s compact **Add note** action, in addition to the long-press gesture.
+
 ### 3.4 "Remember for this series"
 
 `input#reader-remember-series` at the **top** of the sheet, above the tabs, so it applies to whatever follows.
@@ -206,7 +222,7 @@ Default bindings (namespaced action ids, not raw keys):
 | `chapter.prev` | `Shift+ArrowLeft`, `KeyP` | Previous chapter. |
 | `ui.toggle` | `KeyS`, `Escape` | Toggle sheet. `Escape` also closes. |
 | `ui.focus` | `KeyF` | Focus mode. |
-| `ui.fitCycle` | `KeyW` | Cycle fit: none → height → screen. |
+| `ui.fitCycle` | `KeyW` | Compatibility shortcut: cycles the public preset IDs; it does not expose a hidden fit mode. |
 | `layout.cycle` | `KeyL` | Cycle layout. |
 | `note.add` | `KeyM` | Open note composer on the current page. |
 

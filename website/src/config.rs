@@ -119,7 +119,12 @@ pub fn hex_to_hsl(hex: &str) -> (f64, f64, f64) {
 fn lighten(hex: &str, amount: f32) -> String {
     let (r, g, b) = parse_hex(hex);
     let lerp = |a: u8, t: f32| (a as f32 + (255.0 - a as f32) * t) as u8;
-    format!("#{:02x}{:02x}{:02x}", lerp(r, amount), lerp(g, amount), lerp(b, amount))
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        lerp(r, amount),
+        lerp(g, amount),
+        lerp(b, amount)
+    )
 }
 
 impl SiteConfig {
@@ -382,7 +387,11 @@ mod contrast {
     }
 
     fn scheme_luminance(lightness_pct: f64) -> f64 {
-        luminance(angle(&token("bulma-scheme-h")), percent(&token("bulma-scheme-s")), lightness_pct)
+        luminance(
+            angle(&token("bulma-scheme-h")),
+            percent(&token("bulma-scheme-s")),
+            lightness_pct,
+        )
     }
 
     fn ratio(a: f64, b: f64) -> f64 {
@@ -413,7 +422,10 @@ mod contrast {
 
     #[test]
     fn body_text_meets_wcag_aa() {
-        let r = ratio(text_luminance(percent(&token("bulma-text-l"))), scheme_main());
+        let r = ratio(
+            text_luminance(percent(&token("bulma-text-l"))),
+            scheme_main(),
+        );
         assert!(r >= 4.5, "--bulma-text-l contrast is {r:.2}:1, need >= 4.5");
     }
 
@@ -423,7 +435,10 @@ mod contrast {
             text_luminance(percent(&token("bulma-text-weak-l"))),
             background_luminance(),
         );
-        assert!(r >= 4.5, "--bulma-text-weak-l contrast is {r:.2}:1, need >= 4.5");
+        assert!(
+            r >= 4.5,
+            "--bulma-text-weak-l contrast is {r:.2}:1, need >= 4.5"
+        );
     }
 
     /// §4.1 requires greys to read as warm ink. That is now enforced, so a
@@ -475,6 +490,9 @@ mod contrast {
             scheme_luminance(percent(&token("bulma-scheme-main-bis-l"))),
             scheme_main(),
         );
-        assert!(r > 1.0, "scheme-main-bis is indistinguishable from scheme-main");
+        assert!(
+            r > 1.0,
+            "scheme-main-bis is indistinguishable from scheme-main"
+        );
     }
 }

@@ -7,11 +7,19 @@
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Provider { Google, Github, Discord }
+pub enum Provider {
+    Google,
+    Github,
+    Discord,
+}
 
 impl Provider {
     pub fn key(&self) -> &'static str {
-        match self { Provider::Google => "google", Provider::Github => "github", Provider::Discord => "discord" }
+        match self {
+            Provider::Google => "google",
+            Provider::Github => "github",
+            Provider::Discord => "discord",
+        }
     }
     pub fn from_key(s: &str) -> Option<Provider> {
         match s {
@@ -23,7 +31,9 @@ impl Provider {
     }
     fn env_prefix(&self) -> &'static str {
         match self {
-            Provider::Google => "GOOGLE", Provider::Github => "GITHUB", Provider::Discord => "DISCORD",
+            Provider::Google => "GOOGLE",
+            Provider::Github => "GITHUB",
+            Provider::Discord => "DISCORD",
         }
     }
     fn auth_endpoint(&self) -> &'static str {
@@ -60,7 +70,9 @@ impl Provider {
 pub fn credentials(p: Provider) -> Option<(String, String)> {
     let id = std::env::var(format!("MANGAREAD_OAUTH_{}_ID", p.env_prefix())).ok()?;
     let secret = std::env::var(format!("MANGAREAD_OAUTH_{}_SECRET", p.env_prefix())).ok()?;
-    if id.is_empty() || secret.is_empty() { return None; }
+    if id.is_empty() || secret.is_empty() {
+        return None;
+    }
     Some((id, secret))
 }
 
@@ -102,9 +114,17 @@ pub struct OAuthProfile {
 }
 
 #[derive(Deserialize)]
-struct TokenResponse { access_token: String }
+struct TokenResponse {
+    access_token: String,
+}
 
-pub async fn exchange_code(p: Provider, client_id: &str, client_secret: &str, code: &str, base: &str) -> Result<String, String> {
+pub async fn exchange_code(
+    p: Provider,
+    client_id: &str,
+    client_secret: &str,
+    code: &str,
+    base: &str,
+) -> Result<String, String> {
     let redirect = format!("{base}/auth/{}/callback", p.key());
     let client = reqwest::Client::new();
     let resp = client
@@ -125,13 +145,40 @@ pub async fn exchange_code(p: Provider, client_id: &str, client_secret: &str, co
 }
 
 #[derive(Deserialize, Default)]
-struct GoogleUser { #[serde(default)] sub: String, #[serde(default)] email: Option<String>, #[serde(default)] email_verified: bool, #[serde(default)] name: Option<String> }
+struct GoogleUser {
+    #[serde(default)]
+    sub: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    email_verified: bool,
+    #[serde(default)]
+    name: Option<String>,
+}
 #[derive(Deserialize, Default)]
-struct GithubUser { #[serde(default)] id: i64, #[serde(default)] login: String }
+struct GithubUser {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    login: String,
+}
 #[derive(Deserialize)]
-struct GithubEmail { email: String, primary: bool, verified: bool }
+struct GithubEmail {
+    email: String,
+    primary: bool,
+    verified: bool,
+}
 #[derive(Deserialize, Default)]
-struct DiscordUser { #[serde(default)] id: String, #[serde(default)] username: String, #[serde(default)] email: Option<String>, #[serde(default)] verified: bool }
+struct DiscordUser {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    username: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    verified: bool,
+}
 
 pub async fn fetch_profile(p: Provider, access_token: &str) -> Result<OAuthProfile, String> {
     let client = reqwest::Client::builder()
@@ -140,9 +187,15 @@ pub async fn fetch_profile(p: Provider, access_token: &str) -> Result<OAuthProfi
         .map_err(|e| e.to_string())?;
     match p {
         Provider::Google => {
-            let u: GoogleUser = client.get(p.userinfo_endpoint()).bearer_auth(access_token)
-                .send().await.map_err(|e| e.to_string())?
-                .json().await.map_err(|e| e.to_string())?;
+            let u: GoogleUser = client
+                .get(p.userinfo_endpoint())
+                .bearer_auth(access_token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .json()
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(OAuthProfile {
                 provider_user_id: u.sub,
                 email: u.email.clone(),
@@ -151,13 +204,27 @@ pub async fn fetch_profile(p: Provider, access_token: &str) -> Result<OAuthProfi
             })
         }
         Provider::Github => {
-            let u: GithubUser = client.get(p.userinfo_endpoint()).bearer_auth(access_token)
-                .send().await.map_err(|e| e.to_string())?
-                .json().await.map_err(|e| e.to_string())?;
-            let emails: Vec<GithubEmail> = client.get("https://api.github.com/user/emails").bearer_auth(access_token)
-                .send().await.map_err(|e| e.to_string())?
-                .json().await.map_err(|e| e.to_string())?;
-            let pick = emails.iter().find(|e| e.primary && e.verified)
+            let u: GithubUser = client
+                .get(p.userinfo_endpoint())
+                .bearer_auth(access_token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .json()
+                .await
+                .map_err(|e| e.to_string())?;
+            let emails: Vec<GithubEmail> = client
+                .get("https://api.github.com/user/emails")
+                .bearer_auth(access_token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .json()
+                .await
+                .map_err(|e| e.to_string())?;
+            let pick = emails
+                .iter()
+                .find(|e| e.primary && e.verified)
                 .or_else(|| emails.iter().find(|e| e.verified));
             Ok(OAuthProfile {
                 provider_user_id: u.id.to_string(),
@@ -167,9 +234,15 @@ pub async fn fetch_profile(p: Provider, access_token: &str) -> Result<OAuthProfi
             })
         }
         Provider::Discord => {
-            let u: DiscordUser = client.get(p.userinfo_endpoint()).bearer_auth(access_token)
-                .send().await.map_err(|e| e.to_string())?
-                .json().await.map_err(|e| e.to_string())?;
+            let u: DiscordUser = client
+                .get(p.userinfo_endpoint())
+                .bearer_auth(access_token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
+                .json()
+                .await
+                .map_err(|e| e.to_string())?;
             Ok(OAuthProfile {
                 provider_user_id: u.id,
                 email: u.email.clone(),

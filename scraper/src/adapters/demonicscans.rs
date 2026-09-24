@@ -31,7 +31,10 @@ impl SiteAdapter for DemonicscansAdapter {
         helpers::wait_for_page(driver, "demonicscans index").await;
 
         let page_source = driver.source().await?;
-        tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
+        tracing::info!(
+            "page source fetched ({} bytes), parsing HTML...",
+            page_source.len()
+        );
         let document = Html::parse_document(&page_source);
 
         // Find manga entry links
@@ -102,16 +105,15 @@ impl SiteAdapter for DemonicscansAdapter {
         Ok(manga)
     }
 
-    async fn fetch_manga(
-        &self,
-        driver: &WebDriver,
-        detail_url: &str,
-    ) -> anyhow::Result<MangaInfo> {
+    async fn fetch_manga(&self, driver: &WebDriver, detail_url: &str) -> anyhow::Result<MangaInfo> {
         driver.goto(detail_url).await?;
         helpers::wait_for_page(driver, &format!("demonicscans detail")).await;
 
         let page_source = driver.source().await?;
-        tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
+        tracing::info!(
+            "page source fetched ({} bytes), parsing HTML...",
+            page_source.len()
+        );
         let document = Html::parse_document(&page_source);
 
         // Extract title from the page
@@ -138,9 +140,10 @@ impl SiteAdapter for DemonicscansAdapter {
             .map(|e| e.text().collect::<String>().trim().to_string());
 
         // Extract cover image
-        let cover_sel =
-            Selector::parse("img[class*='cover'], .manga-cover img, img[class*='thumbnail'], #manga-page img")
-                .unwrap();
+        let cover_sel = Selector::parse(
+            "img[class*='cover'], .manga-cover img, img[class*='thumbnail'], #manga-page img",
+        )
+        .unwrap();
         let cover_url = document
             .select(&cover_sel)
             .next()
@@ -148,10 +151,7 @@ impl SiteAdapter for DemonicscansAdapter {
             .map(|s| helpers::make_absolute(self.base_url(), s));
 
         // Extract chapter links
-        let ch_sel = Selector::parse(
-            "#chapters-list a, a.chplinks, a[href*='chapter=']",
-        )
-        .unwrap();
+        let ch_sel = Selector::parse("#chapters-list a, a.chplinks, a[href*='chapter=']").unwrap();
         let chapters: Vec<ChapterListing> = document
             .select(&ch_sel)
             .filter_map(|e| {
@@ -174,7 +174,11 @@ impl SiteAdapter for DemonicscansAdapter {
         tracing::info!(
             "parsed manga: title=\"{title}\" author={} description={} cover={} chapters={}",
             author.as_deref().unwrap_or("none"),
-            if description.is_some() { "found" } else { "none" },
+            if description.is_some() {
+                "found"
+            } else {
+                "none"
+            },
             cover_url.as_deref().unwrap_or("none"),
             chapters.len(),
         );
@@ -200,7 +204,10 @@ impl SiteAdapter for DemonicscansAdapter {
         helpers::wait_for_page(driver, "demonicscans chapter").await;
 
         let page_source = driver.source().await?;
-        tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
+        tracing::info!(
+            "page source fetched ({} bytes), parsing HTML...",
+            page_source.len()
+        );
         let document = Html::parse_document(&page_source);
 
         // Try multiple selector patterns for chapter images
@@ -241,10 +248,12 @@ impl SiteAdapter for DemonicscansAdapter {
         tracing::info!(
             "page extraction complete: {} pages found{}",
             pages.len(),
-            if pages.is_empty() { " (no images detected!)" } else { "" }
+            if pages.is_empty() {
+                " (no images detected!)"
+            } else {
+                ""
+            }
         );
         Ok(pages)
     }
 }
-
-

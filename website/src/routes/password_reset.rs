@@ -1,10 +1,10 @@
 //! Forgot-password + reset-token pages.
 
 use axum::{
+    Form,
     extract::{Path, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
-    Form,
 };
 use maud::html;
 use serde::Deserialize;

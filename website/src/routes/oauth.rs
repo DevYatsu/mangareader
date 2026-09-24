@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{AppendHeaders, Html, IntoResponse, Response},
 };
 use mangaread_core::domain::{NewUser, Role};
@@ -10,9 +10,9 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::{
-    auth::{lifetime_for_remember, new_token, session_expires_at, set_cookie_value, AuthUser},
-    oauth::{self, Provider},
     AppState,
+    auth::{AuthUser, lifetime_for_remember, new_token, session_expires_at, set_cookie_value},
+    oauth::{self, Provider},
 };
 
 const STATE_COOKIE: &str = "oauth_state";
@@ -27,9 +27,8 @@ fn state_cookie_value(value: &str, max_age_secs: i64) -> String {
 /// Pure cookie builder; `secure` is passed in so the logic is testable without
 /// mutating process environment variables.
 fn state_cookie_with_secure(value: &str, max_age_secs: i64, secure: bool) -> String {
-    let mut cookie = format!(
-        "{STATE_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}"
-    );
+    let mut cookie =
+        format!("{STATE_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}");
     if secure {
         cookie.push_str("; Secure");
     }
@@ -48,18 +47,17 @@ fn error_page(cfg: &crate::config::SiteConfig, msg: &str, user: Option<&AuthUser
                 &cfg.site_title,
                 user,
                 crate::templates::layout::Nav::None,
-            ).0,
+            )
+            .0,
         ),
-    ).into_response()
+    )
+        .into_response()
 }
 
 /// GET `/auth/{provider}` — set a state cookie, redirect to the provider.
 /// No state needed (pure redirect); `user` is accepted and ignored so logged-in
 /// users can link-state identically — the callback links by email when matched.
-pub async fn oauth_start(
-    Path(provider_key): Path<String>,
-    user: Option<AuthUser>,
-) -> Response {
+pub async fn oauth_start(Path(provider_key): Path<String>, user: Option<AuthUser>) -> Response {
     let _ = user;
     let Some(p) = Provider::from_key(&provider_key) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -76,19 +74,28 @@ pub async fn oauth_start(
             (header::SET_COOKIE, state_cookie_value(&state_token, 600)),
         ],
         "",
-    ).into_response()
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
-pub struct CallbackQuery { code: Option<String>, state: Option<String>, error: Option<String> }
+pub struct CallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
 
 fn state_from_headers(headers: &HeaderMap) -> Option<String> {
     for raw in headers.get_all(axum::http::header::COOKIE).iter() {
         let Ok(s) = raw.to_str() else { continue };
         for part in s.split(';') {
             let part = part.trim();
-            let Some((name, value)) = part.split_once('=') else { continue };
-            if name.trim() == STATE_COOKIE { return Some(value.trim().to_string()); }
+            let Some((name, value)) = part.split_once('=') else {
+                continue;
+            };
+            if name.trim() == STATE_COOKIE {
+                return Some(value.trim().to_string());
+            }
         }
     }
     None
@@ -113,7 +120,9 @@ pub async fn oauth_callback(
     let Some((client_id, client_secret)) = oauth::credentials(p) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if q.error.is_some() { return fail("Login with this provider was cancelled."); }
+    if q.error.is_some() {
+        return fail("Login with this provider was cancelled.");
+    }
     let (Some(code), Some(returned_state)) = (q.code.as_deref(), q.state.as_deref()) else {
         return fail("Login with this provider failed.");
     };
@@ -122,20 +131,30 @@ pub async fn oauth_callback(
         _ => return fail("Login with this provider failed."),
     }
     // Network calls run without the db guard held.
-    let profile = match oauth::exchange_code(p, &client_id, &client_secret, code, &oauth::base_url()).await {
-        Ok(token) => match oauth::fetch_profile(p, &token).await {
-            Ok(profile) => profile,
+    let profile =
+        match oauth::exchange_code(p, &client_id, &client_secret, code, &oauth::base_url()).await {
+            Ok(token) => match oauth::fetch_profile(p, &token).await {
+                Ok(profile) => profile,
+                Err(_) => return fail("Login with this provider failed."),
+            },
             Err(_) => return fail("Login with this provider failed."),
-        },
-        Err(_) => return fail("Login with this provider failed."),
-    };
+        };
     let email = match (profile.email.clone(), profile.email_verified) {
         (Some(e), true) => e,
-        _ => return fail(&format!("could not verify an email address with {}", p.key())),
+        _ => {
+            return fail(&format!(
+                "could not verify an email address with {}",
+                p.key()
+            ));
+        }
     };
     let marker = format!("OAUTH:{}:{}", p.key(), profile.provider_user_id);
     let name: String = profile.display_name.chars().take(32).collect();
-    let name = if name.trim().is_empty() { "reader".to_string() } else { name };
+    let name = if name.trim().is_empty() {
+        "reader".to_string()
+    } else {
+        name
+    };
     let db = state.db.lock().await;
     // 1. already linked → login
     if let Ok(u) = mangaread_core::db::find_user_by_oauth(&db, p.key(), &profile.provider_user_id) {
@@ -143,7 +162,9 @@ pub async fn oauth_callback(
     }
     // 2. matching verified email → link then login
     if let Ok(u) = mangaread_core::db::find_user_by_email(&db, &email) {
-        if mangaread_core::db::link_oauth_account(&db, u.id, p.key(), &profile.provider_user_id).is_err() {
+        if mangaread_core::db::link_oauth_account(&db, u.id, p.key(), &profile.provider_user_id)
+            .is_err()
+        {
             return fail("Login with this provider failed.");
         }
         return open_session(&db, u.id, &format!("oauth:{}", p.key()));
@@ -154,11 +175,20 @@ pub async fn oauth_callback(
         Ok(_) => Role::Member,
         Err(_) => return fail("Login with this provider failed."),
     };
-    let id = match mangaread_core::db::create_user(&db, &NewUser { name, email, password_hash: marker, role }) {
+    let id = match mangaread_core::db::create_user(
+        &db,
+        &NewUser {
+            name,
+            email,
+            password_hash: marker,
+            role,
+        },
+    ) {
         Ok(id) => id,
         Err(_) => return fail("Login with this provider failed."),
     };
-    if mangaread_core::db::link_oauth_account(&db, id, p.key(), &profile.provider_user_id).is_err() {
+    if mangaread_core::db::link_oauth_account(&db, id, p.key(), &profile.provider_user_id).is_err()
+    {
         return fail("Login with this provider failed.");
     }
     open_session(&db, id, &format!("oauth:{}", p.key()))
@@ -170,10 +200,16 @@ pub async fn oauth_callback(
 /// which replaces prior values of the same header key — the second `SET_COOKIE`
 /// would drop the session cookie.
 /// `&MutexGuard<Connection>` coerces to `&Connection` via Deref at the call.
-fn open_session(db: &tokio::sync::MutexGuard<'_, rusqlite::Connection>, user_id: i64, device: &str) -> Response {
+fn open_session(
+    db: &tokio::sync::MutexGuard<'_, rusqlite::Connection>,
+    user_id: i64,
+    device: &str,
+) -> Response {
     let max_age = lifetime_for_remember(true);
     let token = new_token();
-    if mangaread_core::db::insert_session(db, user_id, &token, &session_expires_at(max_age), device).is_err() {
+    if mangaread_core::db::insert_session(db, user_id, &token, &session_expires_at(max_age), device)
+        .is_err()
+    {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     open_session_response(set_cookie_value(&token, max_age))
@@ -191,7 +227,8 @@ fn open_session_response(session_cookie: String) -> Response {
             (header::LOCATION, "/".to_string()),
         ]),
         "",
-    ).into_response()
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -209,9 +246,21 @@ mod tests {
             .iter()
             .map(|v| v.to_str().unwrap())
             .collect();
-        assert_eq!(cookies.len(), 2, "expected two set-cookie headers: {cookies:?}");
-        assert!(cookies.iter().any(|c| c.contains("mangaread_session=tok-1")));
-        assert!(cookies.iter().any(|c| c.contains("oauth_state=;") && c.contains("Max-Age=0")));
+        assert_eq!(
+            cookies.len(),
+            2,
+            "expected two set-cookie headers: {cookies:?}"
+        );
+        assert!(
+            cookies
+                .iter()
+                .any(|c| c.contains("mangaread_session=tok-1"))
+        );
+        assert!(
+            cookies
+                .iter()
+                .any(|c| c.contains("oauth_state=;") && c.contains("Max-Age=0"))
+        );
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/");
     }

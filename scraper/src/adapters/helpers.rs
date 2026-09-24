@@ -42,7 +42,11 @@ pub fn make_absolute(base_origin: &str, href: &str) -> String {
         format!("{}{}", base_origin.trim_end_matches('/'), href)
     } else {
         // relative path
-        format!("{}/{}", base_origin.trim_end_matches('/'), href.trim_start_matches('/'))
+        format!(
+            "{}/{}",
+            base_origin.trim_end_matches('/'),
+            href.trim_start_matches('/')
+        )
     }
 }
 
@@ -99,14 +103,29 @@ mod tests {
 
     #[test]
     fn test_extract_from_url() {
-        assert_eq!(extract_chapter_number("/manga/slug/chapter-124"), Some(124.0));
-        assert_eq!(extract_chapter_number("https://site.com/manga/x/chapter-522-6"), Some(522.6));
+        assert_eq!(
+            extract_chapter_number("/manga/slug/chapter-124"),
+            Some(124.0)
+        );
+        assert_eq!(
+            extract_chapter_number("https://site.com/manga/x/chapter-522-6"),
+            Some(522.6)
+        );
     }
 
     #[test]
     fn test_make_absolute() {
-        assert_eq!(make_absolute("https://example.com", "/path"), "https://example.com/path");
-        assert_eq!(make_absolute("https://example.com", "https://other.com/x"), "https://other.com/x");
-        assert_eq!(make_absolute("https://example.com", "relative"), "https://example.com/relative");
+        assert_eq!(
+            make_absolute("https://example.com", "/path"),
+            "https://example.com/path"
+        );
+        assert_eq!(
+            make_absolute("https://example.com", "https://other.com/x"),
+            "https://other.com/x"
+        );
+        assert_eq!(
+            make_absolute("https://example.com", "relative"),
+            "https://example.com/relative"
+        );
     }
 }

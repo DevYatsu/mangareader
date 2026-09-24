@@ -1,6 +1,6 @@
 use crate::auth::AuthUser;
-use maud::{html, Markup, PreEscaped, DOCTYPE};
 use mangaread_core::domain::Role;
+use maud::{DOCTYPE, Markup, PreEscaped, html};
 
 /// Which top-level page is currently displayed, used to mark the active
 /// navbar entry.
@@ -56,9 +56,6 @@ pub fn base_layout(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1.0";
                 title { (title) " — " (site_title) }
-                link rel="preconnect" href="https://fonts.googleapis.com";
-                link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="";
-                link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap";
                 link rel="stylesheet" href="/static/vendor/bulma.min.css";
                 link rel="stylesheet" href="/static/theme.css";
                 link rel="icon" type="image/svg+xml" href="/static/favicon.svg";

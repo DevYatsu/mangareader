@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use thirtyfour::manager::BrowserKind;
 use thirtyfour::ChromiumLikeCapabilities;
+use thirtyfour::manager::BrowserKind;
 
 use crate::AppState;
 
@@ -35,7 +35,11 @@ fn find_chromedriver() -> String {
     if let Ok(path) = std::env::var("CHROMEDRIVER_PATH") {
         return path;
     }
-    let which = if cfg!(target_os = "windows") { "where" } else { "which" };
+    let which = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
     if let Ok(out) = std::process::Command::new(which)
         .arg("chromedriver")
         .output()
@@ -105,9 +109,7 @@ pub(crate) fn build_engine() -> scraper::engine::ScraperEngine {
     engine.add_adapter(Box::new(
         scraper::adapters::demonicscans::DemonicscansAdapter,
     ));
-    engine.add_adapter(Box::new(
-        scraper::adapters::manhuaplus::ManhuaplusAdapter,
-    ));
+    engine.add_adapter(Box::new(scraper::adapters::manhuaplus::ManhuaplusAdapter));
     engine
 }
 
@@ -269,7 +271,11 @@ async fn sync_single_manga(manga_id: i64, state: Arc<AppState>) {
         let mut h = state.adapter_health.lock().await;
         if let Some(entry) = h.get_mut(src) {
             if !entry.healthy {
-                tracing::info!("adapter {} recovered after {} failures", src, entry.consecutive_failures);
+                tracing::info!(
+                    "adapter {} recovered after {} failures",
+                    src,
+                    entry.consecutive_failures
+                );
             }
             entry.healthy = true;
             entry.consecutive_failures = 0;
@@ -350,14 +356,15 @@ pub fn start_sync_loop(state: Arc<AppState>) {
             let _ = scan_driver.quit().await;
 
             // ── 2. Get manga IDs needing sync ──
-            let manga_ids = match mangaread_core::db::list_manga_ids_needing_sync(&scan_db, STALE_MINUTES) {
-                Ok(ids) => ids,
-                Err(e) => {
-                    tracing::error!("sync loop: DB query failed: {:?}", e);
-                    tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_SECS)).await;
-                    continue;
-                }
-            };
+            let manga_ids =
+                match mangaread_core::db::list_manga_ids_needing_sync(&scan_db, STALE_MINUTES) {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        tracing::error!("sync loop: DB query failed: {:?}", e);
+                        tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_SECS)).await;
+                        continue;
+                    }
+                };
 
             let total = manga_ids.len();
             if total == 0 {
@@ -394,7 +401,9 @@ pub fn start_sync_loop(state: Arc<AppState>) {
                         rt.block_on(async move {
                             sync_single_manga(mid, state_clone.clone()).await;
 
-                            let done = completed_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                            let done = completed_clone
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                                + 1;
                             let mut p = state_clone.auto_sync.lock().await;
                             p.current = done;
                         });

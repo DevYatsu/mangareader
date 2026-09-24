@@ -54,7 +54,11 @@
       container = h('div', { id: 'toast-container' });
       document.body.appendChild(container);
     }
-    const el = h('div', { className: 'toast ' + type, textContent: message });
+    const el = h('div', {
+      className: 'notification ' + (type === 'success' ? 'is-success' : 'is-danger'),
+      'data-toast': true,
+      textContent: message,
+    });
     container.appendChild(el);
     setTimeout(function () {
       el.classList.add('removing');
@@ -95,12 +99,12 @@
   /** Apply source filter checkboxes and show/hide chapter list items accordingly. */
   function applySourceFilters() {
     const enabled = getEnabledSources();
-    const toggles = document.querySelectorAll('.source-toggle input');
+    const toggles = document.querySelectorAll('.m-source-toggle input');
     toggles.forEach(t => {
       t.checked = enabled.length === 0 || enabled.indexOf(t.value) >= 0;
     });
     // Show/hide chapters
-    document.querySelectorAll('.chapter-list > li[data-source]').forEach(li => {
+    document.querySelectorAll('#chapter-list > li[data-source]').forEach(li => {
       const src = li.getAttribute('data-source');
       const visible = enabled.length === 0 || enabled.indexOf(src) >= 0;
       li.style.display = visible ? '' : 'none';
@@ -172,7 +176,7 @@
    */
   function applyReadStatus(seriesId) {
     const state = window.MangaReadState.getReadState(seriesId);
-    document.querySelectorAll('.chapter-list > li[data-chapter-id]').forEach(li => {
+    document.querySelectorAll('#chapter-list > li[data-chapter-id]').forEach(li => {
       const chId = li.getAttribute('data-chapter-id');
       const info = state['ch_' + chId];
       li.classList.remove('ch-unread', 'ch-started', 'ch-finished');
@@ -180,11 +184,9 @@
         li.classList.add('ch-unread');
       } else if (info.status === 'started') {
         li.classList.add('ch-started');
-        // Add resume badge if there's a saved page
-        const numPages = parseInt(li.getAttribute('data-pages') || '0', 10);
         const resumeLink = li.querySelector('.ch-resume');
         if (resumeLink && info.page) {
-          resumeLink.textContent = 'Resume p.' + info.page + (numPages ? '/' + numPages : '');
+          resumeLink.textContent = 'Resume p.' + info.page;
           resumeLink.style.display = '';
         }
       } else if (info.status === 'finished') {
@@ -194,20 +196,83 @@
   }
 
   // ============================================================
-  //  CONTINUE READING
+  //  SHARED CONTENT BUILDERS
   // ============================================================
 
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+  function buildCover({ href, title, coverUrl, badge, alt }) {
+    const figure = h('figure', { className: 'image is-2by3 m-cover' });
+    if (coverUrl) {
+      figure.appendChild(h('img', {
+        src: coverUrl,
+        alt: alt == null ? title : alt,
+        loading: 'lazy',
+      }));
+    } else {
+      figure.appendChild(h('span', { 'data-cover-placeholder': true, 'aria-hidden': 'true' }));
+      figure.appendChild(h('span', { 'data-cover-initial': true, textContent: (title || '?').charAt(0) }));
+    }
+    if (badge) {
+      figure.appendChild(h('span', {
+        className: 'tag is-primary is-light',
+        'data-cover-badge': true,
+        textContent: badge,
+      }));
+    }
+    figure.appendChild(h('span', { 'data-cover-overlay': true, 'aria-hidden': 'true' }));
+    if (href) return h('a', { href: href, 'aria-label': title }, figure);
+    return figure;
+  }
+
+  function buildMangaCard({ href, title, coverUrl, badge, variant, progress }) {
+    const card = h('div', { className: 'card' });
+    card.appendChild(h('div', { className: 'card-image' },
+      buildCover({ href: href, title: title, coverUrl: coverUrl, badge: badge, alt: title })
+    ));
+    const content = h('div', { className: 'card-content' },
+      h('a', { href: href }, h('p', { className: 'title is-6', textContent: title }))
+    );
+    if (variant === 'continue' && progress) {
+      const value = progress.totalPages > 0
+        ? Math.round((progress.page / progress.totalPages) * 100)
+        : 0;
+      content.appendChild(h('progress', {
+        className: 'progress is-primary is-small',
+        max: 100,
+        value: value,
+      }));
+      content.appendChild(h('p', {
+        className: 'is-size-7 m-text-muted',
+        textContent: 'p. ' + progress.page + (progress.totalPages > 0 ? ' / ' + progress.totalPages : ''),
+      }));
+    }
+    if (variant === 'grid') {
+      const seriesId = href.split('/').pop();
+      const button = h('button', {
+        className: 'button is-small is-ghost',
+        'data-series-id': seriesId,
+        'data-bookmark-button': true,
+      }, h('span', {
+        'data-bookmark-label': true,
+        textContent: 'Bookmark',
+      }));
+      content.appendChild(button);
+    }
+    card.appendChild(content);
+    return card;
+  }
+
+  function buildEmptyState(message) {
+    return h('div', { className: 'm-empty' },
+      h('span', { className: 'm-empty-icon', 'aria-hidden': 'true' }),
+      h('p', { textContent: message })
+    );
   }
 
   function initContinueReading() {
     const container = document.getElementById('continue-reading-container');
     if (!container) return;
 
-    // Collect unique series IDs from localStorage
+    // Collect unique series IDs from localStorage.
     const inProgress = {};
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
@@ -237,30 +302,23 @@
           container.remove();
           return;
         }
-        let html = '<h2 class="section-title">Continue Reading</h2>';
-        html += '<div class="continue-scroll">';
+        container.innerHTML = '';
+        container.appendChild(h('h2', { className: 'title is-3', textContent: 'Continue Reading' }));
+        const strip = h('div', { className: 'columns is-mobile is-flex-wrap-nowrap' });
         data.forEach(function (item) {
-          const cover = item.cover_url || '';
-          const url = '/read/' + item.manga_id + '/' + item.chapter_id;
-          const pct = item.total_pages > 0
-            ? Math.round((item.page / item.total_pages) * 100)
-            : 0;
-          html += '<a href="' + url + '" class="continue-card">';
-          html += '<div class="cover-wrapper"' + (cover ? ' style="background-image: url(\'' + cover.replace(/'/g, '%27') + '\')"' : '') + '>';
-          html += '<div class="continue-overlay">';
-          html += '<span class="continue-ch">Ch. ' + item.chapter_number + '</span>';
-          if (item.total_pages > 0) {
-            html += '<div class="continue-pct">p. ' + item.page + ' / ' + item.total_pages + '</div>';
-          }
-          html += '</div>';
-          html += '<div class="continue-progress">';
-          html += '<div class="continue-progress-bar" style="width:' + pct + '%"></div>';
-          html += '</div>';
-          html += '</div>';
-          html += '</a>';
+          const totalPages = item.total_pages || 0;
+          strip.appendChild(h('div', { className: 'column is-6-mobile is-4-tablet is-3-desktop' },
+            buildMangaCard({
+              href: '/read/' + item.manga_id + '/' + item.chapter_id,
+              title: item.title,
+              coverUrl: item.cover_url,
+              badge: 'Ch. ' + item.chapter_number,
+              variant: 'continue',
+              progress: { page: item.page || 1, totalPages: totalPages },
+            })
+          ));
         });
-        html += '</div>';
-        container.innerHTML = html;
+        container.appendChild(strip);
       })
       .catch(function () { container.remove(); });
   }
@@ -314,9 +372,11 @@
       if (toggleContainer && sources.length > 1) {
         sources.forEach(src => {
           toggleContainer.appendChild(
-            h('label', { className: 'source-toggle' },
-              h('input', { type: 'checkbox', value: src, onChange: function () { toggleSource(src); } }),
-              ' ' + src
+            h('p', { className: 'control' },
+              h('label', { className: 'checkbox m-source-toggle' },
+                h('input', { type: 'checkbox', value: src, onChange: function () { toggleSource(src); } }),
+                ' ' + src
+              )
             )
           );
         });
@@ -386,14 +446,15 @@
   }
 
   function initBookmarkButtons() {
-    const btns = document.querySelectorAll('.bookmark-btn');
+    const btns = document.querySelectorAll('[data-bookmark-button]');
     btns.forEach(function (btn) {
       const seriesId = parseInt(btn.getAttribute('data-series-id'), 10);
-      const label = btn.querySelector('.bookmark-label');
+      const label = btn.querySelector('[data-bookmark-label]');
 
       function update() {
         const marked = isBookmarked(seriesId);
-        btn.classList.toggle('bookmarked', marked);
+        btn.classList.toggle('is-primary', marked);
+        btn.classList.toggle('is-ghost', !marked);
         if (label) label.textContent = marked ? 'Bookmarked' : 'Bookmark';
       }
 
@@ -461,31 +522,21 @@
         }
         container.innerHTML = '';
         series.forEach(function (s) {
-          const coverContent = s.cover_url
-            ? h('img', { src: s.cover_url, alt: '', loading: 'lazy' })
-            : h('div', { className: 'card-placeholder' });
-          const link = h('a', { href: '/series/' + s.id },
-            h('div', { className: 'cover-wrapper' },
-              coverContent,
-              h('div', { className: 'card-overlay' })
-            ),
-            h('div', { className: 'info' },
-              h('h3', { textContent: s.title })
-            )
-          );
-          const btn = h('button', {
-            className: 'bookmark-btn bookmarked',
-            'data-series-id': s.id,
-            htmlContent: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>'
-          });
-          const card = h('div', { className: 'manga-card' }, link, btn);
-          container.appendChild(card);
+          container.appendChild(h('div', {
+            className: 'column is-6-mobile is-4-tablet is-3-desktop',
+          }, buildMangaCard({
+            href: '/series/' + s.id,
+            title: s.title,
+            coverUrl: s.cover_url,
+            badge: null,
+            variant: 'grid',
+          })));
         });
-        // Wire up bookmark buttons in the grid
         initBookmarkButtons();
       })
       .catch(function () {
-        container.innerHTML = '<div class="empty-state"><p>Failed to load bookmarks.</p></div>';
+        container.innerHTML = '';
+        container.appendChild(buildEmptyState('Failed to load bookmarks.'));
       });
   }
 

@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use rusqlite::Connection;
 
-use crate::error::Error;
-use crate::domain::*;
 use crate::domain::title::{clean_display_title, normalize_title};
+use crate::domain::*;
+use crate::error::Error;
 
 /// Return the database file path, using `MANGAREAD_DB` env var or a default.
 pub fn database_path() -> String {
@@ -250,11 +250,15 @@ pub fn list_manga_by_source(conn: &Connection, source: &str) -> Result<Vec<Manga
          FROM manga WHERE source = ?1 ORDER BY title",
     )?;
     let rows = stmt.query_map(rusqlite::params![source], map_manga_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// List manga entries from a source site with their scraped chapter count.
-pub fn list_manga_by_source_with_count(conn: &Connection, source: &str) -> Result<Vec<MangaWithCount>, Error> {
+pub fn list_manga_by_source_with_count(
+    conn: &Connection,
+    source: &str,
+) -> Result<Vec<MangaWithCount>, Error> {
     let mut stmt = conn.prepare(
         "SELECT m.id, m.source, m.source_id, m.title, m.author, m.cover_url, m.description, m.detail_url, m.created_at, m.updated_at, m.chapters_synced_at, m.series_id,
                 COALESCE(cnt.c, 0) AS chapter_count
@@ -266,9 +270,13 @@ pub fn list_manga_by_source_with_count(conn: &Connection, source: &str) -> Resul
     let rows = stmt.query_map(rusqlite::params![source], |row| {
         let manga = map_manga_row(row)?;
         let chapter_count: i64 = row.get(12)?;
-        Ok(MangaWithCount { manga, chapter_count })
+        Ok(MangaWithCount {
+            manga,
+            chapter_count,
+        })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// List every manga entry across all sources, ordered by title.
@@ -278,7 +286,8 @@ pub fn list_all_manga(conn: &Connection) -> Result<Vec<Manga>, Error> {
          FROM manga ORDER BY title",
     )?;
     let rows = stmt.query_map([], map_manga_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Fetch a single manga entry by its database id.
@@ -315,7 +324,6 @@ fn map_manga_row(row: &rusqlite::Row) -> rusqlite::Result<Manga> {
 }
 
 // ── Series CRUD ──
-
 
 /// Insert a new series and return its id.
 pub fn insert_series(conn: &Connection, title: &str) -> Result<i64, Error> {
@@ -413,7 +421,8 @@ pub fn list_manga_by_series(conn: &Connection, series_id: i64) -> Result<Vec<Man
          FROM manga WHERE series_id = ?1 ORDER BY source",
     )?;
     let rows = stmt.query_map(rusqlite::params![series_id], map_manga_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Get all manga that are NOT yet linked to any series.
@@ -423,7 +432,8 @@ pub fn list_unlinked_manga(conn: &Connection) -> Result<Vec<Manga>, Error> {
          FROM manga WHERE series_id IS NULL ORDER BY title",
     )?;
     let rows = stmt.query_map([], map_manga_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Link a manga to a series.
@@ -515,7 +525,8 @@ pub fn list_recent_chapters(conn: &Connection, limit: i64) -> Result<Vec<RecentC
             cover_url: row.get(8)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 // ── Chapter CRUD ──
@@ -542,7 +553,8 @@ pub fn list_chapters_by_manga(conn: &Connection, manga_id: i64) -> Result<Vec<Ch
          FROM chapters WHERE manga_id = ?1 ORDER BY number",
     )?;
     let rows = stmt.query_map(rusqlite::params![manga_id], map_chapter_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Fetch a single chapter by its database id.
@@ -594,7 +606,8 @@ pub fn list_pages_by_chapter(conn: &Connection, chapter_id: i64) -> Result<Vec<P
          FROM pages WHERE chapter_id = ?1 ORDER BY page_index",
     )?;
     let rows = stmt.query_map(rusqlite::params![chapter_id], map_page_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Get the IDs of all manga entries that have zero chapters synced.
@@ -610,7 +623,8 @@ pub fn list_manga_ids_with_zero_chapters(conn: &Connection) -> Result<Vec<i64>, 
          ORDER BY m.id",
     )?;
     let ids = stmt.query_map([], |row| row.get::<_, i64>(0))?;
-    ids.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    ids.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Get the total count of manga that have chapters synced.
@@ -629,7 +643,10 @@ pub fn count_manga_with_chapters(conn: &Connection) -> Result<i64, Error> {
 ///
 /// A manga is stale when its `chapters_synced_at` is older than
 /// `stale_minutes` ago. Returns IDs ordered by stalest first.
-pub fn list_manga_ids_needing_sync(conn: &Connection, stale_minutes: i64) -> Result<Vec<i64>, Error> {
+pub fn list_manga_ids_needing_sync(
+    conn: &Connection,
+    stale_minutes: i64,
+) -> Result<Vec<i64>, Error> {
     let mut stmt = conn.prepare(
         "SELECT m.id
          FROM manga m
@@ -644,14 +661,16 @@ pub fn list_manga_ids_needing_sync(conn: &Connection, stale_minutes: i64) -> Res
         rusqlite::params![format!("-{} minutes", stale_minutes)],
         |row| row.get::<_, i64>(0),
     )?;
-    ids.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    ids.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Get all manga IDs (used for full sync pass).
 pub fn list_all_manga_ids(conn: &Connection) -> Result<Vec<i64>, Error> {
     let mut stmt = conn.prepare("SELECT id FROM manga ORDER BY id")?;
     let ids = stmt.query_map([], |row| row.get::<_, i64>(0))?;
-    ids.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    ids.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 fn map_page_row(row: &rusqlite::Row) -> rusqlite::Result<Page> {
@@ -734,9 +753,7 @@ pub fn find_user_by_session(conn: &Connection, token: &str, now: &str) -> Result
         map_user_row,
     )
     .map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => {
-            Error::NotFound(format!("session token={}", token))
-        }
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("session token={}", token)),
         other => other.into(),
     })
 }
@@ -751,7 +768,12 @@ pub fn delete_session(conn: &Connection, token: &str) -> Result<(), Error> {
 }
 
 /// Link an OAuth identity to a user. Idempotent: re-linking is a no-op.
-pub fn link_oauth_account(conn: &Connection, user_id: i64, provider: &str, provider_user_id: &str) -> Result<(), Error> {
+pub fn link_oauth_account(
+    conn: &Connection,
+    user_id: i64,
+    provider: &str,
+    provider_user_id: &str,
+) -> Result<(), Error> {
     conn.execute(
         "INSERT INTO oauth_accounts (user_id, provider, provider_user_id) VALUES (?1, ?2, ?3)
          ON CONFLICT(provider, provider_user_id) DO NOTHING",
@@ -761,7 +783,11 @@ pub fn link_oauth_account(conn: &Connection, user_id: i64, provider: &str, provi
 }
 
 /// Find the user owning an OAuth identity. `NotFound` when unlinked.
-pub fn find_user_by_oauth(conn: &Connection, provider: &str, provider_user_id: &str) -> Result<User, Error> {
+pub fn find_user_by_oauth(
+    conn: &Connection,
+    provider: &str,
+    provider_user_id: &str,
+) -> Result<User, Error> {
     conn.query_row(
         "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.theme, u.created_at
          FROM users u JOIN oauth_accounts o ON o.user_id = u.id
@@ -770,25 +796,31 @@ pub fn find_user_by_oauth(conn: &Connection, provider: &str, provider_user_id: &
         map_user_row,
     )
     .map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => {
-            Error::NotFound(format!("oauth {provider}"))
-        }
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("oauth {provider}")),
         other => other.into(),
     })
 }
 
 /// Provider keys linked to a user (e.g. `["google"]`). Empty when none.
 pub fn user_oauth_providers(conn: &Connection, user_id: i64) -> Result<Vec<String>, Error> {
-    let mut stmt = conn.prepare("SELECT provider FROM oauth_accounts WHERE user_id = ?1 ORDER BY provider")?;
+    let mut stmt =
+        conn.prepare("SELECT provider FROM oauth_accounts WHERE user_id = ?1 ORDER BY provider")?;
     let rows = stmt.query_map(rusqlite::params![user_id], |row| row.get::<_, String>(0))?;
     let mut out = Vec::new();
-    for r in rows { out.push(r?); }
+    for r in rows {
+        out.push(r?);
+    }
     Ok(out)
 }
 
 /// Create a reset token; deletes the user's prior unused tokens first so only
 /// the newest link works.
-pub fn create_password_reset(conn: &Connection, user_id: i64, token: &str, expires_at: &str) -> Result<(), Error> {
+pub fn create_password_reset(
+    conn: &Connection,
+    user_id: i64,
+    token: &str,
+    expires_at: &str,
+) -> Result<(), Error> {
     conn.execute(
         "DELETE FROM password_resets WHERE user_id = ?1 AND used = 0",
         rusqlite::params![user_id],
@@ -803,21 +835,29 @@ pub fn create_password_reset(conn: &Connection, user_id: i64, token: &str, expir
 /// Consume a reset token: returns the `user_id`, marks it used. `NotFound`
 /// when missing, expired, or already used.
 pub fn consume_password_reset(conn: &Connection, token: &str, now: &str) -> Result<i64, Error> {
-    let user_id: i64 = conn.query_row(
-        "SELECT user_id FROM password_resets WHERE token = ?1 AND used = 0 AND expires_at > ?2",
-        rusqlite::params![token, now],
-        |row| row.get(0),
-    ).map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Error::NotFound("reset token".to_string()),
-        other => other.into(),
-    })?;
-    conn.execute("UPDATE password_resets SET used = 1 WHERE token = ?1", rusqlite::params![token])?;
+    let user_id: i64 = conn
+        .query_row(
+            "SELECT user_id FROM password_resets WHERE token = ?1 AND used = 0 AND expires_at > ?2",
+            rusqlite::params![token, now],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Error::NotFound("reset token".to_string()),
+            other => other.into(),
+        })?;
+    conn.execute(
+        "UPDATE password_resets SET used = 1 WHERE token = ?1",
+        rusqlite::params![token],
+    )?;
     Ok(user_id)
 }
 
 /// Delete all sessions of a user (used after password reset).
 pub fn delete_sessions_for_user(conn: &Connection, user_id: i64) -> Result<(), Error> {
-    conn.execute("DELETE FROM sessions WHERE user_id = ?1", rusqlite::params![user_id])?;
+    conn.execute(
+        "DELETE FROM sessions WHERE user_id = ?1",
+        rusqlite::params![user_id],
+    )?;
     Ok(())
 }
 
@@ -828,7 +868,9 @@ pub fn list_users(conn: &Connection) -> Result<Vec<User>, Error> {
     )?;
     let rows = stmt.query_map([], map_user_row)?;
     let mut out = Vec::new();
-    for r in rows { out.push(r?); }
+    for r in rows {
+        out.push(r?);
+    }
     Ok(out)
 }
 
@@ -855,9 +897,8 @@ pub fn set_bookmark(
 
 /// List bookmarked series ids for a user.
 pub fn list_bookmarks(conn: &Connection, user_id: i64) -> Result<Vec<i64>, Error> {
-    let mut stmt = conn.prepare(
-        "SELECT series_id FROM bookmarks WHERE user_id = ?1 ORDER BY series_id",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT series_id FROM bookmarks WHERE user_id = ?1 ORDER BY series_id")?;
     let ids = stmt.query_map(rusqlite::params![user_id], |row| row.get::<_, i64>(0))?;
     ids.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Error::from)
@@ -934,11 +975,7 @@ pub fn insert_note(
 }
 
 /// List a user's notes on a chapter.
-pub fn list_notes(
-    conn: &Connection,
-    user_id: i64,
-    chapter_id: i64,
-) -> Result<Vec<Note>, Error> {
+pub fn list_notes(conn: &Connection, user_id: i64, chapter_id: i64) -> Result<Vec<Note>, Error> {
     let mut stmt = conn.prepare(
         "SELECT id, user_id, chapter_id, page, body, created_at FROM notes
          WHERE user_id = ?1 AND chapter_id = ?2 ORDER BY id",
@@ -994,7 +1031,12 @@ pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, Error
 }
 
 /// Upsert a site setting.
-pub fn set_setting(conn: &Connection, key: &str, value: &str, updated_by: i64) -> Result<(), Error> {
+pub fn set_setting(
+    conn: &Connection,
+    key: &str,
+    value: &str,
+    updated_by: i64,
+) -> Result<(), Error> {
     conn.execute(
         "INSERT INTO site_settings (key, value, updated_by, updated_at) VALUES (?1, ?2, ?3, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = datetime('now')",
         rusqlite::params![key, value, updated_by],
@@ -1056,10 +1098,16 @@ mod tests {
     #[test]
     fn user_roundtrip_and_session_lookup() {
         let conn = mem();
-        let id = create_user(&conn, &NewUser {
-            name: "r".into(), email: "r@x.io".into(),
-            password_hash: "h".into(), role: Role::Member,
-        }).unwrap();
+        let id = create_user(
+            &conn,
+            &NewUser {
+                name: "r".into(),
+                email: "r@x.io".into(),
+                password_hash: "h".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
         assert!(id > 0);
         insert_session(&conn, id, "tok123", "2099-01-01 00:00:00", "test").unwrap();
         let u = find_user_by_session(&conn, "tok123", "2026-01-01 00:00:00").unwrap();
@@ -1071,11 +1119,20 @@ mod tests {
         let conn = mem();
         assert_eq!(get_setting(&conn, "site_title").unwrap(), None);
         set_setting(&conn, "site_title", "MyDen", 1).unwrap();
-        assert_eq!(get_setting(&conn, "site_title").unwrap().as_deref(), Some("MyDen"));
-        let id = create_user(&conn, &NewUser {
-            name: "r".into(), email: "r@x.io".into(),
-            password_hash: "h".into(), role: Role::Member,
-        }).unwrap();
+        assert_eq!(
+            get_setting(&conn, "site_title").unwrap().as_deref(),
+            Some("MyDen")
+        );
+        let id = create_user(
+            &conn,
+            &NewUser {
+                name: "r".into(),
+                email: "r@x.io".into(),
+                password_hash: "h".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
         update_user_profile(&conn, id, "renamed", "fr", "asura").unwrap();
         let u = find_user_by_email(&conn, "r@x.io").unwrap();
         assert_eq!(u.name, "renamed");
@@ -1084,10 +1141,16 @@ mod tests {
     #[test]
     fn oauth_link_roundtrip() {
         let conn = mem();
-        let id = create_user(&conn, &NewUser {
-            name: "o".into(), email: "o@x.io".into(),
-            password_hash: "OAUTH:google:1".into(), role: Role::Member,
-        }).unwrap();
+        let id = create_user(
+            &conn,
+            &NewUser {
+                name: "o".into(),
+                email: "o@x.io".into(),
+                password_hash: "OAUTH:google:1".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
         link_oauth_account(&conn, id, "google", "gid-1").unwrap();
         // idempotent re-link
         link_oauth_account(&conn, id, "google", "gid-1").unwrap();
@@ -1097,16 +1160,25 @@ mod tests {
             find_user_by_oauth(&conn, "google", "nope"),
             Err(crate::error::Error::NotFound(_))
         ));
-        assert_eq!(user_oauth_providers(&conn, id).unwrap(), vec!["google".to_string()]);
+        assert_eq!(
+            user_oauth_providers(&conn, id).unwrap(),
+            vec!["google".to_string()]
+        );
     }
 
     #[test]
     fn password_reset_single_use_expiry() {
         let conn = mem();
-        let id = create_user(&conn, &NewUser {
-            name: "r".into(), email: "r@x.io".into(),
-            password_hash: "h".into(), role: Role::Member,
-        }).unwrap();
+        let id = create_user(
+            &conn,
+            &NewUser {
+                name: "r".into(),
+                email: "r@x.io".into(),
+                password_hash: "h".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
         create_password_reset(&conn, id, "tok-a", "2099-01-01 00:00:00").unwrap();
         // second request replaces the first
         create_password_reset(&conn, id, "tok-b", "2099-01-01 00:00:00").unwrap();
@@ -1114,7 +1186,10 @@ mod tests {
             consume_password_reset(&conn, "tok-a", "2026-01-01 00:00:00"),
             Err(crate::error::Error::NotFound(_))
         ));
-        assert_eq!(consume_password_reset(&conn, "tok-b", "2026-01-01 00:00:00").unwrap(), id);
+        assert_eq!(
+            consume_password_reset(&conn, "tok-b", "2026-01-01 00:00:00").unwrap(),
+            id
+        );
         // single use
         assert!(matches!(
             consume_password_reset(&conn, "tok-b", "2026-01-01 00:00:00"),
@@ -1131,10 +1206,16 @@ mod tests {
     #[test]
     fn bookmark_unknown_series_fails_on_fk() {
         let conn = mem();
-        let user_id = create_user(&conn, &NewUser {
-            name: "fk".into(), email: "fk@x.io".into(),
-            password_hash: "h".into(), role: Role::Member,
-        }).unwrap();
+        let user_id = create_user(
+            &conn,
+            &NewUser {
+                name: "fk".into(),
+                email: "fk@x.io".into(),
+                password_hash: "h".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
         // No series with id 9999 exists → FK violation must error.
         assert!(set_bookmark(&conn, user_id, 9999, true).is_err());
     }
@@ -1153,7 +1234,10 @@ mod tests {
         )
         .unwrap();
         // Fresh user -> defaults.
-        assert_eq!(get_reader_prefs(&conn, uid).unwrap(), ReaderPrefs::default());
+        assert_eq!(
+            get_reader_prefs(&conn, uid).unwrap(),
+            ReaderPrefs::default()
+        );
         // Illegal values are normalized on write.
         let mut p = ReaderPrefs::default();
         p.layout = "nope".into();
@@ -1163,10 +1247,19 @@ mod tests {
         assert_eq!(got.layout, "strip");
         assert_eq!(got.max_w, 1400);
         // A corrupted blob degrades to defaults, never errors.
-        conn.execute("UPDATE users SET reader_prefs = '{{{' WHERE id = ?1", rusqlite::params![uid])
-            .unwrap();
-        assert_eq!(get_reader_prefs(&conn, uid).unwrap(), ReaderPrefs::default());
+        conn.execute(
+            "UPDATE users SET reader_prefs = '{{{' WHERE id = ?1",
+            rusqlite::params![uid],
+        )
+        .unwrap();
+        assert_eq!(
+            get_reader_prefs(&conn, uid).unwrap(),
+            ReaderPrefs::default()
+        );
         // Unknown user -> defaults, not an error.
-        assert_eq!(get_reader_prefs(&conn, 12_345).unwrap(), ReaderPrefs::default());
+        assert_eq!(
+            get_reader_prefs(&conn, 12_345).unwrap(),
+            ReaderPrefs::default()
+        );
     }
 }

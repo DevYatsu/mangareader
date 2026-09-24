@@ -8,13 +8,17 @@ use axum::{extract::State, response::Html};
 use maud::html;
 use std::sync::Arc;
 
-use crate::{auth::AuthUser, AppState};
+use crate::{AppState, auth::AuthUser};
 
 fn legal_content(heading: &str, body: &str) -> maud::Markup {
     html! {
-        section class="legal-section" {
-            h1 class="page-title" { (heading) }
-            p class="legal-body" { (body) }
+        div class="columns is-centered" {
+            div class="column is-8-desktop is-10-tablet" {
+                section class="content" {
+                    h1 class="title is-2" { (heading) }
+                    p class="m-legal-body" { (body) }
+                }
+            }
         }
     }
 }
@@ -53,10 +57,7 @@ async fn legal_page(
 }
 
 /// GET `/terms` — Terms of Service from the `legal_terms` setting.
-pub async fn terms(
-    State(state): State<Arc<AppState>>,
-    user: Option<AuthUser>,
-) -> Html<String> {
+pub async fn terms(State(state): State<Arc<AppState>>, user: Option<AuthUser>) -> Html<String> {
     legal_page(
         &state,
         user.as_ref(),
@@ -69,10 +70,7 @@ pub async fn terms(
 }
 
 /// GET `/privacy` — Privacy Policy from the `legal_privacy` setting.
-pub async fn privacy(
-    State(state): State<Arc<AppState>>,
-    user: Option<AuthUser>,
-) -> Html<String> {
+pub async fn privacy(State(state): State<Arc<AppState>>, user: Option<AuthUser>) -> Html<String> {
     legal_page(
         &state,
         user.as_ref(),

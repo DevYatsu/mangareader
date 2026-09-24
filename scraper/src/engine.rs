@@ -54,7 +54,11 @@ impl ScraperEngine {
             tracing::info!("found {} manga on {source}", listings.len());
 
             for listing in listings {
-                tracing::debug!("saving manga: \"{}\" ({})", listing.title, listing.detail_url);
+                tracing::debug!(
+                    "saving manga: \"{}\" ({})",
+                    listing.title,
+                    listing.detail_url
+                );
                 let new_manga = NewManga {
                     source: source.to_string(),
                     source_id: listing.detail_url.clone(),
@@ -86,7 +90,12 @@ impl ScraperEngine {
     /// * `driver` — Shared Selenium WebDriver.
     /// * `db` — SQLite connection.
     /// * `manga_id` — Database row ID of the manga to sync.
-    pub async fn sync_manga(&self, driver: &WebDriver, db: &Connection, manga_id: i64) -> anyhow::Result<()> {
+    pub async fn sync_manga(
+        &self,
+        driver: &WebDriver,
+        db: &Connection,
+        manga_id: i64,
+    ) -> anyhow::Result<()> {
         let manga = db::get_manga_by_id(db, manga_id)?;
 
         let adapter = self
@@ -121,7 +130,12 @@ impl ScraperEngine {
 
         let chapter_count = info.chapters.len();
         for ch in info.chapters {
-            tracing::debug!("saving chapter: ch.{} \"{}\" ({})", ch.number, ch.title.as_deref().unwrap_or(""), ch.url);
+            tracing::debug!(
+                "saving chapter: ch.{} \"{}\" ({})",
+                ch.number,
+                ch.title.as_deref().unwrap_or(""),
+                ch.url
+            );
             let new_chapter = NewChapter {
                 manga_id,
                 source_id: ch.url.clone(),
@@ -153,7 +167,12 @@ impl ScraperEngine {
     /// * `driver` — Shared Selenium WebDriver.
     /// * `db` — SQLite connection.
     /// * `chapter_id` — Database row ID of the chapter to sync.
-    pub async fn sync_chapter(&self, driver: &WebDriver, db: &Connection, chapter_id: i64) -> anyhow::Result<()> {
+    pub async fn sync_chapter(
+        &self,
+        driver: &WebDriver,
+        db: &Connection,
+        chapter_id: i64,
+    ) -> anyhow::Result<()> {
         let chapter = db::get_chapter_by_id(db, chapter_id)?;
         let manga = db::get_manga_by_id(db, chapter.manga_id)?;
 
@@ -171,7 +190,11 @@ impl ScraperEngine {
         );
 
         let page_urls = adapter.fetch_pages(driver, &chapter.url).await?;
-        tracing::info!("fetched {} page URLs for chapter {}", page_urls.len(), chapter_id);
+        tracing::info!(
+            "fetched {} page URLs for chapter {}",
+            page_urls.len(),
+            chapter_id
+        );
 
         for (i, url) in page_urls.iter().enumerate() {
             tracing::debug!("saving page {}: {url}", i + 1);
