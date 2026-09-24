@@ -1,5 +1,6 @@
 use axum::extract::{Path, State};
-use axum::response::Html;
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
 use maud::{Markup, html};
 use std::sync::Arc;
 
@@ -101,19 +102,26 @@ pub fn preset_for_layout(layout: &str) -> &'static str {
     }
 }
 
+fn chapter_matches_manga(chapter: &mangaread_core::Chapter, manga_id: i64) -> bool {
+    chapter.manga_id == manga_id
+}
+
 /// A compact segmented control for the two high-value secondary choices.
 fn seg(pref: &str, current: &str, options: &[(&str, &str)]) -> Markup {
     let class = if pref == "bg" {
-        "reader-seg reader-tone-seg"
+        "buttons has-addons reader-seg reader-tone-seg"
     } else {
-        "reader-seg"
+        "buttons has-addons reader-seg"
     };
     html! {
         div class=(class) role="group"
             aria-label=(if pref == "direction" { "Reading order" } else { "Page tone" }) {
             @for (value, label) in options {
-                button class="reader-seg-btn" type="button"
+                button class="button is-small reader-seg-btn" type="button"
                     data-pref=(pref) data-value=(value)
+                    disabled=[if pref == "bg" && *value == "custom" { Some("disabled") } else { None }]
+                    aria-disabled=(if pref == "bg" && *value == "custom" { "true" } else { "false" })
+                    title=[if pref == "bg" && *value == "custom" { Some("Custom tone is set for this series") } else { None }]
                     aria-pressed=(if *value == current { "true" } else { "false" }) {
                     (label)
                 }
@@ -132,7 +140,7 @@ fn preset_button(
 ) -> Markup {
     let visual_class = format!("reader-preset-visual {}", visual_class);
     html! {
-        button class="reader-preset-btn" type="button" data-r-preset=(id)
+        button class="button is-small reader-preset-btn" type="button" data-r-preset=(id)
             aria-pressed=(if selected { "true" } else { "false" }) {
             span class=(visual_class) aria-hidden="true" {
                 @for _ in 0..lines {
@@ -162,7 +170,7 @@ pub async fn chapter_reader(
     State(state): State<Arc<AppState>>,
     user: Option<AuthUser>,
     Path((manga_id, chapter_id)): Path<(i64, i64)>,
-) -> Html<String> {
+) -> Response {
     // Check if pages exist — quick peek, release lock
     let (manga, chapter, needs_sync) = {
         let db = state.db.lock().await;
@@ -170,30 +178,60 @@ pub async fn chapter_reader(
             Ok(m) => m,
             Err(_) => {
                 let cfg = crate::config::site_config(&db);
-                let css = cfg.css_overrides();
-                return Html(
-                    crate::templates::layout::base_layout(
-                        "Not Found",
-                        crate::templates::layout::error_content(
+                let css = cfg.theme_overrides();
+                return (
+                    StatusCode::NOT_FOUND,
+                    Html(
+                        crate::templates::layout::base_layout(
                             "Not Found",
-                            "This manga doesn't exist or may have been removed.",
-                        ),
-                        None,
-                        &css,
-                        &cfg.site_title,
-                        user.as_ref(),
-                        crate::templates::layout::Nav::None,
-                    )
-                    .0,
-                );
+                            crate::templates::layout::error_content(
+                                "Not Found",
+                                "This manga doesn't exist or may have been removed.",
+                            ),
+                            None,
+                            &css,
+                            &cfg.site_title,
+                            user.as_ref(),
+                            crate::templates::layout::Nav::None,
+                        )
+                        .0,
+                    ),
+                )
+                    .into_response();
             }
         };
         let chapter = match mangaread_core::db::get_chapter_by_id(&db, chapter_id) {
             Ok(c) => c,
             Err(_) => {
                 let cfg = crate::config::site_config(&db);
-                let css = cfg.css_overrides();
-                return Html(
+                let css = cfg.theme_overrides();
+                return (
+                    StatusCode::NOT_FOUND,
+                    Html(
+                        crate::templates::layout::base_layout(
+                            "Not Found",
+                            crate::templates::layout::error_content(
+                                "Not Found",
+                                "This chapter doesn't exist or may have been removed.",
+                            ),
+                            None,
+                            &css,
+                            &cfg.site_title,
+                            user.as_ref(),
+                            crate::templates::layout::Nav::None,
+                        )
+                        .0,
+                    ),
+                )
+                    .into_response();
+            }
+        };
+        if !chapter_matches_manga(&chapter, manga_id) {
+            let cfg = crate::config::site_config(&db);
+            let css = cfg.theme_overrides();
+            return (
+                StatusCode::NOT_FOUND,
+                Html(
                     crate::templates::layout::base_layout(
                         "Not Found",
                         crate::templates::layout::error_content(
@@ -207,9 +245,10 @@ pub async fn chapter_reader(
                         crate::templates::layout::Nav::None,
                     )
                     .0,
-                );
-            }
-        };
+                ),
+            )
+                .into_response();
+        }
         let pages = mangaread_core::db::list_pages_by_chapter(&db, chapter.id).unwrap_or_default();
         (manga, chapter, pages.is_empty())
     };
@@ -321,16 +360,14 @@ if(++a>=20)clearInterval(iv)
         &prefs.direction,
         &[("ltr", "Left to right"), ("rtl", "Right to left")],
     );
-    let tone_options = if prefs.bg == "custom" {
-        vec![
-            ("black", "Dark"),
-            ("sepia", "Paper"),
-            ("white", "Light"),
-            ("custom", "Custom"),
-        ]
-    } else {
-        vec![("black", "Dark"), ("sepia", "Paper"), ("white", "Light")]
-    };
+    // Always render Custom so a device-local per-series `bg=custom` override
+    // has a selected, non-editable control before JS resolves preferences.
+    let tone_options = vec![
+        ("black", "Dark"),
+        ("sepia", "Paper"),
+        ("white", "Light"),
+        ("custom", "Custom"),
+    ];
     let tone_control = seg("bg", &prefs.bg, &tone_options);
 
     let content = html! {
@@ -352,9 +389,9 @@ if(++a>=20)clearInterval(iv)
         div id="resume-target" style="display:none" data-page=(0) {}
 
         // ── Top Navigation Bar (hidden by default, shows on scroll-up) ──
-        header id="reader-topbar" class="reader-topbar" {
-            div class="reader-topbar-inner" {
-                a class="reader-back-btn" href=(back_url) aria-label="Back to series" {
+        header id="reader-topbar" class="navbar reader-topbar" {
+            div class="navbar-inner reader-topbar-inner" {
+                a class="button is-ghost is-small reader-back-btn" href=(back_url) aria-label="Back to series" {
                     svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
                         path d="M19 12H5m7-7-7 7 7 7" {}
                     }
@@ -366,10 +403,10 @@ if(++a>=20)clearInterval(iv)
                 span id="reader-page-indicator" class="reader-page-indicator" aria-live="polite" {
                     "1 / " (total_pages)
                 }
-                button id="reader-settings-btn" class="reader-icon-btn" type="button"
+                button id="reader-settings-btn" class="button is-ghost is-small reader-icon-btn" type="button"
                     aria-expanded="false" aria-controls="reader-sheet"
                     aria-label="Reader settings" { "⚙" }
-                button id="reader-focus-btn" class="reader-icon-btn" type="button"
+                button id="reader-focus-btn" class="button is-ghost is-small reader-icon-btn" type="button"
                     aria-label="Toggle focus mode" aria-pressed="false" data-focus-toggle="true" { "◱" }
             }
         }
@@ -378,11 +415,11 @@ if(++a>=20)clearInterval(iv)
         // Interactive on strip, where it replaces the center tap zone (§4.1):
         // a long-press opens the settings sheet, so it is exposed as a button
         // rather than hidden from assistive tech.
-        div id="reader-hud" class="reader-hud" role="button" tabindex="0"
+        div id="reader-hud" class="tag reader-hud" role="button" tabindex="0"
             aria-label="Reader menu" {
             "1 / " (total_pages)
         }
-        button id="reader-focus-exit" class="reader-focus-exit" type="button"
+        button id="reader-focus-exit" class="button is-primary is-small reader-focus-exit" type="button"
             aria-label="Exit focus mode" aria-pressed="true" data-focus-toggle="true" {
             "Exit focus"
         }
@@ -405,7 +442,7 @@ if(++a>=20)clearInterval(iv)
             // ── Empty chapter (contract §7: `.reader-empty`, no id) ──
             section class="reader-empty" role="status" {
                 p { "This chapter has no pages yet." }
-                a class="reader-nav-btn" href=(back_url) { "Back to series" }
+                a class="button is-small reader-nav-btn" href=(back_url) { "Back to series" }
             }
         } @else {
             // Tap zones for page navigation (buttons: focusable, real semantics)
@@ -424,11 +461,11 @@ if(++a>=20)clearInterval(iv)
                         img src=(page.image_url) alt={"Page "(i + 1)} loading=(load) decoding="async";
                         div class="reader-page-error" hidden {
                             p { "Could not load this page." }
-                            button class="reader-retry-btn" type="button" { "Retry" }
+                            button class="button is-primary is-small reader-retry-btn" type="button" { "Retry" }
                         }
                         @let page_notes: Vec<_> = notes.iter().filter(|n| n.page == (i as i64 + 1)).collect();
                         @if !page_notes.is_empty() {
-                            button class="reader-note-pin" type="button"
+                            button class="tag is-primary is-light reader-note-pin" type="button"
                                 data-note-id=(page_notes[0].id)
                                 data-count=(page_notes.len())
                                 data-page-idx=(i + 1)
@@ -440,29 +477,29 @@ if(++a>=20)clearInterval(iv)
 
             // ── Bottom Navigation (after all pages) ──
             div id="reader-bottom-nav" class="reader-bottom-nav" {
-                div class="reader-bottom-nav-inner" {
+                div class="level reader-bottom-nav-inner" {
                     @if let Some(prev) = prev_chapter {
-                        a href={"/read/"(manga_id)"/"(prev.id)} class="reader-nav-btn" {
+                        a href={"/read/"(manga_id)"/"(prev.id)} class="button is-small reader-nav-btn" {
                             svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
                                 path d="M19 12H5m7-7-7 7 7 7" {}
                             }
                             "Ch. " (prev.number)
                         }
                     } @else {
-                        span class="reader-nav-btn disabled" {
+                        span class="button is-small reader-nav-btn disabled" {
                             "First Chapter"
                         }
                     }
-                    a href=(back_url) class="reader-nav-btn secondary" { "Series Page" }
+                    a href=(back_url) class="button is-small reader-nav-btn secondary" { "Series Page" }
                     @if let Some(next) = next_chapter {
-                        a href={"/read/"(manga_id)"/"(next.id)} class="reader-nav-btn" {
+                        a href={"/read/"(manga_id)"/"(next.id)} class="button is-small reader-nav-btn" {
                             "Ch. " (next.number)
                             svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
                                 path d="M5 12h14m-7-7 7 7-7 7" {}
                             }
                         }
                     } @else {
-                        span class="reader-nav-btn disabled" {
+                        span class="button is-small reader-nav-btn disabled" {
                             "Last Chapter"
                         }
                     }
@@ -477,24 +514,24 @@ if(++a>=20)clearInterval(iv)
 
             // ── End-of-chapter overlay for paged layouts ──
             div id="reader-chapter-nav" class="reader-chapter-nav" hidden {
-                div class="reader-bottom-nav-inner" {
+                div class="level reader-bottom-nav-inner" {
                     @if let Some(prev) = prev_chapter {
-                        a href={"/read/"(manga_id)"/"(prev.id)} class="reader-nav-btn" {
+                        a href={"/read/"(manga_id)"/"(prev.id)} class="button is-small reader-nav-btn" {
                             "Ch. " (prev.number)
                         }
                     } @else {
-                        span class="reader-nav-btn disabled" { "First Chapter" }
+                        span class="button is-small reader-nav-btn disabled" { "First Chapter" }
                     }
-                    a href=(back_url) class="reader-nav-btn secondary" { "Series Page" }
+                    a href=(back_url) class="button is-small reader-nav-btn secondary" { "Series Page" }
                     @if let Some(next) = next_chapter {
-                        a href={"/read/"(manga_id)"/"(next.id)} class="reader-nav-btn" {
+                        a href={"/read/"(manga_id)"/"(next.id)} class="button is-small reader-nav-btn" {
                             "Ch. " (next.number)
                         }
-                        button class="reader-nav-btn" type="button" data-action="next" {
+                        button class="button is-small reader-nav-btn" type="button" data-action="next" {
                             "Next up: Ch. " (next.number)
                         }
                     } @else {
-                        span class="reader-nav-btn disabled" { "Last Chapter" }
+                        span class="button is-small reader-nav-btn disabled" { "Last Chapter" }
                     }
                 }
             }
@@ -505,11 +542,11 @@ if(++a>=20)clearInterval(iv)
             // `.reader-nextup-item` is a layout row, not the link: nesting a
             // button inside an anchor is invalid, and §5.5 asks for a
             // prefetch button "per item".
-            div id="reader-nextup" class="reader-nextup" {
+            div id="reader-nextup" class="box reader-nextup" {
                 @for c in &upcoming {
-                    div class="reader-nextup-item" data-chapter-id=(c.id) {
+                    div class="level reader-nextup-item" data-chapter-id=(c.id) {
                         a href={"/read/"(manga_id)"/"(c.id)} { "Next: Ch. " (c.number) }
-                        button class="reader-nextup-prefetch" type="button"
+                        button class="button is-small is-ghost reader-nextup-prefetch" type="button"
                             data-prefetch-state="idle" aria-label="Warm up chapter" {}
                     }
                 }
@@ -517,38 +554,38 @@ if(++a>=20)clearInterval(iv)
         }
 
         // ── Auto-next countdown ──
-        div id="reader-countdown" class="reader-countdown" role="status" aria-live="polite" hidden {
+        div id="reader-countdown" class="notification reader-countdown" role="status" aria-live="polite" hidden {
             "Next chapter in "
             span class="reader-countdown-secs" { "3" }
-            button type="button" { "Cancel" }
+            button class="button is-small is-light" type="button" { "Cancel" }
         }
 
         // ── Idle dim overlay ──
         div id="reader-dim" class="reader-dim" aria-hidden="true" {}
 
         // ── Local-only persistence notice ──
-        div id="reader-offline" class="reader-offline" role="status" hidden {
+        div id="reader-offline" class="notification is-warning reader-offline" role="status" hidden {
             "Saved on this device only."
         }
 
         // ── Note composer (bottom sheet, keeps the target page visible) ──
-        div id="reader-note-composer" class="reader-note-composer" hidden {
+        div id="reader-note-composer" class="box reader-note-composer" hidden {
             form id="reader-note-form" class="reader-note-form" {
-                textarea id="reader-note-body" class="reader-note-body"
+                textarea id="reader-note-body" class="textarea reader-note-body"
                     required maxlength="2000" aria-label="Note" {}
                 input id="reader-note-page" type="hidden" value="1";
-                button class="reader-note-save" type="submit" { "Save note" }
-                button class="reader-note-cancel" type="button" data-r-close { "Cancel" }
+                button class="button is-primary reader-note-save" type="submit" { "Save note" }
+                button class="button reader-note-cancel" type="button" data-r-close { "Cancel" }
                 p class="reader-note-error" role="alert" hidden {}
             }
         }
 
         // ── Notes list ──
-        aside id="reader-notes-panel" class="reader-notes-panel" hidden {
-            header {
+        aside id="reader-notes-panel" class="panel reader-notes-panel" hidden {
+            header class="panel-heading" {
                 h2 { "Notes — Ch. " (chapter.number) }
                 span class="reader-notes-count" { (notes.len()) }
-                button class="reader-notes-close" type="button" data-r-close aria-label="Close notes" { "✕" }
+                button class="delete reader-notes-close" type="button" data-r-close aria-label="Close notes" { "✕" }
             }
             @if notes.is_empty() {
                 p class="reader-notes-empty" { "No notes in this chapter." }
@@ -556,7 +593,7 @@ if(++a>=20)clearInterval(iv)
                 ul class="reader-notes-list" {
                     @for n in &notes {
                         li class="reader-note-item" data-note-id=(n.id) data-page-idx=(n.page) {
-                            button class="reader-note-jump" type="button" { "p. " (n.page) }
+                            button class="button is-small reader-note-jump" type="button" { "p. " (n.page) }
                             // SQLite stores "YYYY-MM-DD HH:MM:SS"; `datetime`
                             // wants ISO 8601, so the space becomes `T`.
                             time class="reader-note-time" datetime=(n.created_at.replace(' ', "T")) {
@@ -572,13 +609,21 @@ if(++a>=20)clearInterval(iv)
         // ── Reading settings: three curated modes, not a settings framework ──
         div id="reader-sheet" class="reader-sheet" hidden {
             div class="reader-sheet-backdrop" data-r-close {}
-            div class="reader-sheet-panel" role="dialog" aria-modal="true" aria-labelledby="reader-sheet-title" {
+            div class="box reader-sheet-panel" data-r-sheet="rail" role="dialog" aria-modal="true" aria-labelledby="reader-sheet-title" {
                 header class="reader-sheet-header" {
                     div {
                         p { "Make the page feel right" }
                         h2 id="reader-sheet-title" { "Reading style" }
                     }
                     button class="reader-sheet-close" type="button" data-r-close aria-label="Close reading style" { "✕" }
+                }
+
+                label class="checkbox reader-series-remember" {
+                    input id="reader-remember-series" type="checkbox" {}
+                    span {
+                        strong { "Keep for this series" }
+                        small class="reader-series-remember-note" data-series-title=(manga.title) { (manga.title) }
+                    }
                 }
 
                 div class="reader-sheet-group" data-group="reading" role="group" aria-label="Reading style" {
@@ -607,24 +652,21 @@ if(++a>=20)clearInterval(iv)
                 }
 
                 div class="reader-utility-row" role="group" aria-label="Reader utilities" {
-                    button id="reader-focus-toggle" class="reader-utility-btn" type="button"
+                    button id="reader-focus-toggle" class="button is-small reader-utility-btn" type="button"
                         data-action="ui.focus" data-focus-toggle="true" aria-pressed="false" {
                         "Focus mode"
                     }
-                    button class="reader-utility-btn" type="button" data-action="note.add" {
+                    button class="button is-small reader-utility-btn" type="button" data-action="note.add" {
                         "Add note"
+                    }
+                    button class="button is-small reader-utility-btn" type="button"
+                        data-action="ui.chapterNav" {
+                        "Go to"
                     }
                 }
 
                 div class="reader-sheet-footer" role="group" aria-label="Reading preference scope" {
-                    label class="reader-series-remember" {
-                        input id="reader-remember-series" type="checkbox" {}
-                        span {
-                            strong { "Keep for this series" }
-                            small class="reader-series-remember-note" data-series-title=(manga.title) { (manga.title) }
-                        }
-                    }
-                    button class="reader-restore-btn" type="button" data-action="ui.restoreDefaults" {
+                    button class="button is-small reader-restore-btn" type="button" data-action="ui.restoreDefaults" {
                         "Restore recommended settings"
                     }
                     p id="reader-settings-status" class="reader-settings-status" role="status" aria-live="polite" {}
@@ -645,7 +687,7 @@ if(++a>=20)clearInterval(iv)
     };
 
     let cfg = crate::config::site_config(&db);
-    let css = cfg.css_overrides();
+    let css = cfg.theme_overrides();
     Html(
         crate::templates::layout::reader_layout(
             &format!("Ch. {} — {}", chapter.number, manga.title),
@@ -657,6 +699,7 @@ if(++a>=20)clearInterval(iv)
         )
         .0,
     )
+    .into_response()
 }
 
 #[cfg(test)]
@@ -682,6 +725,36 @@ mod tests {
     }
 
     #[test]
+    fn curated_markup_hooks_remain_explicit() {
+        let markup = include_str!("reader.rs");
+        for hook in [
+            "data-r-preset=(id)",
+            "\"flow\"",
+            "\"page\"",
+            "\"spread\"",
+            "data-r-sheet=\"rail\"",
+            "(\"custom\", \"Custom\")",
+            "reader-focus-toggle",
+            "data-action=\"note.add\"",
+            "data-action=\"ui.chapterNav\"",
+            "navbar reader-topbar",
+        ] {
+            assert!(markup.contains(hook), "missing curated reader hook: {hook}");
+        }
+        for dead_editor in [
+            ["reader-", "zone-editor"].concat(),
+            ["reader-", "keybind-row"].concat(),
+            ["reader-", "slider"].concat(),
+            ["reader-", "color"].concat(),
+        ] {
+            assert!(
+                !markup.contains(&dead_editor),
+                "advanced editor returned: {dead_editor}"
+            );
+        }
+    }
+
+    #[test]
     fn curated_presets_cover_every_existing_layout() {
         assert_eq!(preset_for_layout("strip"), "flow");
         assert_eq!(preset_for_layout("single"), "page");
@@ -691,6 +764,21 @@ mod tests {
 
         let a = body_prefs_attrs(&ReaderPrefs::default());
         assert!(a.contains(r#"data-r-preset="flow""#), "{a}");
+    }
+
+    #[test]
+    fn reader_rejects_chapter_from_another_manga() {
+        let chapter = mangaread_core::Chapter {
+            id: 9,
+            manga_id: 4,
+            source_id: "chapter-9".into(),
+            number: 1.0,
+            title: None,
+            url: "/chapter/9".into(),
+            created_at: "2026-09-25 00:00:00".into(),
+        };
+        assert!(chapter_matches_manga(&chapter, 4));
+        assert!(!chapter_matches_manga(&chapter, 5));
     }
 
     #[test]

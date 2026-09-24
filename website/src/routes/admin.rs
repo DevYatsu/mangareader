@@ -1,11 +1,11 @@
-//! Admin dashboard + branding (site title, theme, legal, homepage flags).
+//! Admin dashboard + branding (site identity, legal text, homepage flags).
 //!
 //! Every endpoint requires [`AuthUser`] with the `Admin` role. Logged-out
 //! requests hit the `AuthUser` extractor rejection (login redirect for
 //! browsers); non-admin users get `403` via [`require_role`].
 //!
-//! POST validation checks every field before any `set_setting` write, so an
-//! invalid submission writes nothing.
+//! POST validation checks every field before the transactional settings write,
+//! so invalid input cannot partially rebrand the site.
 
 use axum::{
     extract::State,
@@ -35,14 +35,6 @@ fn is_hex_color(s: &str) -> bool {
     bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(|c| c.is_ascii_hexdigit())
 }
 
-fn theme_label(key: &str) -> &str {
-    crate::config::THEMES
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, label)| *label)
-        .unwrap_or(key)
-}
-
 /// Parsed branding submission.
 #[derive(Default)]
 struct BrandingForm {
@@ -50,7 +42,6 @@ struct BrandingForm {
     site_tagline: String,
     site_accent: String,
     site_bg: String,
-    site_theme: String,
     seo_description: String,
     legal_terms: String,
     legal_privacy: String,
@@ -77,7 +68,6 @@ fn parse_branding(body: &str) -> BrandingForm {
     form.site_tagline = one.remove("site_tagline").unwrap_or_default();
     form.site_accent = one.remove("site_accent").unwrap_or_default();
     form.site_bg = one.remove("site_bg").unwrap_or_default();
-    form.site_theme = one.remove("site_theme").unwrap_or_default();
     form.seo_description = one.remove("seo_description").unwrap_or_default();
     form.legal_terms = one.remove("legal_terms").unwrap_or_default();
     form.legal_privacy = one.remove("legal_privacy").unwrap_or_default();
@@ -99,6 +89,21 @@ fn normalize_sections(values: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn persist_branding(
+    conn: &mut rusqlite::Connection,
+    pairs: &[(&str, String)],
+    updated_by: i64,
+) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    for (key, value) in pairs {
+        tx.execute(
+            "INSERT INTO site_settings (key, value, updated_by, updated_at) VALUES (?1, ?2, ?3, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = datetime('now')",
+            rusqlite::params![key, value, updated_by],
+        )?;
+    }
+    tx.commit()
+}
+
 fn page(
     cfg: &crate::config::SiteConfig,
     title: &str,
@@ -106,7 +111,7 @@ fn page(
     user: Option<&AuthUser>,
 ) -> Html<String> {
     let banner: Option<String> = None;
-    let css = cfg.css_overrides();
+    let css = cfg.theme_overrides();
     Html(
         crate::templates::layout::base_layout(
             title,
@@ -121,23 +126,45 @@ fn page(
     )
 }
 
-fn dashboard_content(site_theme: &str) -> Markup {
+fn dashboard_content() -> Markup {
     html! {
-        section class="admin-section" {
-            h1 class="page-title" { "Admin" }
-            p class="admin-current-theme" { "Current theme: " strong { (theme_label(site_theme)) } }
-            div class="admin-cards" {
-                a class="admin-card" href="/admin/branding" {
-                    h2 { "Branding" }
-                    p { "Site title, tagline, colors, theme, SEO, legal text, homepage sections." }
+        section {
+            h1 class="title is-2" { "Admin" }
+            div class="columns is-multiline" {
+                div class="column is-half-mobile is-one-third-tablet" {
+                    a class="card" href="/admin/branding" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Branding" }
+                            p { "Site title, tagline, colors, SEO, legal text, and homepage sections." }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" { "Open branding" }
+                        }
+                    }
                 }
-                div class="admin-card admin-card-disabled" {
-                    h2 { "Users" }
-                    p { "User management lands in Slice 5." }
+                div class="column is-half-mobile is-one-third-tablet" {
+                    a class="card" href="/admin/users" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Users" }
+                            p { "Review accounts and generate one-time password reset links." }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" { "Open users" }
+                        }
+                    }
                 }
-                div class="admin-card admin-card-disabled" {
-                    h2 { "Sources" }
-                    p { "Source management lands in Slice 5." }
+                div class="column is-half-mobile is-one-third-tablet" {
+                    div class="card" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Sources" }
+                            p class="m-text-muted" { "Source management is not available yet." }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" {
+                                button class="button is-static" type="button" disabled="" { "Unavailable" }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -150,64 +177,107 @@ fn branding_content(
     error: Option<&str>,
 ) -> Markup {
     html! {
-        section class="admin-section" {
-            h1 class="page-title" { "Branding" }
-            p { a href="/admin" { "← Back to Admin" } }
+        section {
+            h1 class="title is-2" { "Branding" }
+            a class="button is-light" href="/admin" { "Back to admin" }
             @if let Some(msg) = error {
-                p class="auth-error" { (msg) }
+                div class="notification is-danger is-light" { (msg) }
             }
-            form method="post" action="/admin/branding" class="admin-form" {
-                label { "Site title (1-64 chars)" input type="text" name="site_title" maxlength="64" required="" value=(stored(map, "site_title")); }
-                label { "Tagline (up to 140 chars)" input type="text" name="site_tagline" maxlength="140" value=(stored(map, "site_tagline")); }
-                label { "Accent color" input type="color" name="site_accent" value=(stored(map, "site_accent")); }
-                label { "Background color" input type="color" name="site_bg" value=(stored(map, "site_bg")); }
-                fieldset class="theme-picker" {
-                    legend { "Theme" }
-                    @for (key, label) in crate::config::THEMES {
-                        label class="theme-option" {
-                            input type="radio" name="site_theme" value=(key) checked[stored(map, "site_theme") == *key];
-                            (label)
+            div class="box" {
+                form id="admin-branding-form" method="post" action="/admin/branding" {
+                    div class="field is-horizontal" {
+                        div class="field-label" {
+                            label class="label" id="admin-branding-site-title-label" for="admin-branding-site-title" { "Site title (1-64 chars)" }
+                        }
+                        div class="field-body" {
+                            div class="control" {
+                                input id="admin-branding-site-title" class="input" type="text" name="site_title" maxlength="64" required="" value=(stored(map, "site_title"));
+                            }
+                        }
+                    }
+                    div class="field is-horizontal" {
+                        div class="field-label" {
+                            label class="label" id="admin-branding-tagline-label" for="admin-branding-tagline" { "Tagline (up to 140 chars)" }
+                        }
+                        div class="field-body" {
+                            div class="control" {
+                                input id="admin-branding-tagline" class="input" type="text" name="site_tagline" maxlength="140" value=(stored(map, "site_tagline"));
+                            }
+                        }
+                    }
+                    div class="field is-horizontal" {
+                        div class="field-label" {
+                            label class="label" id="admin-branding-accent-label" for="admin-branding-accent" { "Accent color" }
+                        }
+                        div class="field-body" {
+                            div class="control" {
+                                input id="admin-branding-accent" class="input" type="color" name="site_accent" value=(stored(map, "site_accent"));
+                            }
+                        }
+                    }
+                    div class="field is-horizontal" {
+                        div class="field-label" {
+                            label class="label" id="admin-branding-background-label" for="admin-branding-background" { "Background color" }
+                        }
+                        div class="field-body" {
+                            div class="control" {
+                                input id="admin-branding-background" class="input" type="color" name="site_bg" value=(stored(map, "site_bg"));
+                            }
+                        }
+                    }
+                    div class="field" {
+                        label class="label" id="admin-branding-seo-description-label" for="admin-branding-seo-description" { "SEO description (up to 300 chars)" }
+                        div class="control" {
+                            textarea id="admin-branding-seo-description" class="textarea" name="seo_description" maxlength="300" { (stored(map, "seo_description")) }
+                        }
+                    }
+                    div class="field" {
+                        label class="label" id="admin-branding-terms-label" for="admin-branding-terms" { "Terms of Service (plain text)" }
+                        div class="control" {
+                            textarea id="admin-branding-terms" class="textarea" name="legal_terms" rows="6" { (stored(map, "legal_terms")) }
+                        }
+                    }
+                    div class="field" {
+                        label class="label" id="admin-branding-privacy-label" for="admin-branding-privacy" { "Privacy Policy (plain text)" }
+                        div class="control" {
+                            textarea id="admin-branding-privacy" class="textarea" name="legal_privacy" rows="6" { (stored(map, "legal_privacy")) }
+                        }
+                    }
+                    div class="field" {
+                        fieldset {
+                            legend class="label" { "Homepage sections" }
+                            @for (key, label) in HOME_SECTIONS {
+                                p class="control" {
+                                    label class="checkbox" id=(format!("admin-branding-home-{key}-label")) for=(format!("admin-branding-home-{key}")) {
+                                        input id=(format!("admin-branding-home-{key}")) type="checkbox" name="home_sections" value=(key) checked[checked.iter().any(|s| s == key)];
+                                        (label)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div class="field" {
+                        div class="control" {
+                            button class="button is-primary" type="submit" { "Save branding" }
                         }
                     }
                 }
-                label { "SEO description (up to 300 chars)" textarea name="seo_description" maxlength="300" { (stored(map, "seo_description")) } }
-                label { "Terms of Service (plain text)" textarea name="legal_terms" rows="6" { (stored(map, "legal_terms")) } }
-                label { "Privacy Policy (plain text)" textarea name="legal_privacy" rows="6" { (stored(map, "legal_privacy")) } }
-                fieldset class="sections-picker" {
-                    legend { "Homepage sections" }
-                    @for (key, label) in HOME_SECTIONS {
-                        label class="section-option" {
-                            input type="checkbox" name="home_sections" value=(key) checked[checked.iter().any(|s| s == key)];
-                            (label)
-                        }
-                    }
-                }
-                button type="submit" { "Save branding" }
             }
             script src="/static/admin.js" {}
         }
     }
 }
 
-/// GET `/admin` — dashboard with section links + current theme name.
+/// GET `/admin` — dashboard with links to the existing account surfaces.
 pub async fn dashboard(State(state): State<Arc<AppState>>, user: AuthUser) -> Response {
     if require_role(&user, Role::Admin).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let (cfg, settings) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            mangaread_core::db::all_settings(&db).unwrap_or_default(),
-        )
+        crate::config::site_config(&db)
     };
-    let site_theme = stored(&settings, "site_theme");
-    let site_theme = if site_theme.is_empty() {
-        "default".to_string()
-    } else {
-        site_theme
-    };
-    page(&cfg, "Admin", dashboard_content(&site_theme), Some(&user)).into_response()
+    page(&cfg, "Admin", dashboard_content(), Some(&user)).into_response()
 }
 
 /// GET `/admin/branding` — branding form prefilled from stored settings.
@@ -252,7 +322,6 @@ pub async fn branding_submit(
         ("site_tagline".into(), form.site_tagline.clone()),
         ("site_accent".into(), form.site_accent.clone()),
         ("site_bg".into(), form.site_bg.clone()),
-        ("site_theme".into(), form.site_theme.clone()),
         ("seo_description".into(), form.seo_description.clone()),
         ("legal_terms".into(), form.legal_terms.clone()),
         ("legal_privacy".into(), form.legal_privacy.clone()),
@@ -289,9 +358,6 @@ pub async fn branding_submit(
     if !is_hex_color(form.site_bg.trim()) {
         return render_400("Background must be a #rrggbb hex color.");
     }
-    if !crate::config::is_theme(&form.site_theme) {
-        return render_400("Unknown theme.");
-    }
     if form.seo_description.chars().count() > 300 {
         return render_400("SEO description must be at most 300 characters.");
     }
@@ -303,25 +369,66 @@ pub async fn branding_submit(
     }
 
     {
-        let db = state.db.lock().await;
+        let mut db = state.db.lock().await;
         let pairs = [
             ("site_title", title),
             ("site_tagline", form.site_tagline.clone()),
             ("site_accent", form.site_accent.trim().to_string()),
             ("site_bg", form.site_bg.trim().to_string()),
-            ("site_theme", form.site_theme.clone()),
             ("seo_description", form.seo_description.clone()),
             ("legal_terms", form.legal_terms.clone()),
             ("legal_privacy", form.legal_privacy.clone()),
             ("home_sections", checked.join(",")),
         ];
-        for (key, value) in pairs {
-            if mangaread_core::db::set_setting(&db, key, &value, user.id).is_err() {
-                return render_400("Could not save branding.");
-            }
+        if persist_branding(&mut db, &pairs, user.id).is_err() {
+            return render_400("Could not save branding.");
         }
     }
     Redirect::to("/admin/branding").into_response()
+}
+
+fn users_content(users: &[(mangaread_core::domain::User, String)], notice: Markup) -> Markup {
+    html! {
+        section {
+            h1 class="title is-2" { "Users" }
+            (notice)
+            div class="box" {
+                div class="table-container" {
+                    table class="table is-fullwidth is-hoverable" {
+                        thead {
+                            tr {
+                                th { "ID" }
+                                th { "Name" }
+                                th { "Email" }
+                                th { "Role" }
+                                th { "OAuth" }
+                                th { "Created" }
+                                th { "Actions" }
+                            }
+                        }
+                        tbody {
+                            @for (u, prov) in users {
+                                tr {
+                                    td { (u.id) }
+                                    td { (u.name) }
+                                    td { (u.email) }
+                                    td { (u.role.as_str()) }
+                                    td { (prov) }
+                                    td { (u.created_at) }
+                                    td {
+                                        form method="post" action=(format!("/admin/users/{}/reset-link", u.id)) {
+                                            button class="button is-small is-light" type="submit" { "Reset link" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            a class="button is-light" href="/admin" { "Back to admin" }
+        }
+    }
 }
 
 /// GET `/admin/users` — minimal user table with per-row reset-link generator.
@@ -364,28 +471,14 @@ pub async fn users_page(
             // string cannot execute script in the admin origin.
             let is_safe = link.starts_with("http://") || link.starts_with("https://");
             if is_safe {
-                html! { p class="admin-notice" { "Reset link for user " (id) ": " a href=(link) { (link) } } }
+                html! { div class="notification is-success is-light" { "Reset link for user " (id) ": " a href=(link) { (link) } } }
             } else {
-                html! { p class="admin-notice" { "Reset link for user " (id) ": " code { (link) } } }
+                html! { div class="notification is-danger is-light" { "Reset link for user " (id) ": " code { (link) } } }
             }
         }
         _ => html! {},
     };
-    let content = html! {
-        (notice)
-        table class="admin-table" {
-            tr { th { "ID" } th { "Name" } th { "Email" } th { "Role" } th { "OAuth" } th { "Created" } th { "Actions" } }
-            @for (u, prov) in &users {
-                tr {
-                    td { (u.id) } td { (u.name) } td { (u.email) } td { (u.role.as_str()) }
-                    td { (prov) } td { (u.created_at) }
-                    td { form method="post" action=(format!("/admin/users/{}/reset-link", u.id)) { button type="submit" { "Reset link" } } }
-                }
-            }
-        }
-        p { a href="/admin" { "Back to admin" } }
-    };
-    page(&cfg, "Users", content, Some(&user)).into_response()
+    page(&cfg, "Users", users_content(&users, notice), Some(&user)).into_response()
 }
 
 /// POST `/admin/users/{id}/reset-link` — mint a 1h token, redirect back with the link.
@@ -425,4 +518,127 @@ pub async fn user_reset_link(
         "",
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mangaread_core::domain::{Role, User};
+
+    #[test]
+    fn branding_markup_uses_bulma_without_visible_theme_controls() {
+        let map = HashMap::from([
+            ("site_title".into(), "MangaRead".into()),
+            ("site_tagline".into(), "Read onward".into()),
+            ("site_accent".into(), "#f59e0b".into()),
+            ("site_bg".into(), "#131210".into()),
+        ]);
+        let markup = branding_content(&map, &[], Some("Invalid branding.")).into_string();
+
+        for class_name in [
+            "box",
+            "field is-horizontal",
+            "field-label",
+            "field-body",
+            "input",
+            "textarea",
+            "notification is-danger is-light",
+            "title is-2",
+        ] {
+            assert!(
+                markup.contains(class_name),
+                "missing Bulma class: {class_name}"
+            );
+        }
+        for id in [
+            "admin-branding-site-title",
+            "admin-branding-tagline",
+            "admin-branding-accent",
+            "admin-branding-background",
+            "admin-branding-seo-description",
+            "admin-branding-terms",
+            "admin-branding-privacy",
+            "admin-branding-home-latest",
+            "admin-branding-home-popular",
+            "admin-branding-home-continue",
+        ] {
+            assert!(markup.contains(&format!("id=\"{id}-label\" for=\"{id}\"")));
+            assert!(markup.contains(&format!("id=\"{id}\"")));
+        }
+        assert!(markup.contains("id=\"admin-branding-form\""));
+        assert!(markup.contains("method=\"post\" action=\"/admin/branding\""));
+        assert!(markup.contains("name=\"site_title\""));
+        assert!(markup.contains("name=\"site_tagline\""));
+        assert!(markup.contains("name=\"site_accent\""));
+        assert!(markup.contains("name=\"site_bg\""));
+        assert!(markup.contains("name=\"seo_description\""));
+        assert!(markup.contains("name=\"legal_terms\""));
+        assert!(markup.contains("name=\"legal_privacy\""));
+        assert!(markup.contains("name=\"home_sections\""));
+        assert!(!markup.contains("name=\"site_theme\""));
+        assert!(!markup.contains(concat!("theme", "-picker")));
+        assert!(!markup.contains("Current theme"));
+        assert!(!markup.contains(concat!("admin", "-form")));
+        assert!(!markup.contains(concat!("admin", "-section")));
+    }
+
+    #[test]
+    fn repeated_home_sections_and_csv_values_normalize() {
+        let repeated = parse_branding(
+            "site_title=Read&home_sections=latest&home_sections=continue&home_sections=popular",
+        );
+        assert_eq!(
+            normalize_sections(&repeated.home_sections),
+            ["latest", "continue", "popular"]
+        );
+
+        let csv = parse_branding("home_sections=latest%2Ccontinue");
+        assert_eq!(
+            normalize_sections(&csv.home_sections),
+            ["latest", "continue"]
+        );
+    }
+
+    #[test]
+    fn users_table_uses_bulma_and_keeps_reset_form_contract() {
+        let user = User {
+            id: 7,
+            name: "Reader".into(),
+            email: "reader@example.com".into(),
+            password_hash: "hash".into(),
+            role: Role::Member,
+            locale: "en".into(),
+            created_at: "2026-09-24 12:00:00".into(),
+        };
+        let markup = users_content(&[(user, "google".into())], html! {}).into_string();
+        assert!(markup.contains("class=\"table-container\""));
+        assert!(markup.contains("class=\"table is-fullwidth is-hoverable\""));
+        assert!(markup.contains("action=\"/admin/users/7/reset-link\""));
+        assert!(markup.contains("method=\"post\""));
+        assert!(markup.contains(">Reset link<"));
+    }
+
+    #[test]
+    fn branding_settings_write_rolls_back_on_database_failure() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        mangaread_core::db::init_db(&conn).unwrap();
+        mangaread_core::db::set_setting(&conn, "site_title", "Original", 1).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_privacy BEFORE INSERT ON site_settings
+             WHEN NEW.key = 'legal_privacy' BEGIN
+                 SELECT RAISE(ABORT, 'test failure');
+             END;",
+        )
+        .unwrap();
+
+        let pairs = [
+            ("site_title", "Changed".to_string()),
+            ("legal_privacy", "Should not persist".to_string()),
+        ];
+        assert!(persist_branding(&mut conn, &pairs, 1).is_err());
+        assert_eq!(
+            mangaread_core::db::get_setting(&conn, "site_title").unwrap(),
+            Some("Original".into())
+        );
+    }
 }

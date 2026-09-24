@@ -128,8 +128,11 @@ website/src/
   templates/
     layout.rs       -- base_layout, reader_layout, error_layout
   static/
-    style.css       -- all styles (2319 lines, one file)
-    app.js          -- all client-side JavaScript
+    vendor/         -- vendored Bulma and provenance README
+    theme.css       -- shared Ink & Ember identity layer
+    reader.css      -- reader-only geometry and state
+    *.js            -- client behavior modules
+    fonts/          -- local Inter and Space Grotesk files
     favicon.svg
 ```
 

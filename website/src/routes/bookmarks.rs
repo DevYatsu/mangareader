@@ -26,7 +26,7 @@ pub async fn bookmarks_page(
         let db = state.db.lock().await;
         crate::config::site_config(&db)
     };
-    let css = cfg.css_overrides();
+    let css = cfg.theme_overrides();
     let content_markup = html! {
         div class="level" {
             div class="level-left" {

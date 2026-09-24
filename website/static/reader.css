@@ -1,8 +1,8 @@
 /* ============================================
    MangaRead — Reader 2.0
    Contract: docs/superpowers/specs/2026-09-20-reader2-design-contract.md
-   Layers on top of style.css (base layer). Every custom property is
-   consumed with a fallback: theme files supply none of them.
+   Standalone reader layer. Reader geometry and state are defined here; Bulma
+   and theme.css supply only the shared identity primitives.
    ============================================ */
 
 /* ── 2.1 Tokens ──
@@ -15,7 +15,12 @@
   --r-bg: #0a0a0a;
   --r-chrome-bg: rgba(10, 10, 10, 0.92);
   --r-chrome-fg: #ffffff;
-  --r-chrome-border: rgba(255, 255, 255, 0.06);
+  --r-chrome-border: rgba(255, 255, 255, 0.14);
+  --r-accent: #f59e0b;
+  --r-accent-fg: #111111;
+  --r-error: #fca5a5;
+  --r-surface: rgba(18, 18, 18, 0.96);
+  --r-surface-strong: #1f1f1f;
   --r-page-shadow: none;
   --r-radius: 0px;
   --r-dim: 0;
@@ -26,6 +31,8 @@
    Light presets MUST flip chrome fg/bg, or the fixed top bar (white text)
    disappears on a white page. */
 body.reader-page {
+  min-height: 100vh;
+  overflow-x: hidden;
   background: var(--r-bg, #0a0a0a);
   background-image: none;
   color: var(--r-chrome-fg, #ffffff);
@@ -33,27 +40,46 @@ body.reader-page {
 
 body[data-r-bg="black"] {
   --r-bg: #0a0a0a;
-  --r-chrome-bg: rgba(10, 10, 10, 0.92);
+  --r-chrome-bg: rgba(10, 10, 10, 0.96);
   --r-chrome-fg: #ffffff;
-  --r-chrome-border: rgba(255, 255, 255, 0.06);
+  --r-chrome-border: rgba(255, 255, 255, 0.14);
+  --r-accent: #f59e0b;
+  --r-accent-fg: #111111;
+  --r-error: #fca5a5;
+  --r-surface: rgba(18, 18, 18, 0.96);
+  --r-surface-strong: #1f1f1f;
 }
 
 body[data-r-bg="white"] {
   --r-bg: #ffffff;
-  --r-chrome-bg: rgba(255, 255, 255, 0.92);
+  --r-chrome-bg: rgba(255, 255, 255, 0.96);
   --r-chrome-fg: #111111;
-  --r-chrome-border: rgba(0, 0, 0, 0.08);
+  --r-chrome-border: rgba(17, 17, 17, 0.14);
+  --r-accent: #92400e;
+  --r-accent-fg: #ffffff;
+  --r-error: #b91c1c;
+  --r-surface: rgba(255, 255, 255, 0.96);
+  --r-surface-strong: #f3f4f6;
 }
 
 body[data-r-bg="sepia"] {
   --r-bg: #f4ecd8;
-  --r-chrome-bg: rgba(244, 236, 216, 0.92);
+  --r-chrome-bg: rgba(244, 236, 216, 0.97);
   --r-chrome-fg: #1f1a12;
-  --r-chrome-border: rgba(31, 26, 18, 0.1);
+  --r-chrome-border: rgba(31, 26, 18, 0.16);
+  --r-accent: #7c2d12;
+  --r-accent-fg: #ffffff;
+  --r-error: #991b1b;
+  --r-surface: rgba(244, 236, 216, 0.97);
+  --r-surface-strong: #e6d7b8;
 }
 
 body[data-r-bg="custom"] {
   --r-bg: var(--r-bg-custom, #0a0a0a);
+  /* JS replaces these with a luminance-aware set on init. */
+  --r-chrome-bg: rgba(10, 10, 10, 0.96);
+  --r-chrome-fg: #ffffff;
+  --r-surface: rgba(18, 18, 18, 0.96);
 }
 
 /* Every page box: radius and shadow come from the prefs layer.
@@ -75,6 +101,11 @@ body[data-r-frame="on"] {
 /* A rendered page clips its own frame; the strip resets both to keep the
    webtoon seam seamless. */
 .reader-images .reader-page img {
+  display: block;
+  width: 100%;
+  height: auto;
+  -webkit-user-select: none;
+  user-select: none;
   background: var(--r-bg, #0a0a0a);
 }
 .reader-page-placeholder {
@@ -194,7 +225,7 @@ body[data-r-layout="double"] .reader-page img {
   margin: 0 auto;
 }
 
-/* strip — continuous vertical stack. This generalises style.css:1311-1333. */
+/* strip — continuous vertical stack. */
 body[data-r-layout="strip"] #reader-images {
   display: flex;
   flex-direction: column;
@@ -291,45 +322,71 @@ body:not([data-r-layout="strip"])[data-r-fit][data-r-layout="double"] .reader-pa
   max-width: none;
 }
 
-/* Custom background colour input (§2.2): native colour swatch, sized to the
-   reader's 44px touch floor. Hidden unless `bg === 'custom'`.
-   (The inert treatment for a disabled `.reader-seg-btn` already exists in the
-   segmented-control block; no duplicate rule is added here.) */
-.reader-color {
-  width: 44px;
-  height: 44px;
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
-  border-radius: 10px;
-  cursor: pointer;
-}
-
-.reader-color[aria-disabled="true"] {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
 /* ============================================
    3. Controls surface
    ============================================ */
 
 /* ── 3.1 Top bar ── */
 .reader-topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  padding-top: env(safe-area-inset-top, 0);
   background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  transform: translateY(-100%);
+  transition: transform 300ms cubic-bezier(0.4, 0, 0.2, 1);
   border-bottom: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
   color: var(--r-chrome-fg, #ffffff);
   will-change: transform;
 }
 
+.reader-topbar.visible {
+  transform: translateY(0);
+}
+
 .reader-topbar-inner {
+  display: flex;
+  align-items: center;
   max-width: var(--r-max-w, 700px);
+  margin: 0 auto;
+  padding: 0.6rem 1rem;
   gap: 0.5rem;
 }
 
-/* 44px minimum touch target: the 36px rule at style.css:1246 fails §8.2. */
+/* 44px minimum touch target. */
+.reader-topbar-info {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.reader-topbar-title {
+  overflow: hidden;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  font-size: 0.8rem;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-topbar-chapter {
+  color: var(--r-chrome-fg, #ffffff);
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.reader-page-indicator {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  font-size: 0.8rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
 .reader-back-btn {
   width: 44px;
   height: 44px;
@@ -386,7 +443,49 @@ body:not([data-r-layout="strip"])[data-r-fit][data-r-layout="double"] .reader-pa
 
 .reader-icon-btn[aria-expanded="true"] {
   background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
-  color: var(--accent, #f59e0b);
+  color: var(--r-accent);
+}
+
+.reader-hint {
+  position: fixed;
+  bottom: 2rem;
+  left: 50%;
+  z-index: 40;
+  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
+  font-family: var(--bulma-family-primary);
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: hintPulse 3s ease-in-out infinite;
+}
+
+.reader-hint.hidden {
+  opacity: 0;
+}
+
+@keyframes hintPulse {
+  0%, 100% { opacity: 0.2; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--bulma-scheme-main) 25%, var(--bulma-scheme-main-ter) 50%, var(--bulma-scheme-main) 75%);
+  background-size: 800px 100%;
+  border-radius: var(--bulma-radius-small, 0.25rem);
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.skeleton-page {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  margin-bottom: 0.5rem;
+  border-radius: var(--bulma-radius, 0.5rem);
 }
 
 /* ── 3.3 HUD — floating counter, shown while strip scrolls ── */
@@ -540,8 +639,8 @@ body:not([data-r-layout="strip"])[data-r-fit][data-r-layout="double"] .reader-pa
 /* The 20px indicator: an inset outline, filled with the accent on :checked
    plus a tick drawn as an SVG data URI (no icon asset, no font dependency). */
 .reader-series-remember input#reader-remember-series:checked {
-  background-color: var(--accent, #f59e0b);
-  box-shadow: inset 0 0 0 1px var(--accent, #f59e0b);
+  background-color: var(--r-accent);
+  box-shadow: inset 0 0 0 1px var(--r-accent);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M2.5 8.5l3.5 3.5 7-8' fill='none' stroke='%23111111' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
@@ -550,46 +649,6 @@ body:not([data-r-layout="strip"])[data-r-fit][data-r-layout="double"] .reader-pa
   padding: 0 1rem;
   font-size: 0.75rem;
   color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
-}
-
-/* ── 3.4.2 Tabs (phones) — horizontal snap strip, no scrollbar ── */
-.reader-sheet-tabs {
-  display: flex;
-  gap: 0.4rem;
-  padding: 0.6rem 1rem;
-  overflow-x: auto;
-  scroll-snap-type: x mandatory;
-  overscroll-behavior-x: contain;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-  border-bottom: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
-}
-
-.reader-sheet-tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.reader-sheet-tab {
-  flex: 0 0 auto;
-  min-height: 44px;
-  padding: 0.5rem 0.9rem;
-  scroll-snap-align: start;
-  font-family: var(--font-display, inherit);
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
-  background: transparent;
-  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
-  border-radius: 999px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 160ms ease, color 160ms ease, border-color 160ms ease;
-}
-
-.reader-sheet-tab[aria-selected="true"] {
-  background: var(--accent, #f59e0b);
-  border-color: var(--accent, #f59e0b);
-  color: #111111;
 }
 
 /* ── 3.4.3 Groups ──
@@ -612,34 +671,11 @@ body:not([data-r-layout="strip"])[data-r-fit][data-r-layout="double"] .reader-pa
 
 .reader-sheet-group > h3 {
   margin-bottom: 0.7rem;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
-}
-
-/* A generic row inside a group. Element selectors only: the contract names
-   no row class, so none is invented.
-
-   This selector is (0,1,1) and would out-specify the single-class rules for
-   `.reader-keybind-row` further down, so rows that WRAP a control — the
-   keybind list and the zone-editor row — are excluded here. `:not(:has())`
-   would not match the keybind row itself (it contains keys, not another row),
-   hence the direct class exclusion plus the `:has()` for the editor row. */
-.reader-sheet-group > label,
-.reader-sheet-group > div:not(.reader-keybind-row):not(:has(#reader-zone-editor)):not(.reader-setting-intro):not(.reader-compact-setting):not(.reader-preset-grid) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  min-height: 44px;
-  font-size: 0.85rem;
-}
-
-.reader-sheet-group > label > span:first-child,
-.reader-sheet-group > div > span:first-child {
   color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
 }
 
@@ -657,7 +693,7 @@ body:not([data-r-layout="strip"])[data-r-fit][data-r-layout="double"] .reader-pa
   min-height: 44px;
   min-width: 44px;
   padding: 0.45rem 0.85rem;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.8rem;
   font-weight: 600;
   color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
@@ -669,8 +705,8 @@ body:not([data-r-layout="strip"])[data-r-fit][data-r-layout="double"] .reader-pa
 }
 
 .reader-seg-btn[aria-pressed="true"] {
-  background: var(--accent, #f59e0b);
-  color: #111111;
+  background: var(--r-accent);
+  color: var(--r-accent-fg, #111111);
 }
 
 .reader-seg-btn[disabled],
@@ -679,167 +715,8 @@ body:not([data-r-layout="strip"])[data-r-fit][data-r-layout="double"] .reader-pa
   cursor: not-allowed;
 }
 
-/* ── 3.6 Sliders ── */
-.reader-slider {
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 44px;
-  margin: 0;
-  background: transparent;
-  cursor: pointer;
-  accent-color: var(--accent, #f59e0b);
-  touch-action: pan-y;
-}
-
-/* `min-width: 0` above is load-bearing, not cosmetic: a range input has a
-   native min-content width (~129px in Chrome). At <480px that plus its label
-   can overflow the sheet row into horizontal scroll. */
-
-.reader-slider[aria-disabled="true"] {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.reader-slider-value {
-  flex: 0 0 auto;
-  min-width: 3.5ch;
-  font-size: 0.78rem;
-  font-variant-numeric: tabular-nums;
-  text-align: end;
-  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
-}
-
-/* ── 3.7 Zone editor (§4.2) ──
-   Boundaries are physical (from the left), so the editor stays WYSIWYG in
-   RTL. Handle positions arrive as inline `left` from JS; no property is
-   invented for them. Declared after the generic group-row rule, which is
-   (0,1,1) and would otherwise make the editor a flex item. */
-.reader-sheet-group > div:has(#reader-zone-editor) {
-  display: block;
-  min-height: 44px;
-}
-
-.reader-zone-editor {
-  position: relative;
-  width: 100%;
-  height: 80px;
-  margin: 0.4rem 0;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
-  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
-  /* Static sketch of the 30/40/30 default; JS moves the real handles. */
-  background-image: repeating-linear-gradient(to right,
-      transparent 0,
-      transparent calc(30% - 1px),
-      var(--r-chrome-border, rgba(255, 255, 255, 0.06)) calc(30% - 1px),
-      var(--r-chrome-border, rgba(255, 255, 255, 0.06)) 30%,
-      transparent 30%,
-      transparent calc(70% - 1px),
-      var(--r-chrome-border, rgba(255, 255, 255, 0.06)) calc(70% - 1px),
-      var(--r-chrome-border, rgba(255, 255, 255, 0.06)) 70%,
-      transparent 70%);
-  touch-action: none;
-}
-
-.reader-zone-handle {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 44px;
-  margin-inline-start: -22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: ew-resize;
-  touch-action: none;
-}
-
-.reader-zone-handle::before {
-  content: "";
-  width: 4px;
-  height: 56px;
-  border-radius: 999px;
-  background: var(--accent, #f59e0b);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent, #f59e0b) 22%, transparent);
-}
-
-.reader-zone-handle:focus-visible::before {
-  outline: 2px solid var(--accent, #f59e0b);
-  outline-offset: 2px;
-}
-
-/* ── 3.8 Key remap (§4.3) ──
-   Declared after the generic group-row rule, whose (0,1,1) selector would
-   otherwise force this row to `justify-content: space-between`. */
-.reader-keybind-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  min-height: 44px;
-  padding: 0.35rem 0;
-  border-bottom: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
-}
-
-/* The action name leads the row; element selector only, since §9 names no
-   class for it. It takes the free space so the keys and Reset align right. */
-.reader-keybind-row > span:first-child {
-  flex: 1 1 6rem;
-  min-width: 0;
-  font-size: 0.8rem;
-  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.reader-keybind-row[data-capture="1"] {
-  background: color-mix(in srgb, var(--accent, #f59e0b) 12%, transparent);
-  border-radius: 10px;
-}
-
-.reader-keybind-key {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 44px;
-  min-width: 44px;
-  padding: 0.35rem 0.6rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.75rem;
-  color: var(--r-chrome-fg, #ffffff);
-  background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
-  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
-  border-radius: 8px;
-  cursor: pointer;
-  transition: border-color 160ms ease, color 160ms ease;
-}
-
-.reader-keybind-key:hover {
-  border-color: var(--accent, #f59e0b);
-}
-
-.reader-keybind-row[data-capture="1"] .reader-keybind-key {
-  border-color: var(--accent, #f59e0b);
-  color: var(--accent, #f59e0b);
-}
-
-.reader-keybind-reset {
-  min-height: 44px;
-  min-width: 44px;
-  margin-inline-start: auto;
-  padding: 0.35rem 0.6rem;
-  font-size: 0.72rem;
-  color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 72%, transparent);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.reader-keybind-reset:hover {
-  color: var(--r-chrome-fg, #ffffff);
-  border-color: var(--r-chrome-border, rgba(255, 255, 255, 0.06));
+.reader-seg-btn[disabled][aria-pressed="true"] {
+  opacity: 1;
 }
 
 /* ── 3.9 Zones (§4.1) ──
@@ -910,11 +787,23 @@ body:has(.reader-sheet:not([hidden])) .reader-zone {
 }
 
 /* ── 3.10 Bottom nav + nav buttons in reader chrome ──
-   The base rules at style.css:1352-1394 assume a black page. Reader 2.0
-   can be white or sepia, so chrome fg/bg come from the preset variables. */
+   Chrome foreground and background come from the active reader tone. */
+body:not([data-r-layout="strip"]) .reader-page .reader-bottom-nav {
+  display: none;
+}
+
 .reader-page .reader-bottom-nav {
+  width: 100%;
   max-width: var(--r-max-w, 700px);
-  padding-bottom: calc(4rem + var(--r-controls-offset, 0px));
+  margin: 0 auto;
+  padding: 2rem 1rem 4rem;
+}
+
+.reader-page .reader-bottom-nav-inner {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
 }
 
 .reader-page .reader-nav-btn {
@@ -926,7 +815,7 @@ body:has(.reader-sheet:not([hidden])) .reader-zone {
 
 .reader-page .reader-nav-btn:hover {
   color: var(--r-chrome-fg, #ffffff);
-  border-color: var(--accent, #f59e0b);
+  border-color: var(--r-accent);
 }
 
 .reader-page .reader-nav-btn.secondary {
@@ -1033,8 +922,8 @@ body[data-r-focus="1"][data-r-notes="on"] :where(.reader-note-pin) {
 /* The extra `Next up: Ch. N` action lives in the overlay with the same
    .reader-nav-btn markup (§5.4). */
 .reader-chapter-nav .reader-nav-btn[data-action="next"] {
-  border-color: var(--accent, #f59e0b);
-  color: var(--accent, #f59e0b);
+  border-color: var(--r-accent);
+  color: var(--r-accent);
 }
 
 /* ── 5.5 Resume badge ── */
@@ -1062,7 +951,7 @@ body[data-r-focus="1"][data-r-notes="on"] :where(.reader-note-pin) {
 }
 
 .reader-resume-badge:hover {
-  border-color: var(--accent, #f59e0b);
+  border-color: var(--r-accent);
 }
 
 /* `display: inline-flex` above outranks the UA `[hidden] { display: none }`,
@@ -1078,9 +967,14 @@ body[data-r-focus="1"][data-r-notes="on"] :where(.reader-note-pin) {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  width: 100%;
+  width: calc(100% - 2rem);
   max-width: 420px;
   margin: 0.9rem auto 0;
+  padding: 0.75rem;
+  background: var(--r-surface, rgba(18, 18, 18, 0.96));
+  color: var(--r-chrome-fg, #ffffff);
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.14));
+  border-radius: 12px;
 }
 
 .reader-nextup-item {
@@ -1093,7 +987,7 @@ body[data-r-focus="1"][data-r-notes="on"] :where(.reader-note-pin) {
   border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
   border-radius: 10px;
   color: var(--r-chrome-fg, #ffffff);
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.85rem;
   font-weight: 600;
   text-decoration: none;
@@ -1102,7 +996,7 @@ body[data-r-focus="1"][data-r-notes="on"] :where(.reader-note-pin) {
 
 .reader-nextup-item:hover {
   background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
-  border-color: var(--accent, #f59e0b);
+  border-color: var(--r-accent);
 }
 
 /* The warm-up affordance is honest about being a warm-up, not a download:
@@ -1128,8 +1022,8 @@ body[data-r-focus="1"][data-r-notes="on"] :where(.reader-note-pin) {
 }
 
 .reader-nextup-prefetch[data-prefetch-state="ready"] {
-  color: var(--accent, #f59e0b);
-  border-color: var(--accent, #f59e0b);
+  color: var(--r-accent);
+  border-color: var(--r-accent);
   cursor: default;
 }
 
@@ -1171,7 +1065,7 @@ body[data-r-focus="1"][data-r-notes="on"] :where(.reader-note-pin) {
   min-height: 44px;
   min-width: 44px;
   padding: 0.35rem 0.75rem;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--r-chrome-fg, #ffffff);
@@ -1182,7 +1076,7 @@ body[data-r-focus="1"][data-r-notes="on"] :where(.reader-note-pin) {
 }
 
 #reader-countdown button:hover {
-  border-color: var(--accent, #f59e0b);
+  border-color: var(--r-accent);
 }
 
 /* ── 7. Offline banner ── */
@@ -1241,8 +1135,18 @@ body[data-r-focus="1"][data-r-notes="on"] :where(.reader-note-pin) {
    ============================================ */
 
 /* The syncing skeleton keeps the reader's width so the layout does not jump
-   on load (§7). Base rules at style.css:577-607 and 2031-2066 supply the
-   shimmer and the 3/5 / 3/4 boxes. */
+   on load (§7). The base rules supply the shimmer and the 3/5 / 3/4 boxes. */
+body.reader-page .loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  min-height: 60dvh;
+  padding: 4rem 2rem;
+  text-align: center;
+}
+
 body.reader-page .loading-state.reader-loading {
   max-width: var(--r-max-w, 700px);
   margin-inline: auto;
@@ -1321,19 +1225,19 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   min-height: 44px;
   min-width: 44px;
   padding: 0.55rem 1rem;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--r-chrome-fg, #ffffff);
   background: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 8%, transparent);
-  border: 1px solid var(--accent, #f59e0b);
+  border: 1px solid var(--r-accent);
   border-radius: 10px;
   cursor: pointer;
   pointer-events: auto;
 }
 
 .reader-retry-btn:hover {
-  background: color-mix(in srgb, var(--accent, #f59e0b) 18%, transparent);
+  background: color-mix(in srgb, var(--r-accent) 18%, transparent);
 }
 
 /* ============================================
@@ -1357,9 +1261,9 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   padding: 0;
   border-radius: 999px;
   background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
-  border: 1px solid var(--accent, #f59e0b);
-  color: var(--accent, #f59e0b);
-  font-family: var(--font-display, inherit);
+  border: 1px solid var(--r-accent);
+  color: var(--r-accent);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.75rem;
   font-weight: 700;
   cursor: pointer;
@@ -1372,7 +1276,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--accent, #f59e0b);
+  background: var(--r-accent);
 }
 
 .reader-note-pin::after {
@@ -1402,7 +1306,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   bottom: 0;
   z-index: 210;
   padding: 0.9rem 1rem calc(0.9rem + env(safe-area-inset-bottom, 0px));
-  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  background: var(--r-surface, rgba(18, 18, 18, 0.96));
   border-top: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
   border-start-start-radius: 18px;
   border-start-end-radius: 18px;
@@ -1428,7 +1332,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   min-height: 96px;
   max-height: 40dvh;
   padding: 0.7rem 0.8rem;
-  font-family: var(--font-body, inherit);
+  font-family: var(--bulma-family-primary);
   font-size: 0.9rem;
   line-height: 1.5;
   resize: vertical;
@@ -1446,7 +1350,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   min-height: 44px;
   min-width: 44px;
   padding: 0.55rem 1rem;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.85rem;
   font-weight: 600;
   border-radius: 10px;
@@ -1455,9 +1359,9 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
 
 .reader-note-save {
   align-self: flex-end;
-  color: #111111;
-  background: var(--accent, #f59e0b);
-  border: 1px solid var(--accent, #f59e0b);
+  color: var(--r-accent-fg, #111111);
+  background: var(--r-accent);
+  border: 1px solid var(--r-accent);
 }
 
 .reader-note-cancel {
@@ -1474,7 +1378,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
 
 .reader-note-error {
   margin: 0;
-  color: #f87171;
+  color: var(--r-error, #fca5a5);
   font-size: 0.8rem;
 }
 
@@ -1493,7 +1397,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   display: flex;
   flex-direction: column;
   max-height: 70dvh;
-  background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
+  background: var(--r-surface, rgba(18, 18, 18, 0.96));
   color: var(--r-chrome-fg, #ffffff);
   border-top: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.06));
   border-start-start-radius: 18px;
@@ -1518,7 +1422,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
 .reader-notes-panel header h2 {
   flex: 1;
   min-width: 0;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.92rem;
   font-weight: 600;
 }
@@ -1579,19 +1483,19 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   min-height: 44px;
   min-width: 44px;
   padding: 0.35rem 0.5rem;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.75rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--accent, #f59e0b);
-  background: color-mix(in srgb, var(--accent, #f59e0b) 12%, transparent);
+  color: var(--r-accent);
+  background: color-mix(in srgb, var(--r-accent) 12%, transparent);
   border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
 }
 
 .reader-note-jump:hover {
-  border-color: var(--accent, #f59e0b);
+  border-color: var(--r-accent);
 }
 
 .reader-note-time {
@@ -1685,26 +1589,22 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
 }
 
 /* ── <=768px ──
-   Touch floor for everything interactive, stated once and explicitly
-   because the 36px base rule at style.css:1246 is the known violation. */
+   Touch floor for every interactive reader control. */
 @media (max-width: 768px) {
   .reader-back-btn,
   .reader-icon-btn,
   .reader-zone,
   .reader-nav-btn,
   .reader-seg-btn,
-  .reader-sheet-tab,
-  .reader-keybind-key,
-  .reader-keybind-reset,
   .reader-retry-btn,
   .reader-notes-close,
   .reader-note-pin,
   .reader-note-jump,
-  .reader-slider,
   .reader-hud,
   .reader-resume-badge,
   .reader-nextup-item,
-  .reader-nextup-prefetch {
+  .reader-nextup-prefetch,
+  .reader-focus-exit {
     min-width: 44px;
     min-height: 44px;
   }
@@ -1738,13 +1638,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
     transform: translateX(0);
   }
 
-  .reader-sheet-tabs {
-    display: none;
-  }
-
-  /* Rail: the panel becomes the scroller and every group stacks (§3.3). The
-     author `display: block` also beats the UA `[hidden] { display: none }`,
-     which is what makes all five groups visible at once. */
+  /* Rail: the panel becomes the scroller and every group stacks. */
   .reader-sheet-panel {
     overflow-y: auto;
   }
@@ -1791,6 +1685,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
    as a wall of independent controls. */
 .reader-sheet-panel {
   max-height: min(78dvh, 640px);
+  padding: 0;
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
   border-color: color-mix(in srgb, var(--r-chrome-fg, #ffffff) 12%, transparent);
   box-shadow: 0 -24px 70px rgba(0, 0, 0, 0.28);
@@ -1821,7 +1716,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   overflow: visible;
   clip: auto;
   white-space: normal;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 1.2rem;
   font-weight: 700;
   line-height: 1.2;
@@ -1833,7 +1728,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   padding: 1rem 1.1rem 1.15rem;
   border-bottom: 0;
   background:
-    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--accent, #f59e0b) 8%, transparent), transparent 34%),
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--r-accent) 8%, transparent), transparent 34%),
     transparent;
 }
 
@@ -1895,9 +1790,9 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
 }
 
 .reader-preset-btn[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--accent, #f59e0b) 12%, transparent);
-  border-color: var(--accent, #f59e0b);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent, #f59e0b) 36%, transparent);
+  background: color-mix(in srgb, var(--r-accent) 12%, transparent);
+  border-color: var(--r-accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--r-accent) 36%, transparent);
 }
 
 .reader-preset-btn[aria-pressed="true"]::after {
@@ -1908,8 +1803,8 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent, #f59e0b);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent, #f59e0b) 16%, transparent);
+  background: var(--r-accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--r-accent) 16%, transparent);
 }
 
 .reader-preset-btn:disabled {
@@ -1937,7 +1832,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
 }
 
 .reader-preset-btn[aria-pressed="true"] .reader-preset-visual span {
-  background: color-mix(in srgb, var(--accent, #f59e0b) 76%, var(--r-chrome-fg, #ffffff));
+  background: color-mix(in srgb, var(--r-accent) 76%, var(--r-chrome-fg, #ffffff));
 }
 
 .reader-preset-visual-flow {
@@ -1964,7 +1859,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
 }
 
 .reader-preset-copy strong {
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.82rem;
   line-height: 1.2;
 }
@@ -2052,7 +1947,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
 
 .reader-utility-row {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.55rem;
   padding: 0.8rem 1.1rem 0;
 }
@@ -2061,7 +1956,7 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   min-width: 0;
   min-height: 44px;
   padding: 0.55rem 0.7rem;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.78rem;
   font-weight: 700;
   color: var(--r-chrome-fg, #ffffff);
@@ -2073,8 +1968,8 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
 
 .reader-utility-btn:hover,
 .reader-utility-btn[aria-pressed="true"] {
-  color: var(--accent, #f59e0b);
-  border-color: var(--accent, #f59e0b);
+  color: var(--r-accent);
+  border-color: var(--r-accent);
 }
 
 .reader-focus-exit {
@@ -2085,12 +1980,12 @@ body.reader-page .reader-page[data-page-state="loading"] .reader-page-placeholde
   display: none;
   min-height: 44px;
   padding: 0.55rem 0.8rem;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.78rem;
   font-weight: 700;
   color: var(--r-chrome-fg, #ffffff);
   background: var(--r-chrome-bg, rgba(10, 10, 10, 0.92));
-  border: 1px solid var(--accent, #f59e0b);
+  border: 1px solid var(--r-accent);
   border-radius: 11px;
   cursor: pointer;
 }
@@ -2104,7 +1999,7 @@ body[data-r-focus="1"] .reader-focus-exit {
   min-height: 44px;
   margin-top: 0.35rem;
   padding: 0.55rem 0.8rem;
-  font-family: var(--font-display, inherit);
+  font-family: var(--bulma-family-secondary);
   font-size: 0.78rem;
   font-weight: 700;
   color: var(--r-chrome-fg, #ffffff);
@@ -2115,8 +2010,8 @@ body[data-r-focus="1"] .reader-focus-exit {
 }
 
 .reader-restore-btn:hover {
-  border-color: var(--accent, #f59e0b);
-  color: var(--accent, #f59e0b);
+  border-color: var(--r-accent);
+  color: var(--r-accent);
 }
 
 .reader-settings-status {
@@ -2183,10 +2078,9 @@ body[data-r-focus="1"] .reader-focus-exit {
 }
 
 /* ── 8.2 Focus rings ──
-   `--accent` may be absent on an unknown theme, so the fallback is
-   mandatory, not decorative. */
+   The root reader accent provides the default token. */
 :focus-visible {
-  outline: 2px solid var(--accent, #f59e0b);
+  outline: 2px solid var(--r-accent);
   outline-offset: 2px;
 }
 
@@ -2199,8 +2093,6 @@ body[data-r-focus="1"] .reader-focus-exit {
   .reader-hint,
   .reader-hint.hidden {
     animation: none;
-    /* style.css:1409 declares a 0.8s opacity fade on the hint; without this
-       the pulse is gone but the fade still animates under reduced motion. */
     transition-duration: 0.01ms;
   }
 
@@ -2210,13 +2102,11 @@ body[data-r-focus="1"] .reader-focus-exit {
   .reader-resume-badge,
   .reader-note-pin,
   .reader-page-placeholder,
-  .reader-sheet-tab,
   .reader-seg-btn,
   .reader-icon-btn,
   .reader-back-btn,
   .reader-nav-btn,
   .reader-nextup-item,
-  .reader-keybind-key,
   .reader-note-jump,
   .reader-preset-btn,
   .reader-utility-btn,
@@ -2253,8 +2143,7 @@ body[data-r-focus="1"] .reader-focus-exit {
 }
 
 /* ── 5.6 No smooth scrolling inside the reader ──
-   style.css:66 sets `html { scroll-behavior: smooth }` globally. In `strip`
-   and `vertical` the snap/scroll navigation must be immediate. */
+   Snap and scroll navigation must remain immediate. */
 html:has(body.reader-page),
 body.reader-page,
 body.reader-page #reader-images {
@@ -2262,16 +2151,30 @@ body.reader-page #reader-images {
 }
 
 /* ── 8.2 No horizontal scroll ──
-   The base rule at style.css:1210 already sets `overflow-x: hidden` on the
-   body; this keeps the fixed overlays from contributing scroll width in the
-   first place. No `max-width` is set on the body: `100vw` includes the
-   scrollbar and would shift a centred column by half the scrollbar width. */
+   The body hides horizontal overflow; these fixed overlays also avoid
+   contributing scroll width. No `max-width` is set on the body because
+   `100vw` includes the scrollbar and would shift a centred column. */
 #reader-zones,
 .reader-chapter-nav,
 .reader-dim {
   max-width: 100%;
 }
 
+@media (max-width: 767px) {
+  .reader-sheet-panel {
+    max-height: 85dvh;
+  }
+}
 
+@media (max-width: 480px) {
+  .reader-sheet-panel {
+    height: calc(100dvh - env(safe-area-inset-top, 0px));
+    max-height: none;
+  }
+}
 
-
+@media (min-width: 768px) {
+  .reader-sheet-panel {
+    max-height: none;
+  }
+}

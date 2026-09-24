@@ -81,11 +81,8 @@
   --bulma-focus-l: var(--bulma-primary-l);
 
   /* Bulma renders anchor color from --bulma-link-* (its factory 233deg /
-     100% / 63% is the blue). The pre-migration theme painted every unclassed
-     anchor with an accent color, so leaving these at Bulma's defaults
-     silently drops links out of the identity. §4.3 keeps the accent
-     admin-rebrandable, so bind rather than copy: an admin rebrand moves the
-     link color with the accent. */
+     100% / 63% is the blue). Bind the link color to the accent so an admin
+     rebrand moves links with the identity. */
   --bulma-link-h: var(--bulma-primary-h);
   --bulma-link-s: var(--bulma-primary-s);
   --bulma-link-l: var(--bulma-primary-l);
@@ -127,13 +124,7 @@
   --bulma-radius-medium: 0.625rem;
   --bulma-radius-large: 0.875rem;
 
-  /* transitional: reader.css still reads the legacy names until Slice D.
-     `style.css` was the only definer of these, and it is no longer linked,
-     so without this bridge reader.css's `var(--font-display, …)` calls all
-     fall back to inherited body type. Bound, not copied: an admin rebrand
-     moves the faces with the Bulma family tokens. */
-  --font-display: var(--m-font-display);
-  --font-body: var(--bulma-family-primary);
+  /* Reader uses the shared Bulma family tokens directly. */
 }
 
 /* --------------------------------------------------------------------------

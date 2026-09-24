@@ -397,7 +397,6 @@
     }
 
     // Bookmark buttons on series detail page
-    // Bookmark buttons on series detail page
     initBookmarkButtons();
 
     // Bookmarks page

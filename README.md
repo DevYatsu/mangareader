@@ -170,7 +170,7 @@ mangaread/
 │       ├── scraper_helper  # build_engine(), create_webdriver(), start_sync_loop()
 │       ├── routes/         # 10 route modules
 │       ├── templates/      # layout.rs (base_layout, reader_layout, error_layout)
-│       └── static/         # style.css, app.js, favicon.svg
+│       └── static/         # Bulma vendor, theme/reader CSS, JS, fonts
 ├── docs/architecture/      # Architecture documentation
 ├── Dockerfile
 └── docker-compose.yml

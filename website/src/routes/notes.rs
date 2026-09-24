@@ -51,6 +51,15 @@ fn bad(msg: &str) -> Response {
         .into_response()
 }
 
+fn note_json(note: &mangaread_core::domain::Note) -> serde_json::Value {
+    json!({
+        "id": note.id,
+        "page": note.page,
+        "body": note.body,
+        "created_at": note.created_at,
+    })
+}
+
 /// GET `/api/notes?chapter_id=N` — the caller's notes on a chapter.
 pub async fn list_notes(
     State(state): State<Arc<AppState>>,
@@ -70,10 +79,7 @@ pub async fn list_notes(
             }
         }
     };
-    let items: Vec<_> = notes
-        .into_iter()
-        .map(|n| json!({"id": n.id, "page": n.page, "body": n.body, "created_at": n.created_at}))
-        .collect();
+    let items: Vec<_> = notes.iter().map(note_json).collect();
     Json(json!({ "notes": items })).into_response()
 }
 
@@ -91,17 +97,26 @@ pub async fn create_note(
         Ok(p) => p,
         Err(_) => return bad("Invalid page."),
     };
-    let id = {
+    let created = {
         let db = state.db.lock().await;
         // The chapter FK fails if the chapter does not exist.
-        match mangaread_core::db::insert_note(&db, user.id, body.chapter_id, page, &text) {
+        let id = match mangaread_core::db::insert_note(&db, user.id, body.chapter_id, page, &text) {
             Ok(id) => id,
             Err(_) => return bad("Could not save note."),
+        };
+        // Return the persisted timestamp immediately instead of making the
+        // client issue a second request merely to render a just-created note.
+        match mangaread_core::db::list_notes(&db, user.id, body.chapter_id)
+            .ok()
+            .and_then(|notes| notes.into_iter().find(|note| note.id == id))
+        {
+            Some(note) => note,
+            None => return bad("Could not save note."),
         }
     };
     (
         StatusCode::CREATED,
-        Json(json!({"ok": true, "note": {"id": id, "page": page, "body": text}})),
+        Json(json!({"ok": true, "note": note_json(&created)})),
     )
         .into_response()
 }
@@ -123,5 +138,22 @@ mod tests {
         assert!(validate_page(0).is_err());
         assert!(validate_page(1).is_ok());
         assert!(validate_page(9999).is_ok());
+    }
+
+    #[test]
+    fn note_json_includes_creation_timestamp() {
+        let note = mangaread_core::domain::Note {
+            id: 7,
+            user_id: 2,
+            chapter_id: 3,
+            page: 1,
+            body: "remember this".into(),
+            created_at: "2026-09-25 12:34:56".into(),
+        };
+        let value = note_json(&note);
+        assert_eq!(value["id"], 7);
+        assert_eq!(value["page"], 1);
+        assert_eq!(value["body"], "remember this");
+        assert_eq!(value["created_at"], "2026-09-25 12:34:56");
     }
 }

@@ -38,7 +38,7 @@ impl Nav {
 /// only their own content and must not add another `.section > .container`.
 ///
 /// `overrides` is the `:root[data-theme="dark"]` fragment from
-/// [`crate::config::SiteConfig::css_overrides`], carrying admin-derived colors.
+/// [`crate::config::SiteConfig::theme_overrides`], carrying admin-derived colors.
 /// `nav` marks the active navbar entry.
 pub fn base_layout(
     title: &str,

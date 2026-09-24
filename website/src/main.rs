@@ -155,10 +155,6 @@ async fn main() -> anyhow::Result<()> {
             post(crate::routes::settings::profile_submit),
         )
         .route(
-            "/settings/appearance",
-            post(crate::routes::settings::appearance_submit),
-        )
-        .route(
             "/settings/password",
             post(crate::routes::settings::password_submit),
         )

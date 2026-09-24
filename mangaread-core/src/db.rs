@@ -693,8 +693,7 @@ fn map_user_row(row: &rusqlite::Row) -> rusqlite::Result<User> {
         password_hash: row.get(3)?,
         role: Role::from_str(&row.get::<_, String>(4)?),
         locale: row.get(5)?,
-        theme: row.get(6)?,
-        created_at: row.get(7)?,
+        created_at: row.get(6)?,
     })
 }
 
@@ -710,7 +709,7 @@ pub fn create_user(conn: &Connection, u: &NewUser) -> Result<i64, Error> {
 /// Find a user by email. `NotFound` when missing.
 pub fn find_user_by_email(conn: &Connection, email: &str) -> Result<User, Error> {
     conn.query_row(
-        "SELECT id, name, email, password_hash, role, locale, theme, created_at FROM users WHERE email = ?1",
+        "SELECT id, name, email, password_hash, role, locale, created_at FROM users WHERE email = ?1",
         rusqlite::params![email],
         map_user_row,
     )
@@ -746,7 +745,7 @@ pub fn insert_session(
 /// Find the user owning a live session token (`expires_at > now`).
 pub fn find_user_by_session(conn: &Connection, token: &str, now: &str) -> Result<User, Error> {
     conn.query_row(
-        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.theme, u.created_at
+        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.created_at
          FROM users u JOIN sessions s ON s.user_id = u.id
          WHERE s.token = ?1 AND s.expires_at > ?2",
         rusqlite::params![token, now],
@@ -789,7 +788,7 @@ pub fn find_user_by_oauth(
     provider_user_id: &str,
 ) -> Result<User, Error> {
     conn.query_row(
-        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.theme, u.created_at
+        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.created_at
          FROM users u JOIN oauth_accounts o ON o.user_id = u.id
          WHERE o.provider = ?1 AND o.provider_user_id = ?2",
         rusqlite::params![provider, provider_user_id],
@@ -864,7 +863,7 @@ pub fn delete_sessions_for_user(conn: &Connection, user_id: i64) -> Result<(), E
 /// All users ordered by id (admin list).
 pub fn list_users(conn: &Connection) -> Result<Vec<User>, Error> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, email, password_hash, role, locale, theme, created_at FROM users ORDER BY id ASC",
+        "SELECT id, name, email, password_hash, role, locale, created_at FROM users ORDER BY id ASC",
     )?;
     let rows = stmt.query_map([], map_user_row)?;
     let mut out = Vec::new();
@@ -994,17 +993,18 @@ pub fn list_notes(conn: &Connection, user_id: i64, chapter_id: i64) -> Result<Ve
         .map_err(Error::from)
 }
 
-/// Update a user's profile fields (name, locale, theme).
+/// Update a user's editable profile fields (name and locale).
+///
+/// The legacy `users.theme` value is intentionally left untouched.
 pub fn update_user_profile(
     conn: &Connection,
     user_id: i64,
     name: &str,
     locale: &str,
-    theme: &str,
 ) -> Result<(), Error> {
     conn.execute(
-        "UPDATE users SET name = ?1, locale = ?2, theme = ?3 WHERE id = ?4",
-        rusqlite::params![name, locale, theme, user_id],
+        "UPDATE users SET name = ?1, locale = ?2 WHERE id = ?3",
+        rusqlite::params![name, locale, user_id],
     )?;
     Ok(())
 }
@@ -1119,6 +1119,7 @@ mod tests {
         let conn = mem();
         assert_eq!(get_setting(&conn, "site_title").unwrap(), None);
         set_setting(&conn, "site_title", "MyDen", 1).unwrap();
+        set_setting(&conn, "site_theme", "retired-theme", 1).unwrap();
         assert_eq!(
             get_setting(&conn, "site_title").unwrap().as_deref(),
             Some("MyDen")
@@ -1133,9 +1134,26 @@ mod tests {
             },
         )
         .unwrap();
-        update_user_profile(&conn, id, "renamed", "fr", "asura").unwrap();
+        conn.execute(
+            "UPDATE users SET theme = 'asura' WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+        update_user_profile(&conn, id, "renamed", "fr").unwrap();
         let u = find_user_by_email(&conn, "r@x.io").unwrap();
         assert_eq!(u.name, "renamed");
+        let stored_theme: String = conn
+            .query_row(
+                "SELECT theme FROM users WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_theme, "asura");
+        assert_eq!(
+            get_setting(&conn, "site_theme").unwrap().as_deref(),
+            Some("retired-theme")
+        );
     }
 
     #[test]

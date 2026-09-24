@@ -8,18 +8,14 @@
 //! | `SITE_COLOR` | `#f59e0b` | Primary accent color (hex) |
 //! | `SITE_BG` | `#131210` | Page background color |
 //!
-//! Colors `accent_hover` and `accent_dim` are derived from the accent:
-//! `accent_hover` in [`SiteConfig::from_env`], `accent_dim` inline in
-//! [`SiteConfig::css_overrides`].
-//! Font, max-width, and other layout tokens are set in CSS variables
-//! (see `:root` in `style.css`) and can be overridden via a local
-//! override stylesheet or inline `<style>`.
+//! Shipped CSS receives the admin color through shared Bulma component
+//! variables in [`SiteConfig::theme_overrides`]. Font and layout tokens live
+//! in the shared identity stylesheet.
 
 /// All user-facing settings derived from environment variables.
 pub struct SiteConfig {
     pub site_title: String,
     pub accent: String,
-    pub accent_hover: String,
     pub bg_page: String,
     /// Red component of accent (0-255) for rgba() usage in CSS.
     pub accent_r: u8,
@@ -27,34 +23,6 @@ pub struct SiteConfig {
     pub accent_g: u8,
     /// Blue component of accent (0-255).
     pub accent_b: u8,
-}
-
-/// Single allowlist of theme names, shared by the layout link builder,
-/// the settings/appearance validation, and the admin theme picker.
-///
-/// The first element of each pair is the theme key (stylesheet file stem
-/// and `theme-{key}` body class); the second is the human-readable label.
-pub const THEMES: &[(&str, &str)] = &[
-    ("default", "Default dark"),
-    ("webtoon", "Webtoon clean"),
-    ("asura", "Asura dark"),
-    ("demonic", "Demonic crimson"),
-];
-
-/// Stylesheet URL for a theme, or `None` when no extra stylesheet applies.
-///
-/// Only `webtoon`/`asura`/`demonic` ship a file; `default`, empty, and
-/// unknown names fall back to the base stylesheet (current look preserved).
-pub fn theme_css(theme: &str) -> Option<String> {
-    match theme {
-        "webtoon" | "asura" | "demonic" => Some(format!("/static/themes/{theme}.css")),
-        _ => None,
-    }
-}
-
-/// Whether `theme` is an allowlisted [`THEMES`] key.
-pub fn is_theme(theme: &str) -> bool {
-    THEMES.iter().any(|(key, _)| *key == theme)
 }
 
 /// Whether `s` is a usable `#rrggbb` hex color (leading `#` optional).
@@ -115,18 +83,6 @@ pub fn hex_to_hsl(hex: &str) -> (f64, f64, f64) {
     (h, s * 100.0, l * 100.0)
 }
 
-/// Lighten a hex color by blending it toward white.
-fn lighten(hex: &str, amount: f32) -> String {
-    let (r, g, b) = parse_hex(hex);
-    let lerp = |a: u8, t: f32| (a as f32 + (255.0 - a as f32) * t) as u8;
-    format!(
-        "#{:02x}{:02x}{:02x}",
-        lerp(r, amount),
-        lerp(g, amount),
-        lerp(b, amount)
-    )
-}
-
 impl SiteConfig {
     /// Build from environment variables with sensible defaults.
     pub fn from_env() -> Self {
@@ -136,7 +92,6 @@ impl SiteConfig {
 
         Self {
             site_title: std::env::var("SITE_TITLE").unwrap_or_else(|_| "MangaRead".into()),
-            accent_hover: lighten(&accent, 0.25),
             accent,
             bg_page,
             accent_r,
@@ -154,12 +109,9 @@ impl SiteConfig {
     /// colours recompute. `--bulma-primary-rgb` is a literal in Bulma and is
     /// therefore written by hand.
     ///
-    /// The trailing `--accent*` / `--bg-page` variables are transitional
-    /// aliases, not part of the Ink & Ember identity: `reader.css` still reads
-    /// them, and Slice D rewrites that file onto `--bulma-primary` and deletes
-    /// them. They are re-emitted here so admin rebranding keeps reaching reader
-    /// pages until then.
-    pub fn css_overrides(&self) -> String {
+    /// The reader consumes the same Bulma primary/surface tokens as every
+    /// other page. No legacy color aliases are emitted.
+    pub fn theme_overrides(&self) -> String {
         let (h, s, l) = hex_to_hsl(&self.accent);
         let (_, _, bg_l) = hex_to_hsl(&self.bg_page);
         // Elevation steps stay proportional to the chosen page lightness so
@@ -168,12 +120,6 @@ impl SiteConfig {
         let ter = (bg_l + 4.0).min(100.0);
         let background = (bg_l + 6.0).min(100.0);
         let (ar, ag, ab) = (self.accent_r, self.accent_g, self.accent_b);
-        let accent = &self.accent;
-        let hover = &self.accent_hover;
-        // Legacy tokens composed exactly as the pre-migration block did:
-        // `--accent-dim` is the accent hex with an `14` (alpha ~8%) suffix.
-        let dim = format!("{accent}14");
-        let bg = &self.bg_page;
         // Whole-number precision matches the identity tokens in `theme.css`
         // (`38deg` / `92%` / `50%`), so the env defaults reproduce the
         // designed palette exactly rather than drifting by fractions of a
@@ -181,18 +127,14 @@ impl SiteConfig {
         format!(
             ":root[data-theme=\"dark\"]{{--bulma-primary-h:{h:.0}deg;--bulma-primary-s:{s:.0}%;\
 --bulma-primary-l:{l:.0}%;--bulma-primary-rgb:{ar},{ag},{ab};--bulma-scheme-main-l:{bg_l:.0}%;\
---bulma-scheme-main-bis-l:{bis:.0}%;--bulma-scheme-main-ter-l:{ter:.0}%;\
---bulma-background-l:{background:.0}%;\
-/* transitional: reader.css still reads these; Slice D deletes them */\
---accent:{accent};--accent-hover:{hover};--accent-dim:{dim};--bg-page:{bg};\
---accent-r:{ar};--accent-g:{ag};--accent-b:{ab};}}"
+--bulma-scheme-main-bis-l:{bis:.0}%;--bulma-scheme-main-ter-l:{ter:.0}%;--bulma-background-l:{background:.0}%;}}"
         )
     }
 
     /// Overlay DB-backed settings on top of the env boot defaults.
     ///
-    /// Applies `site_title`, `site_accent` (recomputing hover + rgb), and
-    /// `site_bg` when present and non-empty. Invalid hex falls back to the
+    /// Applies `site_title`, `site_accent` (recomputing its RGB components),
+    /// and `site_bg` when present and non-empty. Invalid hex falls back to the
     /// current value (never blank).
     pub fn from_settings(map: &std::collections::HashMap<String, String>) -> Self {
         let mut cfg = Self::from_env();
@@ -204,7 +146,6 @@ impl SiteConfig {
         if let Some(accent) = map.get("site_accent") {
             if !accent.trim().is_empty() && is_valid_hex(accent) {
                 cfg.accent = normalize_hex(accent);
-                cfg.accent_hover = lighten(&cfg.accent, 0.25);
                 let (r, g, b) = parse_hex(&cfg.accent);
                 cfg.accent_r = r;
                 cfg.accent_g = g;
@@ -274,52 +215,40 @@ mod tests {
         let cfg = SiteConfig {
             site_title: "T".into(),
             accent: "#f59e0b".into(),
-            accent_hover: "#fbbf24".into(),
             bg_page: "#131210".into(),
             accent_r: 245,
             accent_g: 158,
             accent_b: 11,
         };
         // The exact string IS the contract: one assertion locks the selector,
-        // the emission format, the seven primary/surface components, and the
-        // transitional accent aliases together. The expected value below is
-        // the default config's output, which reproduces `theme.css` exactly.
+        // the emission format, and the primary/surface components together.
+        // The expected value below is the default config's output, which
+        // reproduces `theme.css` exactly.
         assert_eq!(
-            cfg.css_overrides(),
+            cfg.theme_overrides(),
             concat!(
                 ":root[data-theme=\"dark\"]{--bulma-primary-h:38deg;--bulma-primary-s:92%;",
                 "--bulma-primary-l:50%;--bulma-primary-rgb:245,158,11;",
                 "--bulma-scheme-main-l:7%;--bulma-scheme-main-bis-l:9%;",
-                "--bulma-scheme-main-ter-l:11%;--bulma-background-l:13%;",
-                "/* transitional: reader.css still reads these; Slice D deletes them */",
-                "--accent:#f59e0b;--accent-hover:#fbbf24;--accent-dim:#f59e0b14;",
-                "--bg-page:#131210;--accent-r:245;--accent-g:158;--accent-b:11;}"
+                "--bulma-scheme-main-ter-l:11%;--bulma-background-l:13%;}"
             ),
         );
     }
 
     #[test]
     fn overrides_carry_the_configured_accent() {
-        // A non-default accent proves the legacy aliases are derived from
-        // config rather than hardcoded, so an admin rebrand cannot silently
-        // stop reaching reader.css.
+        // A non-default accent still reaches the shared Bulma primary tokens.
         let cfg = SiteConfig {
             site_title: "T".into(),
             accent: "#123456".into(),
-            accent_hover: "#abcdef".into(),
             bg_page: "#0a0b0c".into(),
             accent_r: 18,
             accent_g: 52,
             accent_b: 86,
         };
-        let css = cfg.css_overrides();
-        assert!(css.contains("--accent:#123456;"), "got {css}");
-        assert!(css.contains("--accent-hover:#abcdef;"), "got {css}");
-        assert!(css.contains("--accent-dim:#12345614;"), "got {css}");
-        assert!(css.contains("--bg-page:#0a0b0c;"), "got {css}");
-        assert!(css.contains("--accent-r:18;"), "got {css}");
-        assert!(css.contains("--accent-g:52;"), "got {css}");
-        assert!(css.contains("--accent-b:86;"), "got {css}");
+        let css = cfg.theme_overrides();
+        assert!(css.contains("--bulma-primary-rgb:18,52,86;"), "got {css}");
+        assert!(!css.contains("legacy"), "got {css}");
     }
 }
 

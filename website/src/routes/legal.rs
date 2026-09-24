@@ -41,7 +41,7 @@ async fn legal_page(
         (crate::config::site_config(&db), text)
     };
     let banner: Option<String> = None;
-    let css = cfg.css_overrides();
+    let css = cfg.theme_overrides();
     Html(
         crate::templates::layout::base_layout(
             title,

@@ -38,7 +38,7 @@ pub async fn series_detail(
         Ok(s) => s,
         Err(_) => {
             let cfg = crate::config::site_config(&db);
-            let css = cfg.css_overrides();
+            let css = cfg.theme_overrides();
             return Html(
                 crate::templates::layout::base_layout(
                     "Not Found",
@@ -65,7 +65,7 @@ pub async fn series_detail(
             h2 class="title is-3" { "Series not found" }
         };
         let cfg = crate::config::site_config(&db);
-        let css = cfg.css_overrides();
+        let css = cfg.theme_overrides();
         return Html(
             crate::templates::layout::base_layout(
                 &s.title,
@@ -214,7 +214,7 @@ pub async fn series_detail(
     };
 
     let cfg = crate::config::site_config(&db);
-    let css = cfg.css_overrides();
+    let css = cfg.theme_overrides();
     Html(
         crate::templates::layout::base_layout(
             &s.title,
@@ -312,7 +312,7 @@ pub async fn series_list(
     };
 
     let cfg = crate::config::site_config(&db);
-    let css = cfg.css_overrides();
+    let css = cfg.theme_overrides();
     Html(
         crate::templates::layout::base_layout(
             "Series",

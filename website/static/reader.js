@@ -44,27 +44,9 @@
    * stored preferences are not lost when someone changes pace.
    */
   var PRESETS = {
-    flow: {
-      layout: 'strip',
-      fit: '',
-      maxW: 700,
-      gap: 0,
-      doubleCover: false
-    },
-    page: {
-      layout: 'single',
-      fit: 'height',
-      maxW: 900,
-      gap: 0,
-      doubleCover: false
-    },
-    spread: {
-      layout: 'double',
-      fit: 'height',
-      maxW: 1400,
-      gap: 0,
-      doubleCover: true
-    }
+    flow: { layout: 'strip' },
+    page: { layout: 'single' },
+    spread: { layout: 'double' }
   };
 
   var ACTION_IDS = [
@@ -83,11 +65,6 @@
     'layout.cycle': ['KeyL'],
     'note.add': ['KeyM']
   };
-
-  /** Boolean prefs rendered as an on/off segmented control. */
-  var BOOL_PREFS = { frame: 1, doubleCover: 1, autoNext: 1, autoPrev: 1, showNotes: 1 };
-  /** Slider output unit suffix, matching the server-rendered `output`. */
-  var UNITS = { maxW: 'px', gap: 'px', hideDelay: 's', dimOpacity: '', swipeThreshold: 'px' };
 
   // ============================================================
   //  SMALL UTILITIES
@@ -122,6 +99,68 @@
 
   function isHexColor(v) {
     return typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v);
+  }
+
+  function customTone(color) {
+    var hex = String(color || '').replace('#', '');
+    if (hex.length !== 6) return null;
+    var channels = [0, 2, 4].map(function (i) {
+      var value = parseInt(hex.slice(i, i + 2), 16) / 255;
+      return value <= 0.04045 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+    });
+    var luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+    return luminance > 0.42 ? {
+      chromeBg: 'rgba(255, 255, 255, 0.96)',
+      chromeFg: '#111111',
+      chromeBorder: 'rgba(17, 17, 17, 0.14)',
+      surface: 'rgba(255, 255, 255, 0.96)',
+      surfaceStrong: '#f3f4f6',
+      accent: '#92400e',
+      accentFg: '#ffffff',
+      error: '#b91c1c'
+    } : {
+      chromeBg: 'rgba(10, 10, 10, 0.96)',
+      chromeFg: '#ffffff',
+      chromeBorder: 'rgba(255, 255, 255, 0.14)',
+      surface: 'rgba(18, 18, 18, 0.96)',
+      surfaceStrong: '#1f1f1f',
+      accent: '#f59e0b',
+      accentFg: '#111111',
+      error: '#fca5a5'
+    };
+  }
+
+  function readerTone(p) {
+    if (p.bg === 'white') return {
+      chromeBg: 'rgba(255, 255, 255, 0.96)', chromeFg: '#111111',
+      chromeBorder: 'rgba(17, 17, 17, 0.14)', surface: 'rgba(255, 255, 255, 0.96)',
+      surfaceStrong: '#f3f4f6', accent: '#92400e', accentFg: '#ffffff', error: '#b91c1c'
+    };
+    if (p.bg === 'sepia') return {
+      chromeBg: 'rgba(244, 236, 216, 0.97)', chromeFg: '#1f1a12',
+      chromeBorder: 'rgba(31, 26, 18, 0.16)', surface: 'rgba(244, 236, 216, 0.97)',
+      surfaceStrong: '#e6d7b8', accent: '#7c2d12', accentFg: '#ffffff', error: '#991b1b'
+    };
+    if (p.bg === 'custom') return customTone(p.bgCustom) || readerTone({ bg: 'black' });
+    return {
+      chromeBg: 'rgba(10, 10, 10, 0.96)', chromeFg: '#ffffff',
+      chromeBorder: 'rgba(255, 255, 255, 0.14)', surface: 'rgba(18, 18, 18, 0.96)',
+      surfaceStrong: '#1f1f1f', accent: '#f59e0b', accentFg: '#111111', error: '#fca5a5'
+    };
+  }
+
+  function applyReaderTone(p) {
+    var body = document.body;
+    if (!body) return;
+    var tone = readerTone(p);
+    body.style.setProperty('--r-chrome-bg', tone.chromeBg);
+    body.style.setProperty('--r-chrome-fg', tone.chromeFg);
+    body.style.setProperty('--r-chrome-border', tone.chromeBorder);
+    body.style.setProperty('--r-surface', tone.surface);
+    body.style.setProperty('--r-surface-strong', tone.surfaceStrong);
+    body.style.setProperty('--r-accent', tone.accent);
+    body.style.setProperty('--r-accent-fg', tone.accentFg);
+    body.style.setProperty('--r-error', tone.error);
   }
 
   function readJSON(storage, key, fallback) {
@@ -239,12 +278,13 @@
     local: null,           // device-local state (mangaread_reader_local)
     notes: [],
     sheetOpen: false,
-    capture: null,         // { action, index, button }
     keymap: null,          // combo -> action
     hideTimer: null,
     dimTimer: null,
     dimmed: false,
     progressTimer: null,
+    progressHydrationComplete: false,
+    serverProgressSeen: false,
     prefsSaveTimer: null,
     pendingServerPrefs: null,
     serverWriteId: 0,
@@ -253,8 +293,12 @@
     finished: false,
     autoNextTimer: null,
     countdownValue: 3,
-    lastStripEndAt: 0,
+    stripAutoNextTimer: null,
+    indicatorAnnouncementTimer: null,
+    pendingIndicatorText: '',
+    lastIndicatorAt: 0,
     resumePage: 0,
+    serverResumePage: 0,
     scrollTimer: null,
     longPressTimer: null,
     retried: {},
@@ -363,6 +407,90 @@
     }
   }
 
+  function progressTime(value) {
+    if (!value) return 0;
+    var raw = String(value);
+    if (raw.indexOf(' ') >= 0 && raw.indexOf('T') < 0) raw = raw.replace(' ', 'T') + 'Z';
+    var parsed = Date.parse(raw);
+    return isFinite(parsed) ? parsed : 0;
+  }
+
+  /**
+   * Hydrate every progress row in the series response without a server write.
+   * The local read-state map remains the resume source; finished is monotonic so
+   * an older started row can never downgrade a newer finished chapter locally.
+   */
+  function hydrateServerProgress() {
+    return new Promise(function (resolve) {
+      if (!isLoggedIn() || !state.seriesId || !window.MangaReadState ||
+          typeof window.MangaReadState.getReadState !== 'function' ||
+          typeof window.MangaReadState.saveReadState !== 'function') {
+        resolve();
+        return;
+      }
+      try {
+        fetch('/api/progress?series_id=' + encodeURIComponent(state.seriesId), {
+          headers: { 'Accept': '*/*' },
+          credentials: 'same-origin'
+        })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (data) {
+            var chapters = data && data.chapters;
+            if (!chapters || Object.prototype.toString.call(chapters) !== '[object Object]') {
+              resolve();
+              return;
+            }
+
+            var readState = window.MangaReadState.getReadState(state.seriesId) || {};
+            var changed = false;
+            var currentLocal = window.MangaReadState.getChapterStatus
+              ? window.MangaReadState.getChapterStatus(state.seriesId, state.chapterId)
+              : null;
+            state.finished = !!(currentLocal && currentLocal.status === 'finished');
+
+            Object.keys(chapters).forEach(function (chapterKey) {
+              var row = chapters[chapterKey];
+              if (!row || typeof row !== 'object') return;
+              var chapterId = parseInt(chapterKey, 10);
+              var page = parseInt(row.page, 10);
+              var status = row.status === 'finished' || row.status === 'started' || row.status === 'unread'
+                ? row.status : 'started';
+              if (!isFinite(chapterId) || chapterId < 1 || !isFinite(page) || page < 1) return;
+
+              var storageKey = 'ch_' + chapterId;
+              var local = readState[storageKey] || null;
+              var serverAt = progressTime(row.updated_at);
+              var localAt = progressTime(local && local.updated);
+              var isCurrent = chapterId === state.chapterId;
+              if (isCurrent) state.serverProgressSeen = true;
+              if (isCurrent && status === 'finished') state.finished = true;
+
+              // Ties follow the server's last-write-wins rule, except that a
+              // finished local row is never replaced by a started server row.
+              var wouldDowngrade = !!(local && local.status === 'finished' && status !== 'finished');
+              if (!local || (serverAt >= localAt && !wouldDowngrade)) {
+                readState[storageKey] = {
+                  status: status,
+                  page: page,
+                  updated: row.updated_at || (local && local.updated) || ''
+                };
+                changed = true;
+                if (isCurrent) {
+                  state.serverResumePage = page;
+                  var target = document.getElementById('resume-target');
+                  if (target) target.setAttribute('data-page', String(page));
+                }
+              }
+            });
+
+            if (changed) window.MangaReadState.saveReadState(state.seriesId, readState);
+            state.progressHydrationComplete = true;
+            resolve();
+          })
+          .catch(function () { resolve(); });
+      } catch (_) { resolve(); }
+    });
+  }
   // ============================================================
   //  ANON → ACCOUNT PREF MERGE (contract §3.4 / spec §16, finding 1)
   // ============================================================
@@ -384,12 +512,17 @@
       p.maxW === d.maxW &&
       p.gap === d.gap &&
       p.bg === d.bg &&
+      p.bgCustom === d.bgCustom &&
       p.frame === d.frame &&
       p.doubleCover === d.doubleCover &&
       p.autoNext === d.autoNext &&
       p.autoPrev === d.autoPrev &&
       p.hideDelay === d.hideDelay &&
       p.dimDelay === d.dimDelay &&
+      p.dimOpacity === d.dimOpacity &&
+      p.swipeThreshold === d.swipeThreshold &&
+      p.clickZones.join(',') === d.clickZones.join(',') &&
+      JSON.stringify(p.keybinds) === JSON.stringify(d.keybinds) &&
       p.showNotes === d.showNotes;
   }
 
@@ -479,6 +612,7 @@
   function applyPrefs() {
     var p = layoutPrefs();
     var b = document.body;
+    applyReaderTone(p);
     // Controller ruling: fit modes do not apply to `strip`. The stored fit
     // pref is preserved but never reaches the body on that layout.
     var activeFit = p.layout === 'strip' ? '' : p.fit;
@@ -499,11 +633,18 @@
     b.style.setProperty('--r-dim', String(state.dimmed ? p.dimOpacity : 0));
     // Fit wins over width but the stored width is never cleared (contract §2.2).
     b.style.setProperty('--r-max-w', activeFit ? '100%' : p.maxW + 'px');
+    if (state.track) {
+      if (p.autoNext) state.track.setAttribute('data-auto-next', '1');
+      else state.track.removeAttribute('data-auto-next');
+      if (p.autoPrev) state.track.setAttribute('data-auto-prev', '1');
+      else state.track.removeAttribute('data-auto-prev');
+    }
 
     syncControls();
     applyZoneWidths();
-    renderKeybinds();
+    rebuildKeymap();
     renderLayout();
+    maybeAutoNextStrip();
   }
 
   /** Two-way bind the compact preference surface to the effective prefs. */
@@ -543,28 +684,6 @@
       var pressed = btns[i].getAttribute('data-value') === value;
       btns[i].setAttribute('aria-pressed', pressed ? 'true' : 'false');
     }
-  }
-
-  function setSlider(pref, value) {
-    var el = $('input.reader-slider[data-pref="' + pref + '"]');
-    if (!el) return;
-    var out = el.parentNode ? $('output.reader-slider-value', el.parentNode) : null;
-    // `hideDelay` 0 means "never" and the slider cannot express it (min=1).
-    // Do not clobber the stored 0; show it as "Never" instead.
-    if (pref === 'hideDelay' && value === 0) {
-      el.value = String(clampInt(el.min, 1, 10, 1));
-      if (out) out.textContent = 'Never';
-      return;
-    }
-    el.value = String(value);
-    if (out) out.textContent = String(value) + (UNITS[pref] || '');
-  }
-
-  function setHandle(edge, value) {
-    var handle = $('.reader-zone-handle[data-edge="' + edge + '"]');
-    if (!handle) return;
-    handle.style.left = value + '%';
-    handle.setAttribute('aria-valuenow', String(value));
   }
 
   /** Map the stored physical boundaries onto the three zone buttons. */
@@ -708,20 +827,15 @@
   }
 
   function restoreDefaults() {
-    // Restore only the curated surface. Hidden legacy settings stay intact so
-    // restoring style never destroys a keymap, tap zones, notes, or auto-next.
+    // Restore only curated fields. Fit, width, gap, cover pairing, zones,
+    // keybinds, auto-next, dim, and every other advanced value remain intact.
     var current = effectivePrefs();
     var recommendedTone = current.bg === 'custom' ? 'custom' : 'black';
-    var recommended = {
+    applyPrefPatch({
       layout: PRESETS.flow.layout,
-      fit: PRESETS.flow.fit,
-      maxW: PRESETS.flow.maxW,
-      gap: PRESETS.flow.gap,
-      doubleCover: PRESETS.flow.doubleCover,
       direction: 'ltr',
       bg: recommendedTone
-    };
-    applyPrefPatch(recommended, true);
+    }, true);
     announceSetting('Recommended settings restored.');
   }
 
@@ -745,7 +859,7 @@
   /**
    * Contract §3.4: the "Remembering for <title>" note shows only while the
    * checkbox is checked. The server renders it unconditionally. `hidden`
-   * cannot be used here: `reader.css:524` sets `display: block`, which
+   * cannot be used here because reader.css sets `display: block`, which
    * outranks the UA `[hidden] { display: none }` rule, so the inline
    * `display` is toggled instead.
    */
@@ -816,16 +930,9 @@
     }
   }
 
-  function selectSheetGroup(group) {
-    var tabs = $$('.reader-sheet-tab');
-    var groups = $$('.reader-sheet-group');
-    var i;
-    for (i = 0; i < tabs.length; i++) {
-      tabs[i].setAttribute('aria-selected', tabs[i].getAttribute('data-group') === group ? 'true' : 'false');
-    }
-    for (i = 0; i < groups.length; i++) {
-      groups[i].hidden = window.innerWidth < 768 && groups[i].getAttribute('data-group') !== group;
-    }
+  function selectSheetGroup() {
+    var group = $('.reader-sheet-group[data-group="reading"]');
+    if (group) group.hidden = false;
   }
 
   /**
@@ -842,40 +949,18 @@
         if (el.getAttribute('aria-disabled') === 'true') return;
         var value = el.getAttribute('data-value');
         var patch = {};
-        patch[pref] = BOOL_PREFS[pref] ? (value === 'on') : value;
-        if (pref === 'dimDelay') patch[pref] = parseInt(value, 10) || 0;
-        if (pref === 'layout' && value === 'double' && window.innerWidth < 768) return;
-        if (el.getAttribute('aria-pressed') === 'true' && !BOOL_PREFS[pref]) return;
+        patch[pref] = value;
+        if (el.getAttribute('aria-pressed') === 'true') return;
         applyPrefPatch(patch, pref === 'direction' || pref === 'bg');
       });
       return;
     }
 
-    if (el.classList.contains('reader-slider')) {
-      el.addEventListener('input', function () {
-        var value = parseFloat(el.value);
-        var patch = {};
-        patch[pref] = pref === 'dimOpacity' ? value : Math.round(value);
-        applyPrefPatch(patch);
-      });
-      return;
-    }
-
-    if (el.type === 'color') {
-      el.addEventListener('input', function () {
-        var patch = {};
-        patch[pref] = el.value;
-        applyPrefPatch(patch);
-      });
-      return;
-    }
   }
 
   function bindPrefControls() {
     var controls = $$('[data-pref]');
     for (var i = 0; i < controls.length; i++) {
-      if (controls[i].id === 'reader-zone-editor') continue; // kept for older reader markup
-      if (controls[i].classList.contains('reader-keybind-row')) continue; // kept for older reader markup
       bindPrefControl(controls[i]);
     }
 
@@ -925,13 +1010,7 @@
       });
     }
 
-    var tabs = $$('.reader-sheet-tab');
-    for (var t = 0; t < tabs.length; t++) {
-      tabs[t].addEventListener('click', function (e) {
-        selectSheetGroup(e.currentTarget.getAttribute('data-group'));
-      });
-    }
-    selectSheetGroup('reading');
+    selectSheetGroup();
 
     var remember = $('#reader-remember-series');
     if (remember) {
@@ -939,15 +1018,12 @@
     }
 
     // Trap Tab inside the dialog and route the sheet's own `[data-action]`
-    // affordance (the focus-mode toggle) through the action dispatch.
-    // `.reader-keybind-row` also carries `data-action`, but it is a remap
-    // row, not a command — clicking it must never run the action.
+    // affordances through the action dispatch.
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Tab') trapFocus(e);
     });
     var actionEls = $$('.reader-sheet-panel [data-action]');
     for (var ai = 0; ai < actionEls.length; ai++) {
-      if (actionEls[ai].classList.contains('reader-keybind-row')) continue;
       actionEls[ai].addEventListener('click', function (e) {
         e.stopPropagation();
         runAction(e.currentTarget.getAttribute('data-action'));
@@ -1118,9 +1194,26 @@
   function updateIndicator() {
     var text = state.currentPage + ' / ' + state.totalPages;
     var indicator = document.getElementById('reader-page-indicator');
-    if (indicator) indicator.textContent = text;
     var hud = document.getElementById('reader-hud');
     if (hud) hud.textContent = text;
+    if (!indicator) return;
+
+    var now = Date.now();
+    if (!state.lastIndicatorAt || now - state.lastIndicatorAt >= 500) {
+      indicator.textContent = text;
+      state.lastIndicatorAt = now;
+      state.pendingIndicatorText = '';
+      return;
+    }
+    state.pendingIndicatorText = text;
+    if (state.indicatorAnnouncementTimer) return;
+    state.indicatorAnnouncementTimer = setTimeout(function () {
+      state.indicatorAnnouncementTimer = null;
+      if (!state.pendingIndicatorText) return;
+      indicator.textContent = state.pendingIndicatorText;
+      state.pendingIndicatorText = '';
+      state.lastIndicatorAt = Date.now();
+    }, Math.max(1, 500 - (now - state.lastIndicatorAt)));
   }
 
   /**
@@ -1215,14 +1308,23 @@
     goToPage(target);
   }
 
-  /**
-   * Boundary no-op. Contract §1.2 asks for a "nudge animation"; the shipped
-   * stylesheet defines no hook for it and animation is outside this module's
-   * scope, so the action is correctly suppressed with no visual. Reported as a
-   * contract gap rather than inventing a class name.
-   */
-  function nudge() {
-    /* intentionally empty */
+  /** Contract §1.2 boundary feedback, suppressed when motion is reduced. */
+  function nudge(direction) {
+    var reduced = false;
+    try {
+      reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch (_) { /* keep the boundary safe by default */ }
+    if (reduced) return;
+    var zoneName = direction === 'prev' ? 'prev' : 'next';
+    var target = $('.reader-zone[data-zone="' + zoneName + '"]') ||
+      document.getElementById('reader-hud');
+    if (!target || typeof target.animate !== 'function') return;
+    var sign = direction === 'prev' ? -1 : 1;
+    target.animate([
+      { transform: 'translate3d(0, 0, 0)' },
+      { transform: 'translate3d(' + (4 * sign) + 'px, 0, 0)' },
+      { transform: 'translate3d(0, 0, 0)' }
+    ], { duration: 180, easing: 'ease-out' });
   }
 
   function prefetchAround(idx) {
@@ -1263,78 +1365,6 @@
   }
 
   // ============================================================
-  //  ZONE EDITOR (contract §4.2)
-  // ============================================================
-
-  function initZoneEditor() {
-    var editor = document.getElementById('reader-zone-editor');
-    if (!editor) return;
-    var handles = $$('.reader-zone-handle', editor);
-    var dragging = null;
-
-    function boundaries() {
-      return effectivePrefs().clickZones.slice();
-    }
-
-    function commit(a, b, edge) {
-      a = clampInt(a, 10, 90, 30);
-      b = clampInt(b, 10, 90, 70);
-      if (edge === 'left') { if (b - a < 10) a = b - 10; }
-      else { if (b - a < 10) b = a + 10; }
-      a = clampInt(a, 10, 80, 10);
-      b = clampInt(b, a + 10, 90, 20);
-      applyPrefPatch({ clickZones: [a, b] });
-      setHandle('left', a);
-      setHandle('right', b);
-    }
-
-    function percentFromEvent(e) {
-      var rect = editor.getBoundingClientRect();
-      if (!rect.width) return 0;
-      return Math.round(((e.clientX - rect.left) / rect.width) * 100);
-    }
-
-    for (var i = 0; i < handles.length; i++) {
-      (function (handle) {
-        var edge = handle.getAttribute('data-edge');
-
-        handle.addEventListener('pointerdown', function (e) {
-          dragging = edge;
-          handle.setPointerCapture && handle.setPointerCapture(e.pointerId);
-          e.preventDefault();
-        });
-        handle.addEventListener('pointermove', function (e) {
-          if (dragging !== edge) return;
-          var z = boundaries();
-          var v = percentFromEvent(e);
-          if (edge === 'left') commit(v, z[1], 'left');
-          else commit(z[0], v, 'right');
-        });
-        handle.addEventListener('pointerup', function () { dragging = null; });
-        handle.addEventListener('pointercancel', function () { dragging = null; });
-
-        handle.addEventListener('keydown', function (e) {
-          var z = boundaries();
-          var a = z[0];
-          var b = z[1];
-          if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-            var d = e.key === 'ArrowLeft' ? -2 : 2;
-            if (edge === 'left') commit(a + d, b, 'left');
-            else commit(a, b + d, 'right');
-          } else if (e.key === 'Home') {
-            commit(15, b, 'left');
-          } else if (e.key === 'End') {
-            commit(a, 85, 'right');
-          } else {
-            return;
-          }
-          e.preventDefault();
-        });
-      })(handles[i]);
-    }
-  }
-
-  // ============================================================
   //  KEYBINDS + REMAP (contract §4.3)
   // ============================================================
 
@@ -1365,156 +1395,19 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
   }
 
-  function findCollision(combo, exceptAction, exceptIndex) {
-    var kb = effectivePrefs().keybinds;
-    for (var a = 0; a < ACTION_IDS.length; a++) {
-      var action = ACTION_IDS[a];
-      var keys = kb[action] || [];
-      for (var k = 0; k < keys.length; k++) {
-        if (keys[k] !== combo) continue;
-        if (action === exceptAction && k === exceptIndex) continue;
-        return action;
-      }
-    }
-    return null;
+  function isNativeControl(el) {
+    if (!el) return false;
+    return el.tagName === 'BUTTON' || (el.tagName === 'A' && el.hasAttribute('href'));
   }
 
-  function updateKeybindRow(action) {
-    var row = $('.reader-keybind-row[data-action="' + action + '"]');
-    if (!row) return;
-    var keys = effectivePrefs().keybinds[action] || [];
-    var existing = $$('.reader-keybind-key', row);
-    // A key button may be in capture mode; keep its label until capture ends.
-    for (var i = 0; i < existing.length; i++) {
-      if (existing[i].getAttribute('data-capture-key') === '1') continue;
-      if (i < keys.length) {
-        existing[i].textContent = keys[i];
-        existing[i].setAttribute('data-key-value', keys[i]);
-        existing[i].setAttribute('data-key-index', String(i));
-        // `hidden` is not enough: `.reader-keybind-key` sets
-        // `display: inline-flex`, which outranks the UA `[hidden]` rule.
-        existing[i].style.display = '';
-      } else {
-        existing[i].style.display = 'none';
-      }
-    }
-  }
-
-  function renderKeybinds() {
-    for (var i = 0; i < ACTION_IDS.length; i++) updateKeybindRow(ACTION_IDS[i]);
-    rebuildKeymap();
-  }
-
-  function setKeybindError(action, message) {
-    var row = $('.reader-keybind-row[data-action="' + action + '"]');
-    if (!row) return;
-    var msg = $('.reader-keybind-error', row);
-    if (!msg) {
-      msg = document.createElement('span');
-      msg.className = 'reader-keybind-error';
-      msg.setAttribute('role', 'alert');
-      row.appendChild(msg);
-    }
-    msg.textContent = message || '';
-    msg.hidden = !message;
-  }
-
-  function captureKey(action, index, button) {
-    // Cancel any other capture first.
-    if (state.capture) endCapture(false);
-    state.capture = { action: action, index: index, button: button };
-    button.setAttribute('data-capture-key', '1');
-    button.textContent = 'Press a key…';
-    var row = button.closest('.reader-keybind-row');
-    if (row) row.setAttribute('data-capture', '1');
-  }
-
-  function endCapture(restore) {
-    if (!state.capture) return;
-    var c = state.capture;
-    var row = c.button.closest('.reader-keybind-row');
-    if (row) row.removeAttribute('data-capture');
-    c.button.removeAttribute('data-capture-key');
-    if (restore) updateKeybindRow(c.action);
-    state.capture = null;
-  }
-
-  function commitCapture(combo) {
-    var c = state.capture;
-    if (!c) return;
-    var collision = findCollision(combo, c.action, c.index);
-    if (collision) {
-      setKeybindError(c.action, 'Already used by ' + collision + '.');
-      endCapture(true);
-      return;
-    }
-    setKeybindError(c.action, '');
-    var kb = cloneKeybinds();
-    kb[c.action][c.index] = combo;
-    endCapture(false);
-    applyPrefPatch({ keybinds: kb });
-  }
-
-  function cloneKeybinds() {
-    var src = effectivePrefs().keybinds;
-    var out = {};
-    for (var a = 0; a < ACTION_IDS.length; a++) out[ACTION_IDS[a]] = (src[ACTION_IDS[a]] || []).slice();
-    return out;
-  }
-
-  /** Capture-mode keys: Escape cancels, Backspace deletes, anything binds. */
-  function handleCaptureKey(e) {
-    var c = state.capture;
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      setKeybindError(c.action, '');
-      endCapture(true);
-      return;
-    }
-    if (e.key === 'Backspace') {
-      e.preventDefault();
-      var kb = cloneKeybinds();
-      if (kb[c.action].length > 1) {
-        kb[c.action].splice(c.index, 1);
-        endCapture(false);
-        applyPrefPatch({ keybinds: kb });
-      } else {
-        setKeybindError(c.action, 'Keep at least one binding.');
-        endCapture(true);
-      }
-      return;
-    }
-    if (e.key === 'Tab') return; // let focus move; do not bind Tab
-    e.preventDefault();
-    e.stopPropagation();
-    commitCapture(comboFromEvent(e));
-  }
-
-  function initKeybinds() {
-    var rows = $$('.reader-keybind-row');
-    for (var i = 0; i < rows.length; i++) {
-      (function (row) {
-        var action = row.getAttribute('data-action');
-        var keys = $$('.reader-keybind-key', row);
-        for (var k = 0; k < keys.length; k++) {
-          (function (btn, ki) {
-            btn.addEventListener('click', function () {
-              captureKey(action, ki, btn);
-            });
-          })(keys[k], k);
-        }
-        var reset = $('.reader-keybind-reset', row);
-        if (reset) {
-          reset.addEventListener('click', function () {
-            var kb = cloneKeybinds();
-            kb[action] = DEFAULT_KEYBINDS[action].slice();
-            setKeybindError(action, '');
-            applyPrefPatch({ keybinds: kb });
-          });
-        }
-      })(rows[i]);
-    }
-    rebuildKeymap();
+  function directionalAction(action, event) {
+    if (effectivePrefs().direction !== 'rtl') return action;
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return action;
+    if (action === 'page.next') return 'page.prev';
+    if (action === 'page.prev') return 'page.next';
+    if (action === 'chapter.next') return 'chapter.prev';
+    if (action === 'chapter.prev') return 'chapter.next';
+    return action;
   }
 
   // ============================================================
@@ -1531,6 +1424,7 @@
       case 'ui.focus': toggleFocus(); break;
       case 'ui.fitCycle': cycleFit(); break;
       case 'layout.cycle': cycleLayout(); break;
+      case 'ui.chapterNav': openChapterNavigation(); break;
       case 'ui.restoreDefaults': restoreDefaults(); break;
       case 'note.add': openComposer(); break;
       default: break;
@@ -1552,8 +1446,8 @@
   }
 
   function onKeydown(e) {
-    if (state.capture) { handleCaptureKey(e); return; }
     if (isEditable(e.target)) return;
+    if (isNativeControl(e.target) && (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar')) return;
 
     if (e.key === 'Escape') {
       if (state.composerOpen) { e.preventDefault(); closeComposer(false); return; }
@@ -1571,7 +1465,7 @@
     if (!action && state.keymap && state.keymap[e.key]) action = state.keymap[e.key];
     if (!action) return;
     e.preventDefault();
-    runAction(action);
+    runAction(directionalAction(action, e));
     showChrome();
   }
 
@@ -1642,31 +1536,60 @@
     writeString(sessionStorage, SS_AUTONEXT_PREFIX + state.chapterId, '1');
   }
 
-  function maybeAutoNextStrip() {
-    var p = layoutPrefs();
-    if (!p.autoNext || !state.nextUrl) return;
-    if (autoNextCancelled()) return;
+  function stripLastPageFullyVisible() {
     var last = pageElByIndex(state.totalPages);
-    if (!last) return;
+    if (!last) return false;
     var rect = last.getBoundingClientRect();
     var vh = window.innerHeight || 1;
-    var fullyVisible = rect.top >= 0 && rect.bottom <= vh + 1;
-    if (fullyVisible) {
-      if (!state.lastStripEndAt) state.lastStripEndAt = Date.now();
-      else if (Date.now() - state.lastStripEndAt >= 1500) startCountdown();
-    } else {
-      state.lastStripEndAt = 0;
+    return rect.top >= 0 && rect.bottom <= vh + 1;
+  }
+
+  function clearStripAutoNext() {
+    if (!state.stripAutoNextTimer) return;
+    clearTimeout(state.stripAutoNextTimer);
+    state.stripAutoNextTimer = null;
+  }
+
+  function maybeAutoNextStrip() {
+    var p = layoutPrefs();
+    if (p.layout !== 'strip' || !p.autoNext || !state.nextUrl || autoNextCancelled() ||
+        !stripLastPageFullyVisible()) {
+      clearStripAutoNext();
+      return;
     }
+    if (state.stripAutoNextTimer) return;
+    state.stripAutoNextTimer = setTimeout(function () {
+      state.stripAutoNextTimer = null;
+      var current = layoutPrefs();
+      // Re-check after the dwell: scrolling away during the 1500ms boundary
+      // delay cancels the countdown before it can start.
+      if (current.layout === 'strip' && current.autoNext && !autoNextCancelled() &&
+          stripLastPageFullyVisible()) {
+        startCountdown();
+      }
+    }, 1500);
   }
 
   function maybeEndOfChapter() {
     var p = layoutPrefs();
+    if (p.layout === 'strip') return;
     var boundary = p.layout === 'double' ? lastSpreadIndex(p) : state.totalPages;
     if (state.currentPage >= boundary) {
-      if (p.layout !== 'strip') revealChapterNav();
-    } else if (p.layout !== 'strip') {
+      revealChapterNav();
+      if (p.autoNext && state.nextUrl) startCountdown();
+    } else {
       hideChapterNav();
     }
+  }
+
+  function openChapterNavigation() {
+    if (layoutPrefs().layout === 'strip') {
+      var bottom = document.getElementById('reader-bottom-nav');
+      if (bottom && bottom.scrollIntoView) bottom.scrollIntoView({ behavior: 'auto', block: 'end' });
+      return;
+    }
+    closeSheet();
+    revealChapterNav();
   }
 
   function revealChapterNav() {
@@ -2254,6 +2177,7 @@
   function saveProgress(status, page) {
     if (!state.seriesId || !state.chapterId) return;
     if (!window.MangaReadState) return;
+    if (state.finished) status = 'finished';
     var p = page === undefined ? state.currentPage : page;
     window.MangaReadState.setChapterStatus(
       state.seriesId,
@@ -2273,10 +2197,13 @@
 
   function initProgress() {
     if (!window.MangaReadState) return;
-    // Mark the chapter as started WITHOUT moving the stored position: a plain
-    // page load must not reset a page-5 resume to page 1. `state.resumePage`
-    // carries the saved page when one was found (see `initResumeBadge`).
-    saveProgress('started', state.resumePage > 0 ? state.resumePage : state.currentPage);
+    // A plain page load marks a chapter started without moving its saved
+    // position. When hydration found the current row, that row was already
+    // merged into local state and an initial write would only fight it.
+    if (!state.progressHydrationComplete || !state.serverProgressSeen) {
+      saveProgress('started', state.resumePage > 0 ? state.resumePage : state.currentPage);
+    }
+    if (state.finished) markReadBadge();
 
     var last = state.pageEls.length ? state.pageEls[state.pageEls.length - 1] : null;
     if (last && window.IntersectionObserver) {
@@ -2290,7 +2217,6 @@
             saveProgress('finished');
             markReadBadge();
             observer.disconnect();
-            if (effectivePrefs().autoNext) startCountdown();
           }
         }
       }, { threshold: 0.5 });
@@ -2403,6 +2329,9 @@
     var saved = state.local && state.local.scrollPositions ? state.local.scrollPositions[String(chapterId)] : 0;
     if (!saved || typeof saved !== 'number') return;
 
+    // A server hydration is newer than the local scroll offset.
+    if (state.serverResumePage > 1) return;
+
     // An explicit server prime (`data-prime-idx > 1`) is an intentional jump.
     // `initResumeBadge` already performed it, so never override it here.
     if (state.primeIdx > 1) return;
@@ -2466,8 +2395,6 @@
     initSheet();
     initHudTrigger();
     initZones();
-    initZoneEditor();
-    initKeybinds();
     initChapterNav();
     initPrefetch();
     initNotes();
@@ -2501,6 +2428,7 @@
         state.currentPage = computeStripPage() || state.currentPage;
         state.navigated = true;
         updateIndicator();
+        maybeEndOfChapter();
         scheduleProgress();
         showChrome();
         resetDimTimer();
@@ -2511,7 +2439,7 @@
     initSwipe();
     window.addEventListener('resize', function () {
       applyPrefs();
-      selectSheetGroup(currentGroup());
+      selectSheetGroup();
     });
     window.addEventListener('pagehide', flushPendingPrefs);
     window.addEventListener('beforeunload', function () {
@@ -2523,17 +2451,19 @@
       rememberScrollPosition();
     });
 
-    // Resume must be resolved BEFORE `initProgress` writes page 1 as the
-    // "started" marker, or it would read back its own write.
-    initResumeBadge();
-    initResumeFromScroll();
-    consumeOpenLast();
-    initProgress();
-    renderLayout();
-    resetDimTimer();
-    showChrome();
-    fetchNotes();
-    initWriteThroughFailures();
+    // Resume must be resolved AFTER the read-only server hydration and BEFORE
+    // `initProgress` writes page 1 as the started marker.
+    hydrateServerProgress().then(function () {
+      initResumeBadge();
+      initResumeFromScroll();
+      consumeOpenLast();
+      initProgress();
+      renderLayout();
+      resetDimTimer();
+      showChrome();
+      fetchNotes();
+      initWriteThroughFailures();
+    });
 
     // An anonymous reader's layout choice becomes the merge hint if they later
     // sign in (contract §5.5); the `/api/migrate` path itself is untouched.
@@ -2541,11 +2471,6 @@
       state.local.lastUsedLayout = effectivePrefs().layout;
       saveDeviceLocal();
     }
-  }
-
-  function currentGroup() {
-    var selected = $('.reader-sheet-tab[aria-selected="true"]');
-    return selected ? selected.getAttribute('data-group') : 'reading';
   }
 
   buildApi();

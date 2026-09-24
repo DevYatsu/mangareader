@@ -82,8 +82,6 @@ pub struct AuthUser {
     pub id: i64,
     pub name: String,
     pub role: Role,
-    /// The user's own theme key (`""` = no override, falls back to site theme).
-    pub theme: String,
 }
 
 /// Rejection for missing/invalid auth: browsers (explicit `text/html` in
@@ -123,7 +121,6 @@ async fn auth_with_db(
             id: user.id,
             name: user.name,
             role: user.role,
-            theme: user.theme,
         }),
         Err(Error::NotFound(_)) => Err(unauthenticated(parts)),
         Err(e) => Err((

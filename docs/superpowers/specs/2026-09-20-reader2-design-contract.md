@@ -2,21 +2,21 @@
 
 Date: 2026-09-20
 Status: contract for engineering plan
-Scope: reader surface only (`/read/{manga}/{chapter}`, `website/src/routes/reader.rs`, `website/static/style.css`, `website/static/themes/*`).
+Scope: reader surface only (`/read/{manga}/{chapter}`, `website/src/routes/reader.rs`, `website/static/reader.js`, `website/static/reader.css`).
 
 This document is the interface between the CSS author and the JS author. Every class, id, custom property, and data attribute named here is binding. Where existing markup is insufficient, the contract says so explicitly and marks the required template change.
 
 Ground truth this contract builds on (verified):
-- `reader.rs:86-173` renders the reader DOM listed in §2.1. `layout.rs:189-211` gives `<body class="reader-page [theme-{key}]">`, `data-user-id` when logged in.
-- `style.css:1206-1424` holds the current reader CSS. `.reader-images { max-width: 700px }` (`style.css:1318`).
-- Theme files (`themes/{webtoon,asura,demonic}.css`) contain **zero** reader selectors. Reader CSS must not depend on theme variables.
-- `website/static/reader.js` is dead; `app.js` owns `initReader` (`app.js:268-338`) and `initReaderUX` (`app.js:341+`).
-- Progress is 1-indexed page, `localStorage['mangaread_read_<seriesId>']['ch_<chapterId>'] = {status, page, updated}` (`app.js:143-154`), write-through via `MangaSync.pushProgress`.
-- `notes(id, user_id, chapter_id, page, body, created_at)` exists (`mangaread-core/src/db.rs:906-942`). No routes yet.
+- `reader.rs` renders the reader DOM listed in §2.1. `layout.rs` gives `<body class="reader-page">`, with `data-user-id` when logged in.
+- `reader.css` owns the standalone reader geometry; `theme.css` supplies the shared identity tokens.
+- `reader.js` owns the reader page module; `app.js` supplies `MangaReadState` and the single progress write-through.
+- Progress is 1-indexed page, `localStorage['mangaread_read_<seriesId>']['ch_<chapterId>'] = {status, page, updated}`, write-through via `MangaSync.pushProgress`.
+- `notes(id, user_id, chapter_id, page, body, created_at)` exists and the reader keeps note pages 1-indexed.
 
----
+### Slice D contract gate
 
-## 1. Mode model
+The stored flat `ReaderPrefs` blob remains authoritative for advanced fields and server/local persistence. The public surface is the curated Flow/Page/Spread set; hidden editors are not part of the reader contract. `vertical` remains a storage-compatible Page layout, and a stored Spread is rendered as Page below `768px` without rewriting storage. The existing `/api/progress` response is the only server progress hydration seam; hydration is read-only and must not create a write loop. The current sibling next-up row and HUD hooks are valid, including the compact `Add note` action.
+
 
 **Ruling:** the five spec "modes" are not orthogonal. They resolve to `direction` × `layout`; RTL is not a layout, and "vertical scroll" is `layout=strip` on the vertical axis.
 
@@ -33,7 +33,7 @@ Ground truth this contract builds on (verified):
 |---|---|---|---|---|
 | `single` | One `.reader-page` centered in viewport (`--r-fit-h`). | Page-step. Tap zones / keyboard / swipe move exactly 1 page. | `[data-page-idx]` of the centered page, 1-indexed. | Nav overlay after last page (§5.4). Auto-next if enabled. |
 | `double` | Two `.reader-page` side by side. Order **within a row** is `direction`-dependent: LTR = [n, n+1], RTL = [n+1, n]. A cover (first page when `--r-double-cover` set) renders alone, centered, and shifts pairing parity by 1. | Page-step by 2 (spread). | First page index of the visible spread. | Nav overlay. |
-| `strip` | Vertical stack, `--r-gap` between pages, `--r-max-w` clamp. Current behavior in `style.css:1311-1333`, generalized. | Scroll. Tap zones hidden (`display:none`); prev/next chapter are links only. | Highest `.reader-page` whose box has ≥50% of viewport height visible (topmost such page). | Sticky bottom nav (§5.4) + chapter nav row. |
+| `strip` | Vertical stack, `--r-gap` between pages, `--r-max-w` clamp. | Scroll. Tap zones hidden (`display:none`); prev/next chapter are links only. | Highest `.reader-page` whose box has ≥50% of viewport height visible (topmost such page). | Sticky bottom nav (§5.4) + chapter nav row. |
 | `vertical` | One page at a time, stacked in a `overflow-y: auto` scroll-snap container. | Scroll-snap step; wheel/tap/keyboard snap one page. | Page snapped into view. | Nav overlay after last page. |
 
 **Ruling on `vertical` vs `single`:** `vertical` exists to satisfy the spec's literal wording, but it is a thin variant of `single`. Cost if wrong: one extra CSS block. It is not worth a separate JS code path — both use the page-step navigator; `vertical` only changes the scroll container and snap.
@@ -51,17 +51,17 @@ Ground truth this contract builds on (verified):
 
 ### 2.1 Custom properties
 
-All reader variables are declared on `:root` **with fallbacks**, and consumed with `var(--r-x, <fallback>)`. This is mandatory: theme files supply none of these and `style.css` must degrade for `/` (no theme) exactly as for `theme-webtoon`.
+All reader variables are declared on `:root` **with fallbacks**, and consumed with `var(--r-x, <fallback>)`. Reader CSS is self-contained: no retired theme assets are required.
 
 | Property | Type | Default | Semantics |
 |---|---|---|---|
 | `--r-max-w` | length | `700px` | Max content width of the page column. The 400–1400px slider writes this. |
 | `--r-gap` | length | `0px` | Vertical gap between pages in `strip`. `0` = seamless webtoon seam. |
 | `--r-zoom` | number | `1` | Scale multiplier applied to fit modes only (see precedence). |
-| `--r-bg` | color | `#0a0a0a` | Reader backdrop (was hardcoded at `style.css:1208`, `1332`). |
-| `--r-chrome-bg` | color | `rgba(10,10,10,0.92)` | Top bar / sheet background (`style.css:1220`). |
+| `--r-bg` | color | `#0a0a0a` | Reader backdrop. |
+| `--r-chrome-bg` | color | `rgba(10,10,10,0.92)` | Top bar / sheet background. |
 | `--r-chrome-fg` | color | `#ffffff` | Chrome text/icons. |
-| `--r-chrome-border` | color | `rgba(255,255,255,0.06)` | Chrome hairline (`style.css:1223`). |
+| `--r-chrome-border` | color | `rgba(255,255,255,0.06)` | Chrome hairline. |
 | `--r-page-shadow` | shadow | `none` | Page border/shadow; `none` when the toggle is off. |
 | `--r-radius` | length | `0px` | Page corner radius; `0` in strip for seamless joins. |
 | `--r-dim` | number | `0` | Idle auto-dim opacity target, 0–0.8 (§5.2). |
@@ -99,64 +99,37 @@ Per-series override: see §3.4.
 ### 3.1 Structure
 
 Two surfaces, one shared component:
-- **Top bar** — always present, hidden/shown by transform (reuse `.reader-topbar.visible`, `style.css:1224-1231`).
+- **Top bar** — always present, hidden/shown by transform through `.reader-topbar.visible`.
 - **Bottom sheet** — settings. On phones it is a bottom sheet; at `≥768px` it becomes a right-side rail (`data-r-sheet="rail"`). Same DOM, CSS decides placement. This avoids two markup trees.
 
 Opening: tapping the **center zone** (§4.1), or `KeyS`/`?`. Closing: `Escape`, backdrop tap, or the sheet's close button.
 
-### 3.2 Markup contract
+### 3.2 Current markup contract
 
-Existing elements keep their ids and classes. Added contract:
+The reader keeps the existing IDs, `data-r-*` attributes, `data-pref` bindings, page-state attributes, navigation hooks, notes hooks, and next-up sibling structure. The current public markup is:
 
 ```
-body[data-r-layout][data-r-direction][data-r-fit][data-r-bg][data-r-frame][data-r-focus]
+body[data-r-layout][data-r-preset][data-r-direction][data-r-fit][data-r-bg][data-r-frame]
   div#reader-track[data-series-id][data-chapter-id][data-manga-id][data-total-pages]
-                    [data-prev-chapter][data-next-chapter][data-prime-idx]
-  div#resume-target[data-page][data-label]
-  header#reader-topbar.reader-topbar
-    .reader-topbar-inner
-      a.reader-back-btn
-      .reader-topbar-info > .reader-topbar-title, .reader-topbar-chapter
-      span#reader-page-indicator.reader-page-indicator[aria-live="polite"]
-      button#reader-settings-btn.reader-icon-btn[aria-expanded][aria-controls="reader-sheet"]
-  div#reader-hud.reader-hud[aria-hidden]        ← floating page counter, appears on scroll (strip)
-  div#reader-zones[data-r-zone-mode]
-      button.reader-zone[data-zone="prev"][aria-label]
-      button.reader-zone[data-zone="menu"]
-      button.reader-zone[data-zone="next"][aria-label]
-  main#reader-images.reader-images
-      section.reader-page[data-page-idx][data-page-state="idle|loading|ready|error"]
-        img[loading][decoding][src][alt]
-        .reader-page-placeholder[aria-hidden]     ← blur-up, §7
-        .reader-page-error[hidden] > button.reader-retry-btn
-        button.reader-note-pin[data-note-id][aria-label="Note on page N"]
-  div#reader-bottom-nav.reader-bottom-nav
-      .reader-bottom-nav-inner
-          a.reader-nav-btn (prev ch) / span.reader-nav-btn.disabled
-          a.reader-nav-btn.secondary (series)
-          a.reader-nav-btn (next ch) / span.reader-nav-btn.disabled
-  div#reader-sheet.reader-sheet[hidden]
-      .reader-sheet-backdrop[data-r-close]
-      .reader-sheet-panel[role="dialog"][aria-modal="true"][aria-labelledby="reader-sheet-title"]
-        h2#reader-sheet-title  (visually hidden)
-        section.reader-sheet-group[data-group="layout"]   → layout segmented, direction segmented
-        section.reader-sheet-group[data-group="fit"]      → fit segmented, width, gap, bg, frame
-        section.reader-sheet-group[data-group="input"]    → zones editor, keymap, swipe, autoNext
-        section.reader-sheet-group[data-group="comfort"]  → focus, hide timer, dim, notes toggle
-        section.reader-sheet-group[data-group="thisSeries"]
-            label.reader-series-remember > input#reader-remember-series[type=checkbox]
-        button.reader-sheet-close[data-r-close]
+  header#reader-topbar.navbar > .reader-topbar-inner
+  div#reader-zones[data-r-zone-mode] > button.reader-zone[data-zone]
+  main#reader-images > section.reader-page[data-page-idx][data-page-state]
+  div#reader-sheet.reader-sheet > .reader-sheet-panel[role=dialog]
+    .reader-preset-btn[data-r-preset=flow|page|spread]
+    .reader-seg-btn[data-pref=direction|bg]
+    #reader-focus-toggle[data-focus-toggle]
+    button[data-action=note.add]
+    #reader-remember-series
+    button[data-action=ui.restoreDefaults]
+  div#reader-note-composer > #reader-note-form
+  aside#reader-notes-panel > .reader-note-item[data-note-id][data-page-idx]
 ```
 
-Segmented controls: `div.reader-seg` with `button.reader-seg-btn[data-value][aria-pressed]`. Sliders: `input[type=range].reader-slider[data-pref]` with a live `output.reader-slider-value`. Every control carries `data-pref="<prefsKey>"` — this is the single binding point between CSS, JS, and the prefs blob. **A control without `data-pref` or `data-r-*` is not wired; that is the test.**
+Advanced editor markup is not rendered. Stored values remain part of the JSON island and the public JavaScript preference object.
 
 ### 3.3 Grouping and phone usability
 
-5 groups, one visible at a time on phones via tabs `div.reader-sheet-tabs > button.reader-sheet-tab[data-group]`. At `≥768px` all groups stack in the rail.
-
-- Min touch target `44×44px` (`min-height:44px`) for `.reader-seg-btn`, `.reader-icon-btn`, `.reader-zone` interactive affordances. Existing `.reader-back-btn` is `36×36` (`style.css:1246-1247`) → must be raised to 44 at `≤768px`.
-- Sheet panel: `max-height: 80dvh`, `overflow-y: auto`, `padding-bottom: max(1rem, env(safe-area-inset-bottom))`.
-- Tabs scroll horizontally with `scroll-snap-type: x mandatory`, no scrollbar.
+The curated sheet is one responsive group: preset cards stack into an auto-fit grid, secondary choices stack on narrow screens, and the sheet becomes a rail at `≥768px`. All interactive controls keep a 44px minimum target, focus trapping, and visible keyboard focus. There are no public tabs, sliders, zone editor, key remap editor, or color picker.
 
 ### 3.3.1 Curated reader surface (current product ruling)
 
@@ -201,16 +174,11 @@ On screens narrower than `768px`, a stored Spread is rendered as Page without re
 - Zones are `pointer-events: none` while `#reader-sheet` is open and never overlay chrome (`z-index` between pages and chrome).
 - Default zone widths are the *only* defaults; on `strip` layout zones are hidden entirely, and the center zone is replaced by a `keydown`/long-press menu trigger on the HUD (§5).
 
-### 4.2 Zone editor
+### 4.2 Tap zones
 
-In `[data-group="input"]`: a 100%-wide, `80px`-tall track with 3 draggable handles. State is a 2-number array: `clickZones: [30, 70]` = boundary percentages from the left.
+The stored `clickZones` array remains normalized and drives the three real buttons at runtime. Its advanced editor is not rendered in the curated sheet; keyboard/touch navigation and RTL side mapping remain unchanged.
 
-- DOM: `div#reader-zone-editor.reader-zone-editor` with `span.reader-zone-handle[data-edge="left|right"][role="slider"][aria-valuenow][aria-valuemin=10][aria-valuemax=90]`.
-- Keyboard: `ArrowLeft/Right` ±2, `Home/End` snap to 15/85. Minimum zone width 10%.
-- Stored margin: boundaries must stay ≥10 apart; the editor clamps, and JS clamps on load (never trust stored data).
-- RTL: stored boundaries are always physical (from the left); JS maps them to actions. This keeps the editor WYSIWYG.
-
-### 4.3 Keyboard + remap
+### 4.3 Keyboard + compatibility bindings
 
 Default bindings (namespaced action ids, not raw keys):
 
@@ -226,9 +194,9 @@ Default bindings (namespaced action ids, not raw keys):
 | `layout.cycle` | `KeyL` | Cycle layout. |
 | `note.add` | `KeyM` | Open note composer on the current page. |
 
-- Storage shape: `keybinds: { "page.next": ["ArrowRight","Space"], ... }`. Keys are `KeyboardEvent.code` values; modifiers are a `+`-joined prefix in a stable order (`Ctrl`, `Alt`, `Shift`, `Meta`). One action may have several bindings; two actions may not share a binding — the remap UI rejects a collision with an inline message.
+- Storage shape: `keybinds: { "page.next": ["ArrowRight","Space"], ... }`. Keys are `KeyboardEvent.code` values; modifiers are a `+`-joined prefix in a stable order (`Ctrl`, `Alt`, `Shift`, `Meta`). Stored bindings remain active even though the advanced remap editor is no longer rendered.
 - Handlers must `preventDefault` on matched actions (otherwise `Space` scrolls) **and** must not fire when `event.target` is an `input`, `textarea`, or `[contenteditable]`.
-- Remap UI: one `div.reader-keybind-row[data-action]` per action, with `button.reader-keybind-key[data-key-index]`. Clicking a key enters capture mode (`data-capture="1"`, button shows "Press a key…"), `Escape` cancels, `Backspace` on a row with >1 binding deletes that binding. A `button.reader-keybind-reset` per row restores the default.
+- `KeyL` and the legacy `KeyW` binding both cycle Flow → Page → Spread. On phones, the cycle skips Spread.
 
 ### 4.4 Swipe and auto-next
 
@@ -270,10 +238,10 @@ Ruling: dim is a full-screen overlay, not a filter on content. A `filter` on `#r
 
 `@media (prefers-reduced-motion: reduce)`:
 - `transition-duration: 0.01ms` on chrome transforms, `.reader-page`, dim overlay.
-- The `hintPulse` keyframe (`style.css:1416-1426`) is disabled entirely (`animation: none`).
+- The reader's `hintPulse` keyframe is disabled entirely (`animation: none`).
 - Auto-dim and hide-UI still work, but both switch instantly instead of fading.
 - Auto-next's countdown still runs (it is a timer, not motion) but the progress ring is replaced by text.
-- No parallax, no smooth `scroll-behavior` (override `html { scroll-behavior: smooth }` at `style.css:66` to `auto` inside `.reader-page`).
+- No parallax; reader scrolling is explicitly `auto`.
 
 ---
 
@@ -332,7 +300,7 @@ Private note per chapter, anchored to a page. Backed by `notes(user_id, chapter_
 
 ### 8.1 Breakpoints
 
-Existing breakpoints in `style.css` are `600px`, `768px`, `480px`. Reuse them; do not invent new ones.
+Reader CSS uses the established `600px`, `768px`, and `480px` breakpoints.
 
 | Width | Behavior |
 |---|---|
@@ -345,14 +313,14 @@ Existing breakpoints in `style.css` are `600px`, `768px`, `480px`. Reuse them; d
 
 ### 8.2 Accessibility bar (Lighthouse mobile ≥ 90)
 
-- **Touch targets:** every interactive control `≥44×44px` at `≤768px`. This includes raising `.reader-back-btn` from `36px` (`style.css:1246`) and `.reader-nav-btn` padding.
-- **Contrast:** chrome text on transparent chrome must hit 4.5:1. Current `rgba(255,255,255,0.4)` page indicator (`style.css:1285`) fails on `#0a0a0a` at ~2.9:1 → raise to `rgba(255,255,255,0.72)` and mirror for light presets. Do not rely on the blurred backdrop for contrast; it is decorative.
+- **Touch targets:** every interactive control `≥44×44px` at `≤768px`.
+- **Contrast:** chrome text on transparent chrome must hit 4.5:1. The page indicator uses `rgba(255,255,255,0.72)` and mirrors the active tone; do not rely on the blurred backdrop for contrast because it is decorative.
 - **Keyboard path:** Tab reaches `#reader-topbar` controls → zones → bottom nav → sheet. Sheet traps focus (`aria-modal`) and restores focus to `#reader-settings-btn` on close. `.reader-page` and images are not focusable (no tab stops on 40 images).
-- **Focus rings:** `:focus-visible { outline: 2px solid var(--accent, #f59e0b); outline-offset: 2px }`. The accent var may be absent with an unknown theme → the fallback is mandatory.
+- **Focus rings:** `:focus-visible { outline: 2px solid var(--r-accent); outline-offset: 2px }`, using the reader token default.
 - **Landmarks:** reader is `main#reader-images`; chrome is not inside `main`. Sheet is `role="dialog"` with `aria-labelledby`. `#reader-page-indicator` is `aria-live="polite"`, updated at most once per 500ms to avoid chatter.
 - **Images:** every `img` keeps `alt="Page N"`. Decorative placeholders are `aria-hidden="true"`.
 - **Motion:** §5.6.
-- **No horizontal scroll:** `body.reader-page { overflow-x: hidden }` exists (`style.css:1210`); keep, and ensure zero-width zones don't create overflow.
+- **No horizontal scroll:** `body.reader-page { overflow-x: hidden }` remains, and zero-width zones must not create overflow.
 - **CLS:** every page and skeleton reserves its box via `aspect-ratio` before load. This is the main Lighthouse lever on a strip of remote images.
 
 ### 8.3 Third-party image reality
@@ -368,6 +336,7 @@ Images are hotlinked (`<img src=page.image_url>`). Therefore: `loading="lazy"` s
 | Name | Semantics |
 |---|---|
 | `body[data-r-layout]` | `single\|double\|strip\|vertical` |
+| `body[data-r-preset]` | `flow\|page\|spread`; `vertical` maps to `page` |
 | `body[data-r-direction]` | `ltr\|rtl` |
 | `body[data-r-fit]` | `""\|height\|screen` |
 | `body[data-r-bg]` | `black\|white\|sepia\|custom` |
@@ -394,14 +363,12 @@ Images are hotlinked (`<img src=page.image_url>`). Therefore: `loading="lazy"` s
 | `.reader-zone[data-zone=prev\|menu\|next]` | Tap target button |
 | `#reader-sheet.reader-sheet` | Settings surface; `hidden` when closed |
 | `.reader-sheet-panel[role=dialog]` | Focus trap scope |
-| `.reader-sheet-tabs` / `.reader-sheet-tab[data-group]` | Phone group switcher |
-| `.reader-sheet-group[data-group]` | `layout\|fit\|input\|comfort\|thisSeries` |
-| `.reader-seg` / `.reader-seg-btn[data-value][aria-pressed]` | Segmented control |
-| `.reader-slider[data-pref]` / `.reader-slider-value` | Range input + live output |
-| `[data-pref]` | Binds a control to a prefs key (the wiring contract) |
+| `.reader-sheet-group[data-group="reading"]` | Curated reading controls |
+| `.reader-preset-btn[data-r-preset]` | Flow/Page/Spread selection |
+| `.reader-seg` / `.reader-seg-btn[data-value][aria-pressed]` | Reading-order and tone segmented control |
+| `[data-pref]` | Binds a public control to a stored prefs key |
 | `#reader-remember-series` | Per-series override checkbox |
-| `#reader-zone-editor` / `.reader-zone-handle[data-edge]` | Drag zone editor |
-| `.reader-keybind-row[data-action]` / `.reader-keybind-key[data-key-index]` / `.reader-keybind-reset` | Key remap UI |
+| `body[data-r-preset]` | First-paint and runtime public preset |
 | `.reader-page[data-page-idx][data-page-state]` | Page wrapper; state `idle\|loading\|ready\|error` |
 | `.reader-page-placeholder` | Blur-up / reserved box |
 | `.reader-page-error` / `.reader-retry-btn` | Failure + retry |

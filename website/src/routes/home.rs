@@ -164,7 +164,7 @@ pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) ->
     };
 
     let cfg = crate::config::site_config(&db);
-    let css = cfg.css_overrides();
+    let css = cfg.theme_overrides();
     Html(
         crate::templates::layout::base_layout(
             "Home",

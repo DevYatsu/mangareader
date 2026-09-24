@@ -20,7 +20,7 @@ pub async fn manga_detail(
         }
         Err(_) => {
             let cfg = crate::config::site_config(&db);
-            let css = cfg.css_overrides();
+            let css = cfg.theme_overrides();
             Err(axum::response::Html(
                 crate::templates::layout::base_layout(
                     "Not Found",

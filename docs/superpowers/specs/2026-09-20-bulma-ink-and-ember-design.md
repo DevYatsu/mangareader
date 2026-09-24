@@ -268,19 +268,17 @@ width/gap sliders, background presets, per-user server-persisted prefs, zone edi
 key remapping, notes, auto-dim, focus mode, next-up queue, auto-next countdown,
 offline banner, resume badge, and reduced-motion handling.
 
-Slice D must verify this checklist, not assume it:
+Slice D keeps the stored `ReaderPrefs` shape and all of those runtime paths, but makes the public surface opinionated:
 
-- [ ] All five layout modes render correctly.
-- [ ] Fit modes and width/gap sliders behave as before.
-- [ ] Background presets apply and persist.
-- [ ] Prefs round-trip to the server and survive reload.
-- [ ] Click zones fire at the configured edges and are configurable.
-- [ ] Key remapping and keyboard navigation work.
-- [ ] Notes: create, list, jump-to-page, pin, delete.
-- [ ] Auto-dim, focus mode, resume badge, next-up, countdown.
-- [ ] Offline banner and image-failure retry.
-- [ ] Reduced-motion and no-smooth-scroll honored.
-- [ ] `reader.js` selectors updated in lockstep with the markup.
+- **Flow** is the default `strip` preset; **Page** covers `single` and the storage-compatible `vertical`; **Spread** is `double` and is unavailable below `768px`.
+- The visible sheet contains only the three presets, reading order, tone, focus mode, Add note, per-series memory, and restore recommended settings.
+- Stored advanced values (`fit`, width/gap, frame, zones, keybinds, swipe, auto-next, dim, and note visibility) remain normalized, persisted, and active; their editors are intentionally absent.
+- Existing `bg=custom` remains a selected, non-editable Custom tone. Restore does not discard hidden legacy values or a custom background.
+- `L` and the legacy `W` binding cycle the same public preset IDs; neither exposes a hidden fit/layout state.
+- `reader.css` owns all reader geometry, including topbar, bottom navigation, hint, skeleton, page bases, zones, and overlays; it does not depend on `style.css` or transitional accent/font aliases.
+- Bulma classes are additive: existing IDs, `data-r-*`, `data-pref`, and public JavaScript hooks remain stable.
+
+The contract tests cover preset mapping, first-paint attributes, preference equality/normalization, notes/progress response fields, and the server progress seam. Hydration is read-only: the reader consumes the existing `/api/progress` response and does not create a write loop.
 
 ## 8. Theming model change
 
@@ -291,23 +289,19 @@ Removed:
 - The admin theme picker.
 
 Added / changed:
-- `resolve_theme()` is replaced by `resolve_scheme() -> &'static str`, which returns
-  `"dark"` unconditionally for now. This is a rename, so every call site changes name
-  but keeps the same shape. Slices A–C may keep the old name temporarily to avoid a
-  repo-wide sweep mid-migration; Slice E finishes the rename.
-- Every layout emits `<html lang="en" data-theme="dark">` server-side. Dark-first,
-  no flash of wrong theme, and no client JS needed to pick a scheme.
+- Runtime per-page theme resolution is removed rather than renamed. Every layout emits
+  `<html lang="en" data-theme="dark">` as a constant, so there is no consumer for a
+  `resolve_theme()`/`resolve_scheme()` indirection and no client-side scheme detection.
 - `css_overrides()` becomes `theme_overrides()`, emitting admin-derived overrides
   inside the `:root[data-theme="dark"]` block: `--bulma-primary-h/s/l`,
-  `--bulma-primary-rgb`, and `--bulma-scheme-main-l`.
+  `--bulma-primary-rgb`, and the Bulma surface-lightness components.
 - This requires hex→HSL conversion in `config.rs` (today only RGB parsing exists),
   plus manual `--bulma-primary-rgb` because Bulma stores that as a literal.
 
 **Data compatibility.** No schema migration and no data loss. Existing `users.theme`
-and the `site_theme` setting are reinterpreted as scheme keys; legacy values
-(`default`, `asura`, `demonic`, `webtoon`) normalize to `"dark"` on read, so existing
-rows keep working and simply resolve to the single identity. The `users.theme` column
-is retained (unused for now) so a future light-scheme slice does not need a migration.
+values and `site_theme` rows are retained but unused, so legacy data remains intact
+without participating in runtime resolution. The `users.theme` column migration stays
+in place for a future scheme slice that does not need a migration.
 
 Admin keeps: site title, accent color, background color.
 
@@ -321,7 +315,7 @@ Admin keeps: site title, accent color, background color.
 | Vendored Bulma (~678 KB) hits the Pi budget | `CompressionLayer` is **not currently in the stack** and `tower-http` only enables `fs`. Slice A adds the `compression-gzip` (or `compression-br`) feature and layers it. Verify transfer size after. |
 | Bulma derived variables going stale | Override `-h/-s/-l` components only; set `-rgb` literals explicitly. |
 | JS/markup class drift | `app.js`, `auth.js`, `reader.js`, `admin.js` hold class references. Renames are enumerated in the implementation plan and done per slice. |
-| Two systems lingering | §6 caps custom classes explicitly. Slice E deletes legacy CSS and fails if any removed class is still referenced. |
+| Two systems lingering | §6 caps custom classes explicitly. Cleanup removes the unlinked legacy assets and fails if a retired selector or token remains referenced. |
 
 ## 10. Rollout
 
@@ -334,9 +328,9 @@ independently reviewable, and the app is fully usable at the end of each.
 - **B — Content.** Home, series list, series detail, bookmarks, source, legal.
 - **C — Account & admin.** Settings, admin dashboard/branding/users, password reset.
 - **D — Reader.** Full restyle on Bulma components + `--m-*` tokens; §7.2 checklist.
-- **E — Cleanup & verification.** Delete legacy CSS and dead theme code; rename JS
-  class references; contrast, page-weight, and perf pass; screenshot review against
-  `docs/website/{home,series,series-details,chapter}.jpg`.
+- **E — Cleanup & verification.** Delete the unlinked legacy CSS and theme assets,
+  audit retired selectors/tokens, then run contrast, page-weight, performance, and
+  screenshot review against `docs/website/{home,series,series-details,chapter}.jpg`.
 
 **Verification.** `cargo test` per slice; manual route sweep per slice; the reader
 checklist in Slice D; contrast and page-weight measurement in Slice E. There are no

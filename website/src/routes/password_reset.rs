@@ -35,7 +35,7 @@ fn page(
             title,
             content,
             None,
-            &cfg.css_overrides(),
+            &cfg.theme_overrides(),
             &cfg.site_title,
             user,
             crate::templates::layout::Nav::None,

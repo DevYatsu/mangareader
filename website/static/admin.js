@@ -1,10 +1,8 @@
 // Live preview for /admin/branding. Pure preview: no fetch calls —
 // saving still goes through the form submit button.
 //
-// The new Bulma shell derives its whole palette from the `--bulma-*-h/s/l`
-// components (theme.css), so this preview writes those components, not a
-// composed color. Setting `--accent` / `--bg-page` would be a no-op: nothing
-// in the shipped cascade consumes them any more.
+// The Bulma shell derives its palette from the `--bulma-*-h/s/l`
+// components in theme.css, so this preview writes those components.
 (function () {
   "use strict";
 
@@ -39,9 +37,8 @@
     document.documentElement.style.setProperty(name, value);
   }
 
-  // Mirrors `SiteConfig::css_overrides` in config.rs. The admin form still
-  // offers a theme picker; that picker's preview is removed with THEMES in
-  // Slice E, so this file only previews accent and background.
+  // Mirrors `SiteConfig::theme_overrides` in config.rs; only the two live color
+  // controls are previewed.
   function previewAccent(value) {
     var hsl = hexToHsl(value);
     setVar("--bulma-primary-h", hsl[0].toFixed(0) + "deg");
@@ -71,7 +68,7 @@
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    var form = document.querySelector(".admin-form");
+    var form = document.querySelector("#admin-branding-form");
     if (!form) return;
     var accent = form.querySelector('input[name="site_accent"]');
     if (accent) {

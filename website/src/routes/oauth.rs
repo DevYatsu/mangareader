@@ -43,7 +43,7 @@ fn error_page(cfg: &crate::config::SiteConfig, msg: &str, user: Option<&AuthUser
                 "Login",
                 crate::templates::layout::error_content("Login failed", msg),
                 None,
-                &cfg.css_overrides(),
+                &cfg.theme_overrides(),
                 &cfg.site_title,
                 user,
                 crate::templates::layout::Nav::None,
