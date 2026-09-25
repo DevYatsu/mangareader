@@ -17,22 +17,6 @@ use std::sync::Arc;
 
 use crate::{AppState, auth::AuthUser};
 
-/// Last-write-wins guard: true = incoming row wins (string `>=` on ISO8601
-/// `updated_at`, which orders chronologically in this fixed-width format).
-///
-/// Contract mirror of the authoritative guard in
-/// `mangaread_core::db::upsert_progress` (`ON CONFLICT(user_id, chapter_id)
-/// DO UPDATE ... WHERE excluded.updated_at >= progress.updated_at`):
-/// `post_progress`/`post_migrate` write through that SQL, and this pure fn
-/// pins the same rule for unit tests. Both MUST use `>=` (ties win for the
-/// incoming row) — keep them in sync if either ever changes.
-pub fn merge_progress(existing: Option<&str>, incoming: &str) -> bool {
-    match existing {
-        None => true,
-        Some(current) => incoming >= current,
-    }
-}
-
 /// Current UTC time formatted `%Y-%m-%d %H:%M:%S` (matches SQLite datetime).
 fn now_utc_string() -> String {
     time::OffsetDateTime::now_utc()
@@ -288,20 +272,7 @@ pub async fn post_migrate(
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_progress, valid_status, validate_progress};
-
-    #[test]
-    fn newer_incoming_wins() {
-        assert!(merge_progress(
-            Some("2026-01-01 00:00:00"),
-            "2026-09-19 00:00:00"
-        ));
-        assert!(!merge_progress(
-            Some("2026-09-19 00:00:00"),
-            "2026-01-01 00:00:00"
-        ));
-        assert!(merge_progress(None, "2026-01-01 00:00:00"));
-    }
+    use super::{valid_status, validate_progress};
 
     #[test]
     fn progress_validation_rejects_bad_status_and_page() {

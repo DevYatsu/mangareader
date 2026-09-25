@@ -78,6 +78,40 @@ fn stored(map: &HashMap<String, String>, key: &str) -> String {
     map.get(key).cloned().unwrap_or_default()
 }
 
+fn is_displayable_reset_link(link: &str, base: &str) -> bool {
+    let Ok(base_url) = reqwest::Url::parse(base) else {
+        return false;
+    };
+    let Ok(link_url) = reqwest::Url::parse(link) else {
+        return false;
+    };
+    let (Some(base_host), Some(link_host)) = (base_url.host_str(), link_url.host_str()) else {
+        return false;
+    };
+    if !matches!(base_url.scheme(), "http" | "https")
+        || base_url.scheme() != link_url.scheme()
+        || base_host != link_host
+        || base_url.port_or_known_default() != link_url.port_or_known_default()
+        || !base_url.username().is_empty()
+        || base_url.password().is_some()
+        || !link_url.username().is_empty()
+        || link_url.password().is_some()
+        || link_url.query().is_some()
+        || link_url.fragment().is_some()
+    {
+        return false;
+    }
+
+    let base_path = base_url.path().trim_end_matches('/');
+    let Some(reset_path) = link_url.path().strip_prefix(base_path) else {
+        return false;
+    };
+    let Some(token) = reset_path.strip_prefix("/reset/") else {
+        return false;
+    };
+    !token.is_empty() && !token.contains('/')
+}
+
 /// Split checkbox values on commas so both repeated keys and a single CSV
 /// value normalize to the same list.
 fn normalize_sections(values: &[String]) -> Vec<String> {
@@ -466,10 +500,9 @@ pub async fn users_page(
     };
     let notice = match (q.get("reset_link"), q.get("for")) {
         (Some(link), Some(id)) => {
-            // Only server-minted http(s) links get an anchor; anything else
-            // (e.g. `javascript:`) renders as inert text so a crafted query
-            // string cannot execute script in the admin origin.
-            let is_safe = link.starts_with("http://") || link.starts_with("https://");
+            // The display label is independent of whether the attacker-controlled
+            // link may be rendered as an anchor.
+            let is_safe = is_displayable_reset_link(link, &crate::oauth::base_url());
             if is_safe {
                 html! { div class="notification is-success is-light" { "Reset link for user " (id) ": " a href=(link) { (link) } } }
             } else {
@@ -597,6 +630,50 @@ mod tests {
             normalize_sections(&csv.home_sections),
             ["latest", "continue"]
         );
+    }
+
+    #[test]
+    fn reset_link_accepts_configured_origin() {
+        assert!(is_displayable_reset_link(
+            "http://localhost:3000/reset/token123",
+            "http://localhost:3000"
+        ));
+    }
+
+    #[test]
+    fn reset_link_rejects_external_https_host() {
+        assert!(!is_displayable_reset_link(
+            "https://evil.example/reset/token123",
+            "http://localhost:3000"
+        ));
+    }
+
+    #[test]
+    fn reset_link_rejects_javascript_and_malformed_urls() {
+        assert!(!is_displayable_reset_link(
+            "javascript:alert(1)",
+            "http://localhost:3000"
+        ));
+        assert!(!is_displayable_reset_link(
+            "not a url",
+            "http://localhost:3000"
+        ));
+    }
+
+    #[test]
+    fn reset_link_rejects_wrong_path() {
+        assert!(!is_displayable_reset_link(
+            "http://localhost:3000/change-password/token123",
+            "http://localhost:3000"
+        ));
+    }
+
+    #[test]
+    fn reset_link_rejects_wrong_port() {
+        assert!(!is_displayable_reset_link(
+            "http://localhost:3001/reset/token123",
+            "http://localhost:3000"
+        ));
     }
 
     #[test]
