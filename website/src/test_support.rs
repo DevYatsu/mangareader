@@ -17,6 +17,8 @@ pub struct TestApp {
     pub state: Arc<AppState>,
     /// The setup token armed at boot, exactly as `main` would.
     pub setup_token: Option<String>,
+    /// Every email the app "sent".
+    pub mailer: Arc<crate::email::MemoryMailer>,
 }
 
 /// A fresh app over an empty, initialized in-memory database, booted like
@@ -24,12 +26,17 @@ pub struct TestApp {
 pub async fn test_app() -> TestApp {
     let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
     mangaread_core::db::init_db(&conn).expect("init db");
-    let state = Arc::new(AppState::new(conn));
+    let mailer = Arc::new(crate::email::MemoryMailer::default());
+    let state = Arc::new(AppState {
+        mailer: mailer.clone(),
+        ..AppState::new(conn)
+    });
     let setup_token = crate::routes::setup::arm_if_needed(&state).await;
     TestApp {
         router: crate::app(state.clone()),
         state,
         setup_token,
+        mailer,
     }
 }
 
@@ -63,6 +70,12 @@ pub struct Res {
 }
 
 impl TestApp {
+    /// Store a site setting as the admin would.
+    pub async fn set(&self, key: &str, value: &str) {
+        let db = self.state.db.lock().await;
+        mangaread_core::db::set_setting(&db, key, value, 1).unwrap();
+    }
+
     /// Register a member directly in the DB and return a session cookie.
     pub async fn member(&self, email: &str) -> (i64, String) {
         let db = self.state.db.lock().await;

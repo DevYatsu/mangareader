@@ -4,7 +4,9 @@
 
 mod auth;
 mod config;
+mod email;
 mod oauth;
+mod rate_limit;
 mod routes;
 mod scraper_helper;
 mod templates;
@@ -68,6 +70,10 @@ pub struct AppState {
     /// One-time token required by `/setup` while the instance has no users.
     /// `None` once setup is complete (or was never needed).
     pub setup_token: Mutex<Option<String>>,
+    /// Outbound mail (SMTP in production, in-memory in tests).
+    pub mailer: Arc<dyn crate::email::Mailer>,
+    /// Sliding-window limits for mail-sending endpoints.
+    pub rate_limiter: crate::rate_limit::RateLimiter,
 }
 
 impl AppState {
@@ -105,6 +111,8 @@ impl AppState {
                 ),
             ])),
             setup_token: Mutex::new(None),
+            mailer: Arc::new(crate::email::SmtpMailer),
+            rate_limiter: crate::rate_limit::RateLimiter::default(),
         }
     }
 }
@@ -124,11 +132,18 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route(
             "/register",
-            get(crate::routes::auth_pages::register_page)
-                .post(crate::routes::auth_pages::register_submit),
+            get(crate::routes::signup::register_page).post(crate::routes::signup::register_submit),
+        )
+        .route(
+            "/register/{token}",
+            get(crate::routes::signup::complete_page).post(crate::routes::signup::complete_submit),
         )
         .route("/logout", post(crate::routes::auth_pages::logout))
-        .route("/forgot", get(crate::routes::password_reset::forgot_page))
+        .route(
+            "/forgot",
+            get(crate::routes::password_reset::forgot_page)
+                .post(crate::routes::password_reset::forgot_submit),
+        )
         .route(
             "/reset/{token}",
             get(crate::routes::password_reset::reset_page)
@@ -156,6 +171,15 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route(
             "/admin/branding",
             get(crate::routes::admin::branding_page).post(crate::routes::admin::branding_submit),
+        )
+        .route(
+            "/admin/email",
+            get(crate::routes::admin_email::email_page)
+                .post(crate::routes::admin_email::email_submit),
+        )
+        .route(
+            "/admin/email/test",
+            post(crate::routes::admin_email::email_test),
         )
         .route("/admin/users", get(crate::routes::admin::users_page))
         .route(
@@ -262,7 +286,12 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tracing::info!("listening on http://0.0.0.0:3000");
-    axum::serve(listener, app).await?;
+    // Connect info feeds `ClientIp`, which keys the sign-up rate limits.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

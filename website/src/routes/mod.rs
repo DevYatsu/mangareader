@@ -12,9 +12,12 @@
 //! - `bookmarks`: client-side bookmark page
 //! - `settings`:  user settings (profile, appearance, password)
 //! - `admin`:     admin dashboard + branding (site title, theme, legal)
+//! - `admin_email`: SMTP settings, unverified sign-up switch, test send
 //! - `legal`:     public terms + privacy pages
 //! - `setup`:     first-run admin claim and the setup gate middleware
+//! - `signup`:    open registration verified by an emailed link
 pub mod admin;
+pub mod admin_email;
 pub mod api;
 pub mod auth_pages;
 pub mod bookmarks;
@@ -31,5 +34,6 @@ pub mod reader_prefs;
 pub mod series;
 pub mod settings;
 pub mod setup;
+pub mod signup;
 pub mod source;
 pub mod sync;

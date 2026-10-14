@@ -93,6 +93,8 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(provider, provider_user_id)
         );
+        -- Legacy: reset links moved to email_tokens (hashed). Kept so old
+        -- databases open unchanged; nothing writes here any more.
         CREATE TABLE IF NOT EXISTS password_resets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL REFERENCES users(id),
@@ -191,7 +193,17 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
             detail TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
          );
-         CREATE INDEX IF NOT EXISTS idx_mod_log_created ON mod_log(created_at);",
+         CREATE INDEX IF NOT EXISTS idx_mod_log_created ON mod_log(created_at);
+         CREATE TABLE IF NOT EXISTS email_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_hash TEXT NOT NULL UNIQUE,
+            email TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_email_tokens_email ON email_tokens(email, purpose);",
     )?;
     Ok(())
 }
@@ -845,6 +857,101 @@ pub fn list_mod_log(conn: &Connection, limit: i64) -> Result<Vec<ModLogEntry>, E
         .map_err(Error::from)
 }
 
+/// What an emailed link is allowed to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenPurpose {
+    /// Finish creating an account for a verified address.
+    Signup,
+    /// Set a new password for the account with this address.
+    Reset,
+}
+
+impl TokenPurpose {
+    fn as_str(self) -> &'static str {
+        match self {
+            TokenPurpose::Signup => "signup",
+            TokenPurpose::Reset => "reset",
+        }
+    }
+}
+
+/// Store a link token by its hash. Earlier unused tokens for the same
+/// address and purpose are deleted, so only the newest link works.
+pub fn create_email_token(
+    conn: &Connection,
+    token_hash: &str,
+    email: &str,
+    purpose: TokenPurpose,
+    expires_at: &str,
+) -> Result<(), Error> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM email_tokens WHERE email = ?1 AND purpose = ?2 AND used_at IS NULL",
+        rusqlite::params![email, purpose.as_str()],
+    )?;
+    tx.execute(
+        "INSERT INTO email_tokens (token_hash, email, purpose, expires_at) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![token_hash, email, purpose.as_str(), expires_at],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// The address behind a live (unused, unexpired) token, without consuming it.
+pub fn peek_email_token(
+    conn: &Connection,
+    token_hash: &str,
+    purpose: TokenPurpose,
+    now: &str,
+) -> Result<Option<String>, Error> {
+    let found = conn.query_row(
+        "SELECT email FROM email_tokens
+         WHERE token_hash = ?1 AND purpose = ?2 AND used_at IS NULL AND expires_at > ?3",
+        rusqlite::params![token_hash, purpose.as_str(), now],
+        |row| row.get(0),
+    );
+    match found {
+        Ok(email) => Ok(Some(email)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Consume a live token and return its address. The check and the mark are
+/// one `UPDATE … RETURNING`, so concurrent submissions cannot both succeed.
+pub fn consume_email_token(
+    conn: &Connection,
+    token_hash: &str,
+    purpose: TokenPurpose,
+    now: &str,
+) -> Result<Option<String>, Error> {
+    let found = conn.query_row(
+        "UPDATE email_tokens SET used_at = ?3
+         WHERE token_hash = ?1 AND purpose = ?2 AND used_at IS NULL AND expires_at > ?3
+         RETURNING email",
+        rusqlite::params![token_hash, purpose.as_str(), now],
+        |row| row.get(0),
+    );
+    match found {
+        Ok(email) => Ok(Some(email)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Find a user by id. `NotFound` when missing.
+pub fn find_user_by_id(conn: &Connection, id: i64) -> Result<User, Error> {
+    conn.query_row(
+        "SELECT id, name, email, password_hash, role, locale, created_at, banned_at FROM users WHERE id = ?1",
+        rusqlite::params![id],
+        map_user_row,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("user id={id}")),
+        other => other.into(),
+    })
+}
+
 /// Find a user by email. `NotFound` when missing.
 pub fn find_user_by_email(conn: &Connection, email: &str) -> Result<User, Error> {
     conn.query_row(
@@ -949,45 +1056,6 @@ pub fn user_oauth_providers(conn: &Connection, user_id: i64) -> Result<Vec<Strin
         out.push(r?);
     }
     Ok(out)
-}
-
-/// Create a reset token; deletes the user's prior unused tokens first so only
-/// the newest link works.
-pub fn create_password_reset(
-    conn: &Connection,
-    user_id: i64,
-    token: &str,
-    expires_at: &str,
-) -> Result<(), Error> {
-    conn.execute(
-        "DELETE FROM password_resets WHERE user_id = ?1 AND used = 0",
-        rusqlite::params![user_id],
-    )?;
-    conn.execute(
-        "INSERT INTO password_resets (user_id, token, expires_at) VALUES (?1, ?2, ?3)",
-        rusqlite::params![user_id, token, expires_at],
-    )?;
-    Ok(())
-}
-
-/// Consume a reset token: returns the `user_id`, marks it used. `NotFound`
-/// when missing, expired, or already used.
-pub fn consume_password_reset(conn: &Connection, token: &str, now: &str) -> Result<i64, Error> {
-    let user_id: i64 = conn
-        .query_row(
-            "SELECT user_id FROM password_resets WHERE token = ?1 AND used = 0 AND expires_at > ?2",
-            rusqlite::params![token, now],
-            |row| row.get(0),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Error::NotFound("reset token".to_string()),
-            other => other.into(),
-        })?;
-    conn.execute(
-        "UPDATE password_resets SET used = 1 WHERE token = ?1",
-        rusqlite::params![token],
-    )?;
-    Ok(user_id)
 }
 
 /// Delete all sessions of a user (used after password reset).
@@ -1416,6 +1484,76 @@ mod tests {
     }
 
     #[test]
+    fn email_tokens_are_single_use_scoped_and_expiring() {
+        let conn = mem();
+        let now = "2026-10-14 12:00:00";
+        create_email_token(
+            &conn,
+            "h1",
+            "a@x.io",
+            TokenPurpose::Signup,
+            "2026-10-15 12:00:00",
+        )
+        .unwrap();
+        assert_eq!(
+            peek_email_token(&conn, "h1", TokenPurpose::Reset, now).unwrap(),
+            None,
+            "purpose is part of the key"
+        );
+        assert_eq!(
+            peek_email_token(&conn, "h1", TokenPurpose::Signup, now)
+                .unwrap()
+                .as_deref(),
+            Some("a@x.io")
+        );
+        assert_eq!(
+            consume_email_token(&conn, "h1", TokenPurpose::Signup, now)
+                .unwrap()
+                .as_deref(),
+            Some("a@x.io")
+        );
+        assert_eq!(
+            consume_email_token(&conn, "h1", TokenPurpose::Signup, now).unwrap(),
+            None
+        );
+        assert_eq!(
+            consume_email_token(&conn, "h1", TokenPurpose::Signup, "2026-10-16 00:00:00").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn newer_email_token_revokes_the_older_one() {
+        let conn = mem();
+        let now = "2026-10-14 12:00:00";
+        let exp = "2026-10-15 12:00:00";
+        create_email_token(&conn, "old", "a@x.io", TokenPurpose::Reset, exp).unwrap();
+        create_email_token(&conn, "new", "a@x.io", TokenPurpose::Reset, exp).unwrap();
+        assert_eq!(
+            peek_email_token(&conn, "old", TokenPurpose::Reset, now).unwrap(),
+            None
+        );
+        assert!(
+            peek_email_token(&conn, "new", TokenPurpose::Reset, now)
+                .unwrap()
+                .is_some()
+        );
+        // Expired tokens are rejected even when unused.
+        create_email_token(
+            &conn,
+            "late",
+            "b@x.io",
+            TokenPurpose::Reset,
+            "2026-10-14 11:00:00",
+        )
+        .unwrap();
+        assert_eq!(
+            peek_email_token(&conn, "late", TokenPurpose::Reset, now).unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn user_roundtrip_and_session_lookup() {
         let conn = mem();
         let id = create_user(
@@ -1502,43 +1640,6 @@ mod tests {
             user_oauth_providers(&conn, id).unwrap(),
             vec!["google".to_string()]
         );
-    }
-
-    #[test]
-    fn password_reset_single_use_expiry() {
-        let conn = mem();
-        let id = create_user(
-            &conn,
-            &NewUser {
-                name: "r".into(),
-                email: "r@x.io".into(),
-                password_hash: "h".into(),
-                role: Role::Member,
-            },
-        )
-        .unwrap();
-        create_password_reset(&conn, id, "tok-a", "2099-01-01 00:00:00").unwrap();
-        // second request replaces the first
-        create_password_reset(&conn, id, "tok-b", "2099-01-01 00:00:00").unwrap();
-        assert!(matches!(
-            consume_password_reset(&conn, "tok-a", "2026-01-01 00:00:00"),
-            Err(crate::error::Error::NotFound(_))
-        ));
-        assert_eq!(
-            consume_password_reset(&conn, "tok-b", "2026-01-01 00:00:00").unwrap(),
-            id
-        );
-        // single use
-        assert!(matches!(
-            consume_password_reset(&conn, "tok-b", "2026-01-01 00:00:00"),
-            Err(crate::error::Error::NotFound(_))
-        ));
-        // expired
-        create_password_reset(&conn, id, "tok-c", "2020-01-01 00:00:00").unwrap();
-        assert!(matches!(
-            consume_password_reset(&conn, "tok-c", "2026-01-01 00:00:00"),
-            Err(crate::error::Error::NotFound(_))
-        ));
     }
 
     #[test]

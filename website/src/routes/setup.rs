@@ -245,8 +245,9 @@ pub async fn setup_submit(
     }
     *state.setup_token.lock().await = None;
     tracing::info!("setup complete: admin account created for {email}");
+    // Email is the next step: without it, sign-up stays closed.
     crate::routes::auth_pages::redirect_with_cookie(
-        "/admin",
+        "/admin/email?setup=1",
         set_cookie_value(&session, REMEMBER_SESSION_MAX_AGE),
     )
 }
@@ -312,6 +313,8 @@ mod tests {
     #[tokio::test]
     async fn self_registration_after_setup_creates_a_member() {
         let (app, _) = app_with_admin().await;
+        // Direct mode keeps this test independent of the email flow.
+        app.set(crate::email::ALLOW_UNVERIFIED_KEY, "1").await;
         let res = app
             .post_form(
                 "/register",

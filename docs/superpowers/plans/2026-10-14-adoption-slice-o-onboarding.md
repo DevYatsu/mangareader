@@ -45,9 +45,32 @@
 - [x] `/admin/users` gains a role `<select>`, a ban/unban button, and a "Banned" tag.
 - [x] Tests: member gets 403; promote writes `mod_log`; demoting the last admin is refused; a banned user's session stops working.
 
-## O2 — Email sign-up and self-service reset (detailed when O1 lands)
+## O2 — Email sign-up and self-service reset
 
-`lettre` SMTP behind a `Mailer` trait (Strategy pattern; tests use an in-memory mailer). Hashed `email_tokens`. `/register` asks for email only. `/register/{token}` completes the account. `/forgot` becomes self-service. `/admin/email` holds SMTP settings with a test send. Without SMTP, sign-up shows "not available yet" unless the admin enables unverified sign-up (default off).
+### Task O2.1: Mail port
+- [x] `email::Mailer` trait (`send(to, subject, text)`), the port in ports-and-adapters terms. `SmtpMailer` is the adapter: it reads `smtp_url` and `smtp_from` per send (DB setting over `SMTP_URL`/`SMTP_FROM` env), so admin edits apply without restart. `MemoryMailer` records messages for tests.
+- [x] `AppState.mailer: Arc<dyn Mailer>`. `email::smtp_configured(conn)` tells pages whether sign-up by email is possible.
+
+### Task O2.2: Hashed email tokens
+- [x] `email_tokens(id, token_hash UNIQUE, email, purpose, expires_at, used_at, created_at)`. Only SHA-256 hashes are stored. Issuing a token deletes earlier unused tokens for the same email and purpose.
+- [x] `peek_email_token` (GET renders the form without consuming) and `consume_email_token` (one `UPDATE … RETURNING`, so a token cannot be used twice).
+- [x] Admin reset links move to `email_tokens` (purpose `reset`). The legacy `password_resets` table stays for compatibility but is no longer written. Raw reset tokens are no longer stored.
+
+### Task O2.3: Sign-up and reset flows
+- [x] `ClientIp` extractor: `X-Forwarded-For` only when `MANGAREAD_TRUST_PROXY=1`, else the socket address.
+- [x] `RateLimiter` (sliding 1 h window, in memory): 3 mails per address, 10 per IP.
+- [x] `/register` has three modes: email (SMTP configured), direct (no SMTP + `allow_unverified_signup`), closed (no SMTP, default).
+- [x] `POST /register` (email mode) always answers "Check your inbox". New address → signup link (24 h). Known address → mail pointing to password reset.
+- [x] `GET/POST /register/{token}` completes the account as a member and logs in.
+- [x] `/forgot` becomes a form: it sends a reset link when SMTP is configured, with the same no-enumeration response. Without SMTP it keeps the "ask an admin" copy.
+- [x] `/reset/{token}` consumes `email_tokens`.
+
+### Task O2.4: Admin email settings
+- [x] `/admin/email`: SMTP URL (blank keeps the stored value; the stored value is never echoed), from address, `allow_unverified_signup` (default off), and "Send test email" to the admin's own address.
+- [x] Dashboard card warns when SMTP is not configured. Setup redirects to `/admin/email?setup=1`.
+
+### Task O2.5: Tests
+- [x] Closed mode by default; direct mode only when enabled; email mode end to end with `MemoryMailer`; identical response for known and unknown addresses; token single-use and expiry; rate limit; reset by email; admin settings are admin-only and never echo the SMTP URL.
 
 ## O3 — Install path and README (detailed when O2 lands)
 

@@ -1,8 +1,8 @@
-//! Login, registration, and logout handlers.
+//! Login and logout handlers, plus the auth page shell shared with
+//! `routes::signup` and `routes::password_reset`.
 //!
-//! Self-registration always creates a `Member`; the first admin comes from
-//! `/setup` (see `routes::setup`). Registration failures all render the same
-//! generic message so duplicate emails cannot be enumerated.
+//! Login failures all render the same generic message so registered emails
+//! cannot be enumerated.
 
 use axum::{
     Form,
@@ -10,7 +10,6 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
-use mangaread_core::domain::{NewUser, Role};
 use maud::html;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -18,8 +17,8 @@ use std::sync::Arc;
 use crate::{
     AppState,
     auth::{
-        AuthUser, REMEMBER_SESSION_MAX_AGE, hash_password, lifetime_for_remember, new_token,
-        session_expires_at, set_cookie_value, token_from_headers, verify_password,
+        AuthUser, lifetime_for_remember, new_token, session_expires_at, set_cookie_value,
+        token_from_headers, verify_password,
     },
     oauth::Provider,
 };
@@ -34,7 +33,7 @@ fn provider_label(p: &Provider) -> &'static str {
 }
 
 /// "Continue with X" links for the configured providers; empty when none.
-fn oauth_buttons(providers: &[Provider]) -> maud::Markup {
+pub(crate) fn oauth_buttons(providers: &[Provider]) -> maud::Markup {
     html! {
         @if !providers.is_empty() {
             div class="buttons mt-5" {
@@ -47,13 +46,6 @@ fn oauth_buttons(providers: &[Provider]) -> maud::Markup {
 }
 
 #[derive(Deserialize)]
-pub struct RegisterForm {
-    pub name: String,
-    pub email: String,
-    pub password: String,
-}
-
-#[derive(Deserialize)]
 pub struct LoginForm {
     pub email: String,
     pub password: String,
@@ -62,7 +54,7 @@ pub struct LoginForm {
     pub remember: Option<String>,
 }
 
-fn page(
+pub(crate) fn page(
     cfg: &crate::config::SiteConfig,
     title: &str,
     content: maud::Markup,
@@ -117,50 +109,6 @@ fn login_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
                     div class="is-size-7 m-text-muted mt-5" {
                         p { a href="/register" { "Create an account" } }
                         p { a href="/forgot" { "Forgot password?" } }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn register_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
-    html! {
-        div class="columns is-centered" {
-            div class="column is-5-desktop is-6-tablet" {
-                div class="box" {
-                    h1 class="title is-3" { "Register" }
-                    @if let Some(msg) = error {
-                        div class="notification is-danger is-light" { (msg) }
-                    }
-                    form method="post" action="/register" {
-                        div class="field" {
-                            label class="label" { "Name" }
-                            div class="control" {
-                                input class="input" type="text" name="name" maxlength="32" required="";
-                            }
-                        }
-                        div class="field" {
-                            label class="label" { "Email" }
-                            div class="control" {
-                                input class="input" type="email" name="email" required="";
-                            }
-                        }
-                        div class="field" {
-                            label class="label" { "Password (min 8 chars)" }
-                            div class="control" {
-                                input class="input" type="password" name="password" required="";
-                            }
-                        }
-                        div class="field" {
-                            div class="control" {
-                                button type="submit" class="button is-primary is-fullwidth" { "Register" }
-                            }
-                        }
-                    }
-                    (oauth_buttons(providers))
-                    div class="is-size-7 m-text-muted mt-5" {
-                        p { a href="/login" { "Already have an account? Login" } }
                     }
                 }
             }
@@ -270,112 +218,6 @@ pub async fn login_submit(
         }
     }
     redirect_with_cookie("/", set_cookie_value(&token, max_age))
-}
-
-/// GET `/register` — render the registration form.
-pub async fn register_page(
-    State(state): State<Arc<AppState>>,
-    user: Option<AuthUser>,
-) -> Html<String> {
-    let cfg = {
-        let db = state.db.lock().await;
-        crate::config::site_config(&db)
-    };
-    page(
-        &cfg,
-        "Register",
-        register_form(None, &crate::oauth::configured_providers()),
-        user.as_ref(),
-    )
-}
-
-/// POST `/register` — validate, create the user, open a session, redirect home.
-pub async fn register_submit(
-    State(state): State<Arc<AppState>>,
-    user: Option<AuthUser>,
-    Form(form): Form<RegisterForm>,
-) -> Response {
-    let name = form.name.trim().to_string();
-    let email = form.email.trim().to_string();
-
-    let invalid: Option<&str> = if name.is_empty() || name.len() > 32 {
-        Some("Name must be 1-32 characters.")
-    } else if !(email.contains('@') && email.contains('.')) {
-        Some("Enter a valid email address.")
-    } else if form.password.len() < 8 {
-        Some("Password must be at least 8 characters.")
-    } else {
-        None
-    };
-    let cfg = {
-        let db = state.db.lock().await;
-        crate::config::site_config(&db)
-    };
-    if let Some(msg) = invalid {
-        return (
-            StatusCode::BAD_REQUEST,
-            page(
-                &cfg,
-                "Register",
-                register_form(Some(msg), &crate::oauth::configured_providers()),
-                user.as_ref(),
-            ),
-        )
-            .into_response();
-    }
-
-    // Every failure below renders the same message — no user enumeration
-    // (duplicate email surfaces as a raw rusqlite error otherwise).
-    let render_failed = |user: Option<&AuthUser>| {
-        (
-            StatusCode::BAD_REQUEST,
-            page(
-                &cfg,
-                "Register",
-                register_form(
-                    Some("could not create account"),
-                    &crate::oauth::configured_providers(),
-                ),
-                user,
-            ),
-        )
-            .into_response()
-    };
-
-    // bcrypt hashing runs without the DB guard so concurrent requests are
-    // not serialized behind hashing.
-    let password_hash = match hash_password(&form.password) {
-        Ok(h) => h,
-        Err(_) => return render_failed(user.as_ref()),
-    };
-    let token = new_token();
-    {
-        let db = state.db.lock().await;
-        let id = match mangaread_core::db::create_user(
-            &db,
-            &NewUser {
-                name: name.clone(),
-                email: email.clone(),
-                password_hash,
-                role: Role::Member,
-            },
-        ) {
-            Ok(id) => id,
-            Err(_) => return render_failed(user.as_ref()),
-        };
-        if mangaread_core::db::insert_session(
-            &db,
-            id,
-            &token,
-            &session_expires_at(REMEMBER_SESSION_MAX_AGE),
-            "web",
-        )
-        .is_err()
-        {
-            return render_failed(user.as_ref());
-        }
-    }
-    redirect_with_cookie("/", set_cookie_value(&token, REMEMBER_SESSION_MAX_AGE))
 }
 
 /// POST `/logout` — close the session, expire the cookie, redirect home.

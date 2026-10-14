@@ -138,7 +138,7 @@ fn persist_branding(
     tx.commit()
 }
 
-fn page(
+pub(crate) fn page(
     cfg: &crate::config::SiteConfig,
     title: &str,
     content: Markup,
@@ -153,11 +153,32 @@ fn page(
     )
 }
 
-fn dashboard_content() -> Markup {
+fn dashboard_content(mail_configured: bool) -> Markup {
     html! {
         section {
             h1 class="title is-2" { "Admin" }
+            @if !mail_configured {
+                div class="notification is-warning is-light" {
+                    strong { "Email is not set up." }
+                    " Readers cannot sign up until you add SMTP settings. "
+                    a href="/admin/email" { "Set up email" }
+                }
+            }
             div class="columns is-multiline" {
+                div class="column is-half-mobile is-one-third-tablet" {
+                    a class="card" href="/admin/email" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Email" }
+                            p {
+                                @if mail_configured { "SMTP is configured. Sign-up links and password resets are sent by email." }
+                                @else { "Not configured. Sign-up is closed until you add SMTP settings." }
+                            }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" { "Open email settings" }
+                        }
+                    }
+                }
                 div class="column is-half-mobile is-one-third-tablet" {
                     a class="card" href="/admin/branding" {
                         div class="card-content" {
@@ -300,11 +321,20 @@ pub async fn dashboard(State(state): State<Arc<AppState>>, user: AuthUser) -> Re
     if require_role(&user, Role::Admin).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let cfg = {
+    let (cfg, mail_configured) = {
         let db = state.db.lock().await;
-        crate::config::site_config(&db)
+        (
+            crate::config::site_config(&db),
+            crate::email::MailSettings::load(&db).is_some(),
+        )
     };
-    page(&cfg, "Admin", dashboard_content(), Some(&user)).into_response()
+    page(
+        &cfg,
+        "Admin",
+        dashboard_content(mail_configured),
+        Some(&user),
+    )
+    .into_response()
 }
 
 /// GET `/admin/branding` — branding form prefilled from stored settings.
@@ -591,15 +621,21 @@ pub async fn user_reset_link(
     let token = crate::auth::new_token();
     {
         let db = state.db.lock().await;
-        if mangaread_core::db::create_password_reset(
+        let Ok(target) = mangaread_core::db::find_user_by_id(&db, id) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        // Same hashed token store as self-service resets; the raw token only
+        // ever exists in this redirect.
+        if mangaread_core::db::create_email_token(
             &db,
-            id,
-            &token,
+            &crate::email::token_hash(&token),
+            &target.email,
+            mangaread_core::db::TokenPurpose::Reset,
             &crate::routes::password_reset::reset_expires_at(),
         )
         .is_err()
         {
-            return StatusCode::NOT_FOUND.into_response();
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     }
     let link = format!("{}/reset/{token}", crate::oauth::base_url());
