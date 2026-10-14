@@ -27,9 +27,14 @@
 - [x] `source_health(conn)` per source: last success, last failure, failure streak, last error. `adapter_health` is removed from `AppState`.
 - [x] Tests: per-source scan isolation is covered by the engine's signature (no live sites in tests); DB tests for run lifecycle, streak, restart cleanup, pruning, distinct stale ids, link-only-unlinked, title lock.
 
-## A2 — `/admin/sources` and `/admin/sync` (detailed when A1 lands)
+## A2 — `/admin/sources` and `/admin/sync`
 
-Sources table with health, manga count, enable/disable (`sources_disabled` setting, honored by the loop and on-demand syncs), and "Scan now". Sync page with loop status, recent runs, a failed-only filter, per-run retry, and "Run full sync now" (wakes the loop via `Notify`).
+- [x] `sources_disabled` setting (CSV). Disabled sources are skipped by the loop's scans, by `list_manga_ids_needing_sync`, and by `run_job` (not recorded, since nothing ran).
+- [x] `AppState.spawn_job` is the single entry point for background jobs (admin buttons, series page views, reader). Tests swap in a recorder, so no route test launches Chromium.
+- [x] `/admin/sources`: status tag (Healthy / N recent failures / Failing after 3 in a row / Never run / Disabled), manga count, last success, expandable last error, "Scan now", enable/disable (logged in `mod_log`).
+- [x] `/admin/sync`: loop status with "Run full sync now" (`Notify::notify_one`, so a press during a pass is not lost), all/failed tabs over the last 100 runs, Retry on failed manga and chapter runs.
+- [x] Dashboard links both pages; the "Sources: not available yet" card is gone.
+- [x] Tests: admin-only on all six endpoints, health and escaping, toggle round trip, retry rules, loop wake.
 
 ## A3 — `/admin/series` (detailed when A2 lands)
 

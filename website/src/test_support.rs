@@ -19,6 +19,8 @@ pub struct TestApp {
     pub setup_token: Option<String>,
     /// Every email the app "sent".
     pub mailer: Arc<crate::email::MemoryMailer>,
+    /// Every background job the app asked to start (none actually run).
+    pub jobs: Arc<std::sync::Mutex<Vec<crate::scraper_helper::Job>>>,
 }
 
 /// A fresh app over an empty, initialized in-memory database, booted like
@@ -27,8 +29,14 @@ pub async fn test_app() -> TestApp {
     let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
     mangaread_core::db::init_db(&conn).expect("init db");
     let mailer = Arc::new(crate::email::MemoryMailer::default());
+    let jobs = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = jobs.clone();
     let state = Arc::new(AppState {
         mailer: mailer.clone(),
+        spawn_job: Arc::new(move |job| {
+            recorder.lock().unwrap().push(job);
+            true
+        }),
         ..AppState::new(conn)
     });
     let setup_token = crate::routes::setup::arm_if_needed(&state).await;
@@ -37,6 +45,7 @@ pub async fn test_app() -> TestApp {
         state,
         setup_token,
         mailer,
+        jobs,
     }
 }
 

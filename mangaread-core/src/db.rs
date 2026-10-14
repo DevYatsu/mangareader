@@ -710,23 +710,30 @@ pub fn count_series_with_chapters(conn: &Connection) -> Result<i64, Error> {
 ///
 /// A manga is stale when its `chapters_synced_at` is older than
 /// `stale_minutes` ago. Returns IDs ordered by stalest first.
+///
+/// Manga from `skip_sources` (sources an admin disabled) are left out.
 pub fn list_manga_ids_needing_sync(
     conn: &Connection,
     stale_minutes: i64,
+    skip_sources: &[String],
 ) -> Result<Vec<i64>, Error> {
     let mut stmt = conn.prepare(
         // `NOT EXISTS`, not a join: a join returned a stale manga once per
         // chapter, so one pass could re-sync the same manga up to 50 times.
         "SELECT m.id
          FROM manga m
-         WHERE NOT EXISTS (SELECT 1 FROM chapters c WHERE c.manga_id = m.id)
+         WHERE (NOT EXISTS (SELECT 1 FROM chapters c WHERE c.manga_id = m.id)
             OR m.chapters_synced_at IS NULL
-            OR m.chapters_synced_at < datetime('now', ?1)
+            OR m.chapters_synced_at < datetime('now', ?1))
+           AND m.source NOT IN (SELECT value FROM json_each(?2))
          ORDER BY m.chapters_synced_at IS NOT NULL, m.chapters_synced_at ASC
          LIMIT 50",
     )?;
     let ids = stmt.query_map(
-        rusqlite::params![format!("-{} minutes", stale_minutes)],
+        rusqlite::params![
+            format!("-{} minutes", stale_minutes),
+            serde_json::to_string(skip_sources).unwrap_or_else(|_| "[]".into())
+        ],
         |row| row.get::<_, i64>(0),
     )?;
     ids.collect::<rusqlite::Result<Vec<_>>>()
@@ -1817,8 +1824,10 @@ mod tests {
     fn stale_manga_ids_are_distinct() {
         let conn = mem();
         seed_series(&conn, "Many", &[("a", None, &[1.0, 2.0, 3.0])]);
-        let ids = list_manga_ids_needing_sync(&conn, 120).unwrap();
+        let ids = list_manga_ids_needing_sync(&conn, 120, &[]).unwrap();
         assert_eq!(ids.len(), 1);
+        let skipped = list_manga_ids_needing_sync(&conn, 120, &["a".to_string()]).unwrap();
+        assert!(skipped.is_empty(), "disabled sources are skipped");
     }
 
     #[test]

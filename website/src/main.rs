@@ -53,6 +53,10 @@ pub struct AppState {
     pub auto_sync: Mutex<SyncProgress>,
     /// Wakes the sync loop early ("Run full sync now").
     pub sync_wake: tokio::sync::Notify,
+    /// Starts a background scrape job; returns whether it started. Routes go
+    /// through this instead of calling the scraper directly, so tests can
+    /// record jobs instead of launching Chromium.
+    pub spawn_job: Arc<dyn Fn(crate::scraper_helper::Job) -> bool + Send + Sync>,
     /// One-time token required by `/setup` while the instance has no users.
     /// `None` once setup is complete (or was never needed).
     pub setup_token: Mutex<Option<String>>,
@@ -76,6 +80,7 @@ impl AppState {
                 last_finished: None,
             }),
             sync_wake: tokio::sync::Notify::new(),
+            spawn_job: Arc::new(crate::scraper_helper::spawn_job),
             setup_token: Mutex::new(None),
             mailer: Arc::new(crate::email::SmtpMailer),
             rate_limiter: crate::rate_limit::RateLimiter::default(),
@@ -146,6 +151,27 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route(
             "/admin/email/test",
             post(crate::routes::admin_email::email_test),
+        )
+        .route(
+            "/admin/sources",
+            get(crate::routes::admin_sync::sources_page),
+        )
+        .route(
+            "/admin/sources/{name}/toggle",
+            post(crate::routes::admin_sync::source_toggle),
+        )
+        .route(
+            "/admin/sources/{name}/scan",
+            post(crate::routes::admin_sync::source_scan),
+        )
+        .route("/admin/sync", get(crate::routes::admin_sync::sync_page))
+        .route(
+            "/admin/sync/run",
+            post(crate::routes::admin_sync::sync_run_now),
+        )
+        .route(
+            "/admin/sync/retry/{id}",
+            post(crate::routes::admin_sync::sync_retry),
         )
         .route("/admin/users", get(crate::routes::admin::users_page))
         .route(

@@ -64,7 +64,7 @@ pub async fn series_detail(
             id,
             primary.id
         );
-        crate::scraper_helper::sync_manga_background(primary.id);
+        (state.spawn_job)(crate::scraper_helper::Job::Manga(primary.id));
     }
 
     let primary = mangaread_core::service::series::pick_primary(&manga_entries, &db)

@@ -113,12 +113,36 @@ pub(crate) fn source_names() -> Vec<String> {
     build_engine().source_names()
 }
 
+/// `(name, base URL)` of every registered source, for the admin list.
+pub(crate) fn source_list() -> Vec<(String, String)> {
+    scraper::adapters::all()
+        .iter()
+        .map(|a| (a.source_name().to_string(), a.base_url().to_string()))
+        .collect()
+}
+
+/// `site_settings` key holding the comma-separated disabled source names.
+pub(crate) const SOURCES_DISABLED_KEY: &str = "sources_disabled";
+
+/// Sources an admin switched off. They are not scanned or synced.
+pub(crate) fn disabled_sources(conn: &rusqlite::Connection) -> Vec<String> {
+    mangaread_core::db::get_setting(conn, SOURCES_DISABLED_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
 // ── Tracked jobs ──
 
 /// One unit of scraping work. Every job is recorded in `sync_runs`, so the
 /// admin pages show its outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Job {
+pub enum Job {
     /// Discover listings on one source.
     Scan(String),
     /// Fetch one manga's metadata and chapters.
@@ -169,6 +193,11 @@ impl Job {
 pub(crate) async fn run_job(job: Job) -> Result<usize, String> {
     let db = open_db().map_err(|e| format!("DB error: {e}"))?;
     let source = job.source(&db)?;
+    // Not recorded as a run: nothing was attempted.
+    if disabled_sources(&db).contains(&source) {
+        tracing::debug!("{job:?} skipped: source {source} is disabled");
+        return Err(format!("source {source} is disabled"));
+    }
     let run = mangaread_core::db::start_sync_run(&db, &source, job.kind(), job.target_id())
         .map_err(|e| format!("DB error: {e}"))?;
     let outcome = async {
@@ -263,16 +292,6 @@ pub(crate) fn spawn_job(job: Job) -> bool {
     true
 }
 
-/// Sync a manga's chapters in the background (page-view trigger).
-pub fn sync_manga_background(manga_id: i64) {
-    spawn_job(Job::Manga(manga_id));
-}
-
-/// Sync a chapter's pages in the background (reader trigger).
-pub fn sync_chapter_background(chapter_id: i64) {
-    spawn_job(Job::Chapter(chapter_id));
-}
-
 /// Days of sync history kept for the admin pages.
 const SYNC_HISTORY_DAYS: i64 = 30;
 
@@ -314,15 +333,21 @@ async fn run_pass(state: &Arc<AppState>) {
         p.current = 0;
     }
 
-    // ── 1. Scan each source ──
+    let disabled = open_db()
+        .map(|db| disabled_sources(&db))
+        .unwrap_or_default();
+
+    // ── 1. Scan each enabled source ──
     for source in source_names() {
-        let _ = run_job(Job::Scan(source)).await;
+        if !disabled.contains(&source) {
+            let _ = run_job(Job::Scan(source)).await;
+        }
     }
 
     // ── 2. Manga needing sync ──
     let manga_ids = match open_db().map_err(|e| e.to_string()).and_then(|db| {
         let _ = mangaread_core::db::prune_sync_runs(&db, SYNC_HISTORY_DAYS);
-        mangaread_core::db::list_manga_ids_needing_sync(&db, STALE_MINUTES)
+        mangaread_core::db::list_manga_ids_needing_sync(&db, STALE_MINUTES, &disabled)
             .map_err(|e| e.to_string())
     }) {
         Ok(ids) => ids,

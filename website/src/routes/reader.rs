@@ -237,7 +237,7 @@ pub async fn chapter_reader(
 
     let syncing = needs_sync;
     if needs_sync {
-        crate::scraper_helper::sync_chapter_background(chapter_id);
+        (state.spawn_job)(crate::scraper_helper::Job::Chapter(chapter_id));
     }
 
     // Re-fetch with fresh data. The guard below is held only for synchronous
