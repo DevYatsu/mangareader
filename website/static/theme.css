@@ -342,12 +342,6 @@ ul#recent-chapters {
   font-weight: 600;
 }
 
-.m-chapter-row .chapter-source {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .m-chapter-row .ch-resume {
   color: var(--bulma-primary);
   font-size: 0.75rem;
@@ -356,10 +350,6 @@ ul#recent-chapters {
 
 .m-chapter-row .chapter-arrow {
   margin-left: auto;
-}
-
-.m-source-toggle {
-  cursor: pointer;
 }
 
 #toast-container {
@@ -412,10 +402,6 @@ ul#recent-chapters {
 
   .m-chapter-row .chapter-num {
     min-width: 3.5rem;
-  }
-
-  .m-chapter-row .chapter-source {
-    max-width: 8rem;
   }
 
   .m-chapter-row .ch-resume {

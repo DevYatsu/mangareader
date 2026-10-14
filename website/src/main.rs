@@ -229,7 +229,11 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/terms", get(crate::routes::legal::terms))
         .route("/privacy", get(crate::routes::legal::privacy))
-        .route("/source/{source}", get(crate::routes::source::source_list))
+        // Readers never see sources (spec Slice D); old links land on the grid.
+        .route(
+            "/source/{source}",
+            get(|| async { axum::response::Redirect::permanent("/series") }),
+        )
         .route("/manga/{id}", get(crate::routes::manga::manga_detail))
         .route(
             "/read/{manga_id}/{chapter_id}",

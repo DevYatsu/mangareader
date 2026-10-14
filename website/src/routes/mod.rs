@@ -6,7 +6,6 @@
 //! - `manga`:   manga-to-series redirect logic
 //! - `moderation`: report queue, hide/dismiss, comment mutes (moderators)
 //! - `reader`:  chapter reading interface
-//! - `source`:  per-source manga listing
 //! - `check`:   lightweight API endpoints for sync polling
 //! - `comments`: chapter comment JSON API (read, post, edit, report, hide)
 //! - `health`:   liveness probe for Docker
@@ -43,5 +42,4 @@ pub mod series;
 pub mod settings;
 pub mod setup;
 pub mod signup;
-pub mod source;
 pub mod sync;

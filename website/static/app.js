@@ -1,7 +1,7 @@
 /**
  * MangaRead client-side features.
  *
- * Handles source preference toggling, read-status tracking via localStorage,
+ * Handles read-status tracking via localStorage,
  * reader page navigation (keyboard, click zones), and auto-scroll to resume
  * reading position.
  */
@@ -64,51 +64,6 @@
       el.classList.add('removing');
       setTimeout(function () { el.remove(); }, 300);
     }, 4000);
-  }
-
-  // ============================================================
-  //  SOURCE PREFERENCES
-  // ============================================================
-
-  const STORAGE_SOURCES = 'mangaread_sources';
-
-  /** @returns {string[]} list of enabled source names */
-  function getEnabledSources() {
-    try {
-      const raw = localStorage.getItem(STORAGE_SOURCES);
-      if (raw) return JSON.parse(raw);
-    } catch (_) { /* ignore */ }
-    return []; // empty = all enabled
-  }
-
-  /** @param {string[]} sources */
-  function setEnabledSources(sources) {
-    localStorage.setItem(STORAGE_SOURCES, JSON.stringify(sources));
-  }
-
-  /** @param {string} name source name */
-  function toggleSource(name) {
-    const list = getEnabledSources();
-    const idx = list.indexOf(name);
-    if (idx >= 0) list.splice(idx, 1);
-    else list.push(name);
-    setEnabledSources(list);
-    applySourceFilters();
-  }
-
-  /** Apply source filter checkboxes and show/hide chapter list items accordingly. */
-  function applySourceFilters() {
-    const enabled = getEnabledSources();
-    const toggles = document.querySelectorAll('.m-source-toggle input');
-    toggles.forEach(t => {
-      t.checked = enabled.length === 0 || enabled.indexOf(t.value) >= 0;
-    });
-    // Show/hide chapters
-    document.querySelectorAll('#chapter-list > li[data-source]').forEach(li => {
-      const src = li.getAttribute('data-source');
-      const visible = enabled.length === 0 || enabled.indexOf(src) >= 0;
-      li.style.display = visible ? '' : 'none';
-    });
   }
 
   // ============================================================
@@ -347,53 +302,13 @@
       });
     }
 
-    // Check for sync errors on series page
-    const syncCheck = document.querySelector('[data-series-id]');
-    if (syncCheck) {
-      fetch('/api/sync-status')
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          if (data.last_error) {
-            showToast(data.last_error, 'error');
-          }
-        })
-        .catch(function () {});
-    }
-
     // --- Series detail page ---
     const chapterList = document.getElementById('chapter-list');
     if (chapterList) {
       const seriesId = chapterList.getAttribute('data-series-id');
 
-      // Build source toggles
-      let sources = [];
-      try { sources = JSON.parse(chapterList.getAttribute('data-sources') || '[]'); } catch (_) {}
-      const toggleContainer = document.getElementById('source-toggles');
-      if (toggleContainer && sources.length > 1) {
-        sources.forEach(src => {
-          toggleContainer.appendChild(
-            h('p', { className: 'control' },
-              h('label', { className: 'checkbox m-source-toggle' },
-                h('input', { type: 'checkbox', value: src, onChange: function () { toggleSource(src); } }),
-                ' ' + src
-              )
-            )
-          );
-        });
-      }
-
-      // Apply filters and read status
-      applySourceFilters();
+      // Read status marks
       applyReadStatus(seriesId);
-
-      // Setup filter reset
-      const resetBtn = document.getElementById('source-reset');
-      if (resetBtn) {
-        resetBtn.addEventListener('click', () => {
-          localStorage.removeItem(STORAGE_SOURCES);
-          applySourceFilters();
-        });
-      }
     }
 
     // Bookmark buttons on series detail page

@@ -219,7 +219,7 @@ being listed here first.
 | `m-empty` | No empty-state component | home, series, bookmarks, source |
 | `m-empty-icon` | No muted icon slot inside an empty state | empty states |
 | `m-chapter-row` | No data-row primitive for a dense chapter list | series detail |
-| `m-source-toggle` | No independent multi-source checkbox group primitive | series detail source filters |
+| ~~`m-source-toggle`~~ | Removed 2026-10-14 (Slice D): readers no longer see sources | — |
 | `m-comment-quote` | Bulma styles `blockquote` only inside `.content` | moderation queue (added 2026-10-14, Slice C) |
 | `m-cover` | Fixed 2:3 cover frame with placeholder/initial, badge, and overlay states | grids, series hero |
 | `m-legal-body` | No legal plain-text body primitive that preserves wrapped source newlines | legal pages |

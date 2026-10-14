@@ -108,17 +108,15 @@ async fn render_series(state: Arc<AppState>, id: i64, user: Option<AuthUser>) ->
         .unwrap_or("")
         .to_string();
     let merged = mangaread_core::service::series::merge_chapters(&manga_entries, &pref_src, &db);
-    let display_chapters: Vec<(&str, i64, i64, f64)> = merged
+    let display_chapters: Vec<(i64, i64, f64)> = merged
         .iter()
-        .map(|c| (c.source.as_str(), c.manga_id, c.chapter_id, c.number))
+        .map(|c| (c.manga_id, c.chapter_id, c.number))
         .collect();
     let first_chapter = mangaread_core::service::series::first_chapter(&manga_entries, &db);
     let cover_url = s
         .cover_override
         .clone()
         .or_else(|| primary.cover_url.clone());
-    let all_sources: Vec<&str> = manga_entries.iter().map(|m| m.source.as_str()).collect();
-    let sources_json = serde_json::to_string(&all_sources).unwrap_or_else(|_| "[]".to_string());
     let current_href = format!("/series/{}", id);
 
     let content = html! {
@@ -141,9 +139,6 @@ async fn render_series(state: Arc<AppState>, id: i64, user: Option<AuthUser>) ->
                     p class="subtitle is-6" { (desc) }
                 }
                 div class="tags" {
-                    @if !pref_src.is_empty() {
-                        span class="tag is-primary is-light" { (pref_src) }
-                    }
                     @if chapter_count > 0 {
                         span class="tag m-text-muted" {
                             (chapter_count)
@@ -198,27 +193,21 @@ async fn render_series(state: Arc<AppState>, id: i64, user: Option<AuthUser>) ->
                 }
             }
 
-            @if all_sources.len() > 1 {
-                div id="source-toggles" class="field is-grouped is-grouped-multiline" {}
-                button id="source-reset" class="button is-small is-ghost" type="button" { "Reset filters" }
-            }
-
             @if !fresh && display_chapters.is_empty() {
                 div class="has-text-centered" {
                     div class="loader" {}
-                    p class="m-text-muted" { "Fetching chapters from the source…" }
+                    p class="m-text-muted" { "Fetching chapters…" }
                     p class="m-text-muted" { "This page will reload automatically." }
                 }
             } @else if display_chapters.is_empty() {
-                (content::empty_state("No chapters scraped yet for any source.", false))
+                (content::empty_state("No chapters yet. Check back soon.", false))
             } @else {
-                ul id="chapter-list" data-series-id=(s.id) data-sources=(sources_json) {
-                    @for &(src, manga_id, ch_id, num) in &display_chapters {
-                        li class="m-chapter-row" data-source=(src) data-chapter-id=(ch_id) {
+                ul id="chapter-list" data-series-id=(s.id) {
+                    @for &(manga_id, ch_id, num) in &display_chapters {
+                        li class="m-chapter-row" data-chapter-id=(ch_id) {
                             a href={"/read/"(manga_id)"/"(ch_id)} {
                                 span class="ch-status-icon" aria-hidden="true" {}
                                 span class="chapter-num" { "Ch. " (num) }
-                                span class="chapter-source tag" { (src) }
                                 span class="ch-resume" style="display:none" {}
                                 span class="chapter-arrow" aria-hidden="true" {
                                     svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" {
