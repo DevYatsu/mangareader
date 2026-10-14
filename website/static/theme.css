@@ -271,9 +271,19 @@
   overflow-wrap: anywhere;
 }
 
-ul#recent-chapters {
+/* Chapter feeds on the home page (latest updates, new in your library). */
+.m-chapter-feed {
   padding-left: 0;
   list-style: none;
+}
+
+.m-home-intro {
+  padding-block: 1rem 2rem;
+}
+
+.m-home-section + .m-home-section,
+.m-home-intro + .m-home-section {
+  margin-top: 2.5rem;
 }
 
 #series-detail-hero {

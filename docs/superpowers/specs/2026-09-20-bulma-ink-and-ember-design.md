@@ -222,6 +222,8 @@ being listed here first.
 | ~~`m-source-toggle`~~ | Removed 2026-10-14 (Slice D): readers no longer see sources | — |
 | `m-comment-quote` | Bulma styles `blockquote` only inside `.content` | moderation queue (added 2026-10-14, Slice C) |
 | `m-shelf-picker` | Spacing for a form row under `.buttons` | series detail (added 2026-10-14, Slice D) |
+| `m-chapter-feed` | Unstyled list of `.media` chapter rows (replaces the `#recent-chapters` id rule) | home (Slice D) |
+| `m-home-intro`, `m-home-section` | Vertical rhythm between home sections; Bulma `section` padding is too large for stacked feeds | home (Slice D) |
 | `m-cover` | Fixed 2:3 cover frame with placeholder/initial, badge, and overlay states | grids, series hero |
 | `m-legal-body` | No legal plain-text body primitive that preserves wrapped source newlines | legal pages |
 | `m-range` | Bulma does not style `input[type=range]` | reader width/gap, zone editor |
