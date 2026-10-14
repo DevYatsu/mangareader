@@ -11,7 +11,11 @@
   - Response guard: 2xx only, body ≤ 20 MiB, magic bytes must be JPEG/PNG/GIF/WebP/AVIF. The served `Content-Type` comes from the sniff, never from the origin.
   - At most 8 concurrent origin fetches.
 - [x] **Admin control.** `/admin/sources` shows cache usage and a cap form.
-- [ ] **Chapter prefetch (R.2).** Past 70 % of a chapter, `reader.js` warms the next chapter's first 3 pages once.
+- [x] **Chapter prefetch (R.2).** Past 70 % of a chapter, `reader.js` warms the next chapter's first 3 pages once.
 - [ ] **Offline (R.3), deferred** per spec.
 
 Out of scope: covers still hotlink (spec names reader pages only).
+
+## Known gaps
+- The warm-up only helps when the next chapter's pages are already synced; an unsynced next chapter has no page rows to warm.
+- Not verified against live sources (no synced pages locally); the fetch path is covered by a loopback origin test that checks Referer, redirects, caching and the image sniff.

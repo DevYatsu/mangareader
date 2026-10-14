@@ -271,6 +271,7 @@
     chapterId: 0,
     totalPages: 0,
     currentPage: 1,
+    nextWarmed: false,     // next chapter's first pages requested (Slice R.2)
     primeIdx: 0,
     loggedIn: false,
     basePrefs: null,       // server blob (logged in) or local blob (anon)
@@ -1237,6 +1238,7 @@
     rememberScrollPosition();
     maybeEndOfChapter();
     prefetchAround(idx);
+    maybeWarmNextChapter();
     // A page step is a progress change; the debounced write path keeps
     // `MangaSync.pushProgress` firing from exactly one place.
     scheduleProgress();
@@ -1263,6 +1265,7 @@
     state.navigated = true;
     updateIndicator();
     maybeAutoNextStrip();
+    maybeWarmNextChapter();
   }
 
   /** Advance/retreat by one page-step, honouring the chapter boundaries. */
@@ -1620,6 +1623,27 @@
     var parsed = null;
     try { parsed = JSON.parse(el.textContent || '{}'); } catch (_) { parsed = null; }
     return parsed && typeof parsed === 'object' ? parsed : {};
+  }
+
+  /** Share of a chapter after which the next chapter's first pages are warmed. */
+  var NEXT_WARM_AT = 0.7;
+
+  /**
+   * Warm the next chapter's first pages once the reader is 70% through, so
+   * the chapter jump paints from cache (spec Slice R.2). Proxy URLs are
+   * same-origin and `immutable`, so the fetch fills the HTTP cache the next
+   * page's <img> elements read from.
+   */
+  function maybeWarmNextChapter() {
+    if (state.nextWarmed || !state.nextUrl || !state.totalPages) return;
+    if (state.currentPage / state.totalPages < NEXT_WARM_AT) return;
+    state.nextWarmed = true;
+    var m = /\/read\/\d+\/(\d+)/.exec(state.nextUrl);
+    var urls = m ? nextupPages()[m[1]] : null;
+    if (!urls) return; // next chapter not synced yet: nothing to warm
+    for (var i = 0; i < urls.length; i++) {
+      try { fetch(urls[i]).catch(function () { return null; }); } catch (_) { /* warm-up only */ }
+    }
   }
 
   function initPrefetch() {
