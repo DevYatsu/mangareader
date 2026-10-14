@@ -95,7 +95,15 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/", get(crate::routes::home::home))
         .route("/series", get(crate::routes::series::series_list))
         .route("/series/{id}", get(crate::routes::series::series_detail))
-        .route("/bookmarks", get(crate::routes::bookmarks::bookmarks_page))
+        .route("/library", get(crate::routes::library::library_page))
+        .route(
+            "/library/{series_id}",
+            post(crate::routes::library::set_shelf),
+        )
+        .route(
+            "/bookmarks",
+            get(|| async { axum::response::Redirect::permanent("/library") }),
+        )
         .route(
             "/login",
             get(crate::routes::auth_pages::login_page)

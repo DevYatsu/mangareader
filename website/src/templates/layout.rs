@@ -12,7 +12,7 @@ use maud::{DOCTYPE, Markup, PreEscaped, html};
 pub enum Nav {
     Home,
     Series,
-    Bookmarks,
+    Library,
     Admin,
     Moderation,
     None,
@@ -88,7 +88,7 @@ pub fn base_layout(
                         div class="navbar-start" {
                             a class=(nav.class(Nav::Home)) href="/" { "Home" }
                             a class=(nav.class(Nav::Series)) href="/series" { "Series" }
-                            a class=(nav.class(Nav::Bookmarks)) href="/bookmarks" { "Bookmarks" }
+                            a class=(nav.class(Nav::Library)) href="/library" { "Library" }
                             @if let Some(u) = user {
                                 @if u.role.at_least(&Role::Moderator) {
                                     a class=(nav.class(Nav::Moderation)) href="/mod/reports" { "Moderation" }

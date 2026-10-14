@@ -120,6 +120,11 @@ async fn render_series(state: Arc<AppState>, id: i64, user: Option<AuthUser>) ->
         .cover_override
         .clone()
         .or_else(|| primary.cover_url.clone());
+    let current_shelf = user.as_ref().and_then(|u| {
+        mangaread_core::db::get_shelf(&db, u.id, s.id)
+            .ok()
+            .flatten()
+    });
     let current_href = format!("/series/{}", id);
 
     let content = html! {
@@ -157,11 +162,14 @@ async fn render_series(state: Arc<AppState>, id: i64, user: Option<AuthUser>) ->
                             }
                             "Start Reading"
                         }
-                        button class="button is-small is-ghost" data-series-id=(s.id) data-bookmark-button {
-                            svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" {
-                                path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" {}
+                        // Visitors save on this device; members use shelves below.
+                        @if user.is_none() {
+                            button class="button is-small is-ghost" data-series-id=(s.id) data-bookmark-button {
+                                svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" {
+                                    path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" {}
+                                }
+                                span data-bookmark-label { "Bookmark" }
                             }
-                            span data-bookmark-label { "Bookmark" }
                         }
                         // Only admins may trigger a sync (`/api/sync-manga` is admin-only).
                         @if user.as_ref().is_some_and(|u| u.role == mangaread_core::domain::Role::Admin) {
@@ -174,6 +182,9 @@ async fn render_series(state: Arc<AppState>, id: i64, user: Option<AuthUser>) ->
                             }
                         }
                     }
+                }
+                @if user.is_some() {
+                    (crate::routes::library::shelf_picker(s.id, current_shelf))
                 }
             }
         }

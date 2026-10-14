@@ -10,7 +10,7 @@
 //! - `comments`: chapter comment JSON API (read, post, edit, report, hide)
 //! - `health`:   liveness probe for Docker
 //! - `api`:     sync management, progress tracking
-//! - `bookmarks`: client-side bookmark page
+//! - `library`:   member shelves (server) and the visitor list (client-side)
 //! - `settings`:  user settings (profile, appearance, password)
 //! - `admin`:     admin dashboard + branding (site title, theme, legal)
 //! - `admin_email`: SMTP settings, unverified sign-up switch, test send
@@ -25,12 +25,12 @@ pub mod admin_series;
 pub mod admin_sync;
 pub mod api;
 pub mod auth_pages;
-pub mod bookmarks;
 pub mod check;
 pub mod comments;
 pub mod health;
 pub mod home;
 pub mod legal;
+pub mod library;
 pub mod manga;
 pub mod moderation;
 pub mod notes;

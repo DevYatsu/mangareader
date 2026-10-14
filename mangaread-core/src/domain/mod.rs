@@ -5,6 +5,7 @@
 
 pub mod chapter;
 pub mod comment;
+pub mod library;
 pub mod manga;
 pub mod page;
 pub mod reader;
@@ -15,6 +16,7 @@ pub mod user;
 
 pub use chapter::*;
 pub use comment::*;
+pub use library::*;
 pub use manga::*;
 pub use page::*;
 pub use reader::*;

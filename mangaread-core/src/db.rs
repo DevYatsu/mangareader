@@ -194,6 +194,12 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
     if !has_column(conn, "users", "banned_at")? {
         conn.execute_batch("ALTER TABLE users ADD COLUMN banned_at TEXT")?;
     }
+    // A bookmark is a library entry; existing ones land on "reading".
+    if !has_column(conn, "bookmarks", "shelf")? {
+        conn.execute_batch(
+            "ALTER TABLE bookmarks ADD COLUMN shelf TEXT NOT NULL DEFAULT 'reading'",
+        )?;
+    }
     // Comment mute: the user can read and log in but not post until then.
     if !has_column(conn, "users", "muted_until")? {
         conn.execute_batch("ALTER TABLE users ADD COLUMN muted_until TEXT")?;
@@ -1921,6 +1927,178 @@ pub fn set_bookmark(
     Ok(())
 }
 
+/// Put a series on a shelf (adds it to the library if needed).
+pub fn set_shelf(
+    conn: &Connection,
+    user_id: i64,
+    series_id: i64,
+    shelf: Shelf,
+) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO bookmarks (user_id, series_id, shelf) VALUES (?1, ?2, ?3)
+         ON CONFLICT(user_id, series_id) DO UPDATE SET shelf = excluded.shelf",
+        rusqlite::params![user_id, series_id, shelf.as_str()],
+    )?;
+    Ok(())
+}
+
+/// The shelf a series is on, if it is in the user's library.
+pub fn get_shelf(conn: &Connection, user_id: i64, series_id: i64) -> Result<Option<Shelf>, Error> {
+    match conn.query_row(
+        "SELECT shelf FROM bookmarks WHERE user_id = ?1 AND series_id = ?2",
+        rusqlite::params![user_id, series_id],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(s) => Ok(Some(Shelf::parse(&s).unwrap_or(Shelf::Reading))),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Visible library entries per shelf. Shelves with no entries are 0.
+pub fn library_counts(conn: &Connection, user_id: i64) -> Result<Vec<(Shelf, i64)>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT b.shelf, COUNT(*) FROM bookmarks b
+         JOIN series s ON s.id = b.series_id
+         WHERE b.user_id = ?1 AND s.hidden_at IS NULL
+         GROUP BY b.shelf",
+    )?;
+    let found: HashMap<String, i64> = stmt
+        .query_map(rusqlite::params![user_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(Shelf::ALL
+        .into_iter()
+        .map(|s| (s, found.get(s.as_str()).copied().unwrap_or(0)))
+        .collect())
+}
+
+/// Cards on one shelf, most recently updated first.
+pub fn list_shelf(conn: &Connection, user_id: i64, shelf: Shelf) -> Result<Vec<SeriesCard>, Error> {
+    let sql = format!(
+        "{CARD_CTES} {CARD_FROM}
+         JOIN bookmarks b ON b.series_id = s.id
+         WHERE s.hidden_at IS NULL AND b.user_id = ?1 AND b.shelf = ?2
+         ORDER BY counts.last_at DESC, s.id DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params![user_id, shelf.as_str()], map_card)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().map(|(c, _)| c).collect())
+}
+
+/// Series to pick back up, most recently read first.
+///
+/// Uses the newest progress row per series. A chapter still in progress
+/// resumes at its page. A finished chapter points to the next chapter of
+/// the same source entry; series with nothing after it are skipped (the
+/// reader is caught up). Hidden series are skipped.
+pub fn continue_reading(
+    conn: &Connection,
+    user_id: i64,
+    limit: i64,
+) -> Result<Vec<ContinueItem>, Error> {
+    let mut stmt = conn.prepare(
+        "WITH latest AS (
+             SELECT m.series_id, p.chapter_id, p.page, p.status, p.updated_at,
+                    ROW_NUMBER() OVER (PARTITION BY m.series_id
+                                       ORDER BY p.updated_at DESC, p.chapter_id DESC) AS rn
+             FROM progress p
+             JOIN chapters c ON c.id = p.chapter_id
+             JOIN manga m ON m.id = c.manga_id
+             WHERE p.user_id = ?1 AND m.series_id IS NOT NULL
+         )
+         SELECT l.series_id, s.title, COALESCE(s.cover_override, m.cover_url),
+                m.id, c.id, c.number, l.page, l.status
+         FROM latest l
+         JOIN series s ON s.id = l.series_id
+         JOIN chapters c ON c.id = l.chapter_id
+         JOIN manga m ON m.id = c.manga_id
+         WHERE l.rn = 1 AND s.hidden_at IS NULL
+         ORDER BY l.updated_at DESC",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![user_id], |row| {
+            Ok((
+                ContinueItem {
+                    series_id: row.get(0)?,
+                    series_title: row.get(1)?,
+                    cover_url: row.get(2)?,
+                    manga_id: row.get(3)?,
+                    chapter_id: row.get(4)?,
+                    chapter_number: row.get(5)?,
+                    page: row.get(6)?,
+                    is_next: false,
+                },
+                row.get::<_, String>(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (mut item, status) in rows {
+        if status == "finished" {
+            let next = conn.query_row(
+                "SELECT id, number FROM chapters WHERE manga_id = ?1 AND number > ?2
+                 ORDER BY number ASC LIMIT 1",
+                rusqlite::params![item.manga_id, item.chapter_number],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)),
+            );
+            match next {
+                Ok((id, number)) => {
+                    item.chapter_id = id;
+                    item.chapter_number = number;
+                    item.page = 1;
+                    item.is_next = true;
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        out.push(item);
+        if out.len() as i64 >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Newest chapters of series in the user's library (any shelf except
+/// dropped), newest first.
+pub fn library_updates(
+    conn: &Connection,
+    user_id: i64,
+    limit: i64,
+) -> Result<Vec<RecentChapter>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.number, c.title, c.url, c.created_at,
+                m.id, m.series_id, s.title, COALESCE(s.cover_override, m.cover_url)
+         FROM chapters c
+         JOIN manga m ON m.id = c.manga_id
+         JOIN series s ON s.id = m.series_id
+         JOIN bookmarks b ON b.series_id = s.id AND b.user_id = ?1
+         WHERE s.hidden_at IS NULL AND b.shelf != 'dropped'
+         ORDER BY c.created_at DESC, c.id DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![user_id, limit], |row| {
+        Ok(RecentChapter {
+            chapter_id: row.get(0)?,
+            chapter_number: row.get(1)?,
+            chapter_title: row.get(2)?,
+            chapter_url: row.get(3)?,
+            created_at: row.get(4)?,
+            manga_id: row.get(5)?,
+            series_id: row.get(6)?,
+            series_title: row.get(7)?,
+            cover_url: row.get(8)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
 /// List bookmarked series ids for a user.
 pub fn list_bookmarks(conn: &Connection, user_id: i64) -> Result<Vec<i64>, Error> {
     let mut stmt =
@@ -2758,6 +2936,93 @@ mod tests {
         let c = create_comment(&conn, &comment(dup, u, None, "hi")).unwrap();
         merge_series(&conn, dup, keep).unwrap();
         assert_eq!(get_comment(&conn, c).unwrap().series_id, keep);
+    }
+
+    #[test]
+    fn shelves_move_entries_and_bookmarks_default_to_reading() {
+        let conn = mem();
+        let u = create_user(&conn, &new_user("u@x.io", Role::Member)).unwrap();
+        let a = seed_series(&conn, "A", &[("a", None, &[1.0])]);
+        let b = seed_series(&conn, "B", &[("a", None, &[1.0])]);
+        set_bookmark(&conn, u, a, true).unwrap();
+        assert_eq!(get_shelf(&conn, u, a).unwrap(), Some(Shelf::Reading));
+        set_shelf(&conn, u, b, Shelf::Plan).unwrap();
+        set_shelf(&conn, u, a, Shelf::Completed).unwrap();
+        // Re-bookmarking keeps the chosen shelf.
+        set_bookmark(&conn, u, a, true).unwrap();
+        assert_eq!(get_shelf(&conn, u, a).unwrap(), Some(Shelf::Completed));
+        let counts: HashMap<Shelf, i64> = library_counts(&conn, u).unwrap().into_iter().collect();
+        assert_eq!(counts[&Shelf::Completed], 1);
+        assert_eq!(counts[&Shelf::Plan], 1);
+        assert_eq!(counts[&Shelf::Reading], 0);
+        assert_eq!(list_shelf(&conn, u, Shelf::Plan).unwrap()[0].id, b);
+        set_series_hidden(&conn, b, Some("2026-10-14 00:00:00")).unwrap();
+        assert!(list_shelf(&conn, u, Shelf::Plan).unwrap().is_empty());
+    }
+
+    #[test]
+    fn continue_reading_resumes_or_points_to_the_next_chapter() {
+        let conn = mem();
+        let u = create_user(&conn, &new_user("u@x.io", Role::Member)).unwrap();
+        let mid_series = seed_series(&conn, "Mid", &[("a", None, &[1.0, 2.0])]);
+        let done_series = seed_series(&conn, "Done", &[("a", None, &[1.0, 2.0])]);
+        let caught_up = seed_series(&conn, "Caught", &[("a", None, &[1.0])]);
+        let chapter = |series: i64, number: f64| -> i64 {
+            conn.query_row(
+                "SELECT c.id FROM chapters c JOIN manga m ON m.id = c.manga_id
+                 WHERE m.series_id = ?1 AND c.number = ?2",
+                rusqlite::params![series, number],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let progress = |ch: i64, page: i64, status: &str, at: &str| {
+            conn.execute(
+                "INSERT INTO progress (user_id, chapter_id, page, status, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![u, ch, page, status, at],
+            )
+            .unwrap();
+        };
+        progress(
+            chapter(mid_series, 1.0),
+            7,
+            "started",
+            "2026-10-14 10:00:00",
+        );
+        progress(
+            chapter(done_series, 1.0),
+            20,
+            "finished",
+            "2026-10-14 11:00:00",
+        );
+        progress(
+            chapter(caught_up, 1.0),
+            20,
+            "finished",
+            "2026-10-14 12:00:00",
+        );
+        let items = continue_reading(&conn, u, 10).unwrap();
+        assert_eq!(items.len(), 2, "caught-up series are skipped");
+        assert_eq!(items[0].series_id, done_series, "most recent first");
+        assert!(items[0].is_next);
+        assert_eq!(items[0].chapter_number, 2.0);
+        assert_eq!(items[0].page, 1);
+        assert_eq!(items[1].series_id, mid_series);
+        assert_eq!(items[1].page, 7);
+        assert!(!items[1].is_next);
+    }
+
+    #[test]
+    fn library_updates_cover_library_series_except_dropped() {
+        let conn = mem();
+        let u = create_user(&conn, &new_user("u@x.io", Role::Member)).unwrap();
+        let kept = seed_series(&conn, "Kept", &[("a", None, &[1.0])]);
+        let dropped = seed_series(&conn, "Dropped", &[("a", None, &[1.0])]);
+        seed_series(&conn, "Other", &[("a", None, &[1.0])]);
+        set_shelf(&conn, u, kept, Shelf::Reading).unwrap();
+        set_shelf(&conn, u, dropped, Shelf::Dropped).unwrap();
+        let ups = library_updates(&conn, u, 10).unwrap();
+        assert_eq!(ups.iter().map(|c| c.series_id).collect::<Vec<_>>(), [kept]);
     }
 
     #[test]

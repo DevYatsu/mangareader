@@ -436,3 +436,8 @@ ul#recent-chapters {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Member shelf picker under the series hero buttons. */
+.m-shelf-picker {
+  margin-top: 0.5rem;
+}
