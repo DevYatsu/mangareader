@@ -10,7 +10,7 @@
   - SSRF guard: http/https only, no userinfo; resolve the host once and refuse any non-public address (loopback, RFC 1918, link-local, CGNAT, ULA, multicast, documentation, unspecified, IPv4-mapped forms); pin the connection to the vetted addresses; follow at most 3 redirects manually, re-vetting each hop.
   - Response guard: 2xx only, body ≤ 20 MiB, magic bytes must be JPEG/PNG/GIF/WebP/AVIF. The served `Content-Type` comes from the sniff, never from the origin.
   - At most 8 concurrent origin fetches.
-- [ ] **Admin control.** `/admin/sources` shows cache usage and a cap form.
+- [x] **Admin control.** `/admin/sources` shows cache usage and a cap form.
 - [ ] **Chapter prefetch (R.2).** Past 70 % of a chapter, `reader.js` warms the next chapter's first 3 pages once.
 - [ ] **Offline (R.3), deferred** per spec.
 

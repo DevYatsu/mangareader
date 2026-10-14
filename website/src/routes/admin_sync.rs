@@ -1,10 +1,12 @@
 //! `/admin/sources` and `/admin/sync`: source health, enable/disable,
-//! on-demand scans, sync history, retries, and waking the sync loop.
+//! on-demand scans, sync history, retries, waking the sync loop, and the
+//! image cache cap.
 //!
 //! Everything shown here comes from the persisted `sync_runs` table, so it
 //! survives restarts. Admin-only.
 
 use axum::{
+    Form,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Redirect, Response},
@@ -41,6 +43,7 @@ fn notice(q: &HashMap<String, String>) -> Markup {
         (Some("retry"), _) => ("is-success", "Retry started."),
         (Some("run"), _) => ("is-success", "Full sync started."),
         (Some("enabled"), _) => ("is-success", "Source enabled."),
+        (Some("cache"), _) => ("is-success", "Image cache limit saved."),
         (Some("disabled"), _) => (
             "is-success",
             "Source disabled. It will not be scanned or synced.",
@@ -48,6 +51,10 @@ fn notice(q: &HashMap<String, String>) -> Markup {
         (_, Some("busy")) => (
             "is-warning",
             "That job is already running, or 3 jobs are running. Try again shortly.",
+        ),
+        (_, Some("cache_cap")) => (
+            "is-danger",
+            "The image cache limit must be a whole number from 100 to 1048576 MiB.",
         ),
         (_, Some("disabled_source")) => ("is-danger", "That source is disabled. Enable it first."),
         (_, Some("not_retryable")) => (
@@ -107,7 +114,40 @@ struct SourceRow {
     health: SourceHealth,
 }
 
-fn sources_content(rows: &[SourceRow], note: Markup) -> Markup {
+/// Image cache usage, both in MiB.
+struct CacheUsage {
+    used_mb: u64,
+    cap_mb: u64,
+}
+
+/// Smallest and largest accepted cap (MiB). Below 100 MiB a single long
+/// chapter can evict itself; the top is 1 TiB.
+const CACHE_CAP_RANGE: std::ops::RangeInclusive<u64> = 100..=1_048_576;
+
+fn cache_box(c: &CacheUsage) -> Markup {
+    html! {
+        div class="box" {
+            h2 class="title is-5" { "Image cache" }
+            p class="m-text-muted" {
+                "Reader pages are fetched once and kept on disk. "
+                (c.used_mb) " MiB used of " (c.cap_mb) " MiB; the least recently read pages go first."
+            }
+            form class="mt-3" method="post" action="/admin/image-cache" {
+                div class="field has-addons" {
+                    div class="control" {
+                        input class="input" type="number" name="max_mb" required
+                            min=(CACHE_CAP_RANGE.start()) max=(CACHE_CAP_RANGE.end())
+                            value=(c.cap_mb) aria-label="Image cache limit in MiB";
+                    }
+                    div class="control" { span class="button is-static" { "MiB" } }
+                    div class="control" { button class="button is-primary" type="submit" { "Save" } }
+                }
+            }
+        }
+    }
+}
+
+fn sources_content(rows: &[SourceRow], cache: &CacheUsage, note: Markup) -> Markup {
     html! {
         section {
             h1 class="title is-2" { "Sources" }
@@ -161,6 +201,7 @@ fn sources_content(rows: &[SourceRow], note: Markup) -> Markup {
                 "A source is marked failing after " (FAILING_STREAK) " failed runs in a row. "
                 a href="/admin/sync?failed=1" { "See failed runs" } "."
             }
+            (cache_box(cache))
             a class="button is-light" href="/admin" { "Back to admin" }
         }
     }
@@ -181,7 +222,7 @@ pub async fn sources_page(
     if let Some(r) = admin_guard(&user) {
         return r;
     }
-    let (cfg, rows) = {
+    let (cfg, rows, cap_mb) = {
         let db = state.db.lock().await;
         let disabled = disabled_sources(&db);
         let rows: Vec<SourceRow> = source_list()
@@ -193,12 +234,17 @@ pub async fn sources_page(
                 base_url,
             })
             .collect();
-        (crate::config::site_config(&db), rows)
+        let cap_mb = crate::routes::images::cache_cap_mb(&db);
+        (crate::config::site_config(&db), rows, cap_mb)
+    };
+    let cache = CacheUsage {
+        used_mb: state.images.used_bytes() / (1024 * 1024),
+        cap_mb,
     };
     page(
         &cfg,
         "Sources",
-        sources_content(&rows, notice(&q)),
+        sources_content(&rows, &cache, notice(&q)),
         Some(&user),
     )
     .into_response()
@@ -264,6 +310,46 @@ pub async fn source_scan(
     } else {
         Redirect::to("/admin/sources?err=busy").into_response()
     }
+}
+
+#[derive(serde::Deserialize)]
+pub struct CacheForm {
+    max_mb: String,
+}
+
+/// POST `/admin/image-cache` — set the image cache cap. The next cache write
+/// over the new cap evicts down to it.
+pub async fn image_cache_cap(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Form(form): Form<CacheForm>,
+) -> Response {
+    if let Some(r) = admin_guard(&user) {
+        return r;
+    }
+    let Some(mb) = form
+        .max_mb
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|mb| CACHE_CAP_RANGE.contains(mb))
+    else {
+        return Redirect::to("/admin/sources?err=cache_cap").into_response();
+    };
+    let db = state.db.lock().await;
+    if mangaread_core::db::set_setting(
+        &db,
+        crate::image_proxy::CACHE_MAX_MB_KEY,
+        &mb.to_string(),
+        user.id,
+    )
+    .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    let _ =
+        mangaread_core::db::insert_mod_log(&db, user.id, "image_cache_cap", None, &mb.to_string());
+    Redirect::to("/admin/sources?ok=cache").into_response()
 }
 
 // ── /admin/sync ──
@@ -490,6 +576,35 @@ mod tests {
         assert!(page.body.contains("Never run"));
         assert!(page.body.contains("Failing (3 in a row)"));
         assert!(page.body.contains("&lt;b&gt;timeout"), "errors are escaped");
+    }
+
+    #[tokio::test]
+    async fn image_cache_cap_is_validated_and_shown() {
+        let (app, admin) = app_with_admin().await;
+        let page = app.get("/admin/sources", Some(&admin)).await;
+        assert!(page.body.contains("of 5120 MiB"), "default cap");
+        for bad in ["0", "99", "abc", "-5", "1048577"] {
+            let res = app
+                .post_form("/admin/image-cache", &[("max_mb", bad)], Some(&admin))
+                .await;
+            assert_eq!(
+                res.location.as_deref(),
+                Some("/admin/sources?err=cache_cap"),
+                "{bad}"
+            );
+        }
+        let res = app
+            .post_form("/admin/image-cache", &[("max_mb", "2048")], Some(&admin))
+            .await;
+        assert_eq!(res.location.as_deref(), Some("/admin/sources?ok=cache"));
+        let page = app.get("/admin/sources", Some(&admin)).await;
+        assert!(page.body.contains("of 2048 MiB"));
+
+        let (_, member) = app.member("m@example.com").await;
+        let res = app
+            .post_form("/admin/image-cache", &[("max_mb", "500")], Some(&member))
+            .await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

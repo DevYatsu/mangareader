@@ -204,6 +204,10 @@ pub fn app(state: Arc<AppState>) -> Router {
             "/admin/sources/{name}/scan",
             post(crate::routes::admin_sync::source_scan),
         )
+        .route(
+            "/admin/image-cache",
+            post(crate::routes::admin_sync::image_cache_cap),
+        )
         .route("/admin/sync", get(crate::routes::admin_sync::sync_page))
         .route(
             "/admin/sync/run",
