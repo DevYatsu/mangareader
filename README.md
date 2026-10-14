@@ -55,6 +55,7 @@ Branding and email are set in `/admin` and take effect without a restart. Enviro
 | Variable | Default | Purpose |
 |---|---|---|
 | `MANGAREAD_DB` | `mangaread.db` | SQLite path (`/app/data/mangaread.db` in Docker) |
+| `MANGAREAD_CACHE_DIR` | `cache/` beside the database | Reader image cache (`/app/data/cache` in Docker); size cap set in Admin → Sources |
 | `MANGAREAD_BASE_URL` | `http://localhost:3000` | Public URL for emailed links and OAuth callbacks |
 | `MANGAREAD_COOKIE_SECURE` | unset | `1` behind HTTPS |
 | `MANGAREAD_TRUST_PROXY` | unset | `1` only behind a proxy that sets `X-Forwarded-For` |
