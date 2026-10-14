@@ -72,6 +72,10 @@
 ### Task O2.5: Tests
 - [x] Closed mode by default; direct mode only when enabled; email mode end to end with `MemoryMailer`; identical response for known and unknown addresses; token single-use and expiry; rate limit; reset by email; admin settings are admin-only and never echo the SMTP URL.
 
-## O3 — Install path and README (detailed when O2 lands)
+## O3 — Install path and README
 
-GitHub Actions workflow that publishes the image to GHCR, `compose.yaml` without `build:`, and a README rewritten around install → setup → read.
+- [x] `compose.yaml` runs the published image (`ghcr.io/devyatsu/mangareader`); the source build moves to `compose.build.yaml`.
+- [x] `.github/workflows/docker.yml` publishes amd64 + arm64 images on `master` and `v*` tags. `ci.yml` runs fmt and tests.
+- [x] Dockerfile defaults `CHROMIUM_FLAGS` to include `--headless` (the old compose file supplied it; the image alone could not scrape).
+- [x] `.env.example` and README rewritten around install → setup → email → read, with roles and every env var the code reads.
+- Not verifiable locally: the workflows run only on GitHub. Verify the first `docker.yml` run and that the package is public.
