@@ -1,8 +1,8 @@
 //! Login, registration, and logout handlers.
 //!
-//! The first-ever registered user is bootstrapped as `Admin`; everyone else
-//! is a `Member`. Registration failures all render the same generic message
-//! so duplicate emails cannot be enumerated.
+//! Self-registration always creates a `Member`; the first admin comes from
+//! `/setup` (see `routes::setup`). Registration failures all render the same
+//! generic message so duplicate emails cannot be enumerated.
 
 use axum::{
     Form,
@@ -168,7 +168,7 @@ fn register_form(error: Option<&str>, providers: &[Provider]) -> maud::Markup {
     }
 }
 
-fn redirect_with_cookie(location: &str, cookie: String) -> Response {
+pub(crate) fn redirect_with_cookie(location: &str, cookie: String) -> Response {
     (
         StatusCode::SEE_OTHER,
         [
@@ -228,13 +228,30 @@ pub async fn login_submit(
     let found = {
         let db = state.db.lock().await;
         match mangaread_core::db::find_user_by_email(&db, form.email.trim()) {
-            Ok(u) => (u.id, u.password_hash),
+            Ok(u) => (u.id, u.password_hash, u.banned_at.is_some()),
             // Identical message for unknown email — no user enumeration.
             Err(_) => return render_401(user.as_ref()),
         }
     };
     if !verify_password(&form.password, &found.1) {
         return render_401(user.as_ref());
+    }
+    // Revealed only after the password checks out, so the ban status of an
+    // account is not visible to someone guessing at it.
+    if found.2 {
+        return (
+            StatusCode::FORBIDDEN,
+            page(
+                &cfg,
+                "Login",
+                login_form(
+                    Some("This account is suspended."),
+                    &crate::oauth::configured_providers(),
+                ),
+                user.as_ref(),
+            ),
+        )
+            .into_response();
     }
     let token = new_token();
     let max_age = lifetime_for_remember(form.remember.as_deref() == Some("on"));
@@ -325,17 +342,8 @@ pub async fn register_submit(
             .into_response()
     };
 
-    // Lock only for the count; bcrypt hashing runs without the guard so
-    // concurrent requests are not serialized behind hashing.
-    let role = {
-        let db = state.db.lock().await;
-        match mangaread_core::db::count_users(&db) {
-            Ok(0) => Role::Admin,
-            Ok(_) => Role::Member,
-            Err(_) => return render_failed(user.as_ref()),
-        }
-    };
-    let is_bootstrap_admin = role == Role::Admin;
+    // bcrypt hashing runs without the DB guard so concurrent requests are
+    // not serialized behind hashing.
     let password_hash = match hash_password(&form.password) {
         Ok(h) => h,
         Err(_) => return render_failed(user.as_ref()),
@@ -349,15 +357,12 @@ pub async fn register_submit(
                 name: name.clone(),
                 email: email.clone(),
                 password_hash,
-                role,
+                role: Role::Member,
             },
         ) {
             Ok(id) => id,
             Err(_) => return render_failed(user.as_ref()),
         };
-        if is_bootstrap_admin {
-            tracing::warn!("first registered user bootstrapped as admin: {email}");
-        }
         if mangaread_core::db::insert_session(
             &db,
             id,

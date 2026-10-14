@@ -2,11 +2,15 @@
 //!
 //! No hashing, no HTTP. Pure data types only.
 
-/// Reader role. Ordering: Member < Editor < Admin.
+/// Account role. Ordering: Member < Moderator < Admin.
+///
+/// Anonymous visitors have no role: they are the absence of a session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Role {
     Member,
-    Editor,
+    /// Moderates community content (comments, reports). No catalog or site
+    /// settings access; those stay admin-only.
+    Moderator,
     Admin,
 }
 
@@ -14,7 +18,7 @@ impl Role {
     pub fn as_str(&self) -> &'static str {
         match self {
             Role::Member => "member",
-            Role::Editor => "editor",
+            Role::Moderator => "moderator",
             Role::Admin => "admin",
         }
     }
@@ -22,7 +26,8 @@ impl Role {
     pub fn from_str(s: &str) -> Role {
         match s {
             "admin" => Role::Admin,
-            "editor" => Role::Editor,
+            // `editor` is the pre-2026-10 name of the same rank; init_db rewrites it.
+            "moderator" | "editor" => Role::Moderator,
             _ => Role::Member,
         }
     }
@@ -30,7 +35,7 @@ impl Role {
     fn rank(&self) -> u8 {
         match self {
             Role::Member => 0,
-            Role::Editor => 1,
+            Role::Moderator => 1,
             Role::Admin => 2,
         }
     }
@@ -49,6 +54,19 @@ pub struct User {
     pub password_hash: String,
     pub role: Role,
     pub locale: String,
+    pub created_at: String,
+    /// Set when an admin banned the account. Banned users cannot log in and
+    /// their sessions stop resolving.
+    pub banned_at: Option<String>,
+}
+
+/// One moderation audit-log row, with actor and target resolved to names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModLogEntry {
+    pub actor: String,
+    pub action: String,
+    pub target: Option<String>,
+    pub detail: String,
     pub created_at: String,
 }
 

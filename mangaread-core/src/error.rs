@@ -9,4 +9,7 @@ pub enum Error {
     NotFound(String),
     #[error("Auth error: {0}")]
     Auth(String),
+    /// The write would break an invariant (e.g. removing the last admin).
+    #[error("Conflict: {0}")]
+    Conflict(String),
 }

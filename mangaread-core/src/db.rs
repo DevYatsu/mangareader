@@ -177,7 +177,35 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
     if !has_reader_prefs {
         conn.execute_batch("ALTER TABLE users ADD COLUMN reader_prefs TEXT NOT NULL DEFAULT '{}'")?;
     }
+    if !has_column(conn, "users", "banned_at")? {
+        conn.execute_batch("ALTER TABLE users ADD COLUMN banned_at TEXT")?;
+    }
+    // `editor` was the pre-2026-10 name of the moderator rank.
+    conn.execute_batch(
+        "UPDATE users SET role = 'moderator' WHERE role = 'editor';
+         CREATE TABLE IF NOT EXISTS mod_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_id INTEGER NOT NULL REFERENCES users(id),
+            action TEXT NOT NULL,
+            target_user_id INTEGER REFERENCES users(id),
+            detail TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_mod_log_created ON mod_log(created_at);",
+    )?;
     Ok(())
+}
+
+/// Whether `table` has a column named `column` (for idempotent migrations).
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, Error> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for col in cols {
+        if col? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 // ── Manga CRUD ──
@@ -685,6 +713,7 @@ fn map_user_row(row: &rusqlite::Row) -> rusqlite::Result<User> {
         role: Role::from_str(&row.get::<_, String>(4)?),
         locale: row.get(5)?,
         created_at: row.get(6)?,
+        banned_at: row.get(7)?,
     })
 }
 
@@ -697,10 +726,129 @@ pub fn create_user(conn: &Connection, u: &NewUser) -> Result<i64, Error> {
     Ok(conn.last_insert_rowid())
 }
 
+/// Create the instance's first admin, atomically.
+///
+/// The emptiness check and the insert are one statement, so two concurrent
+/// setup submissions cannot both succeed. Returns `None` when any user
+/// already exists.
+pub fn create_first_admin(conn: &Connection, u: &NewUser) -> Result<Option<i64>, Error> {
+    let inserted = conn.execute(
+        "INSERT INTO users (name, email, password_hash, role)
+         SELECT ?1, ?2, ?3, 'admin'
+         WHERE NOT EXISTS (SELECT 1 FROM users)",
+        rusqlite::params![u.name, u.email, u.password_hash],
+    )?;
+    Ok((inserted == 1).then(|| conn.last_insert_rowid()))
+}
+
+/// Number of admins that are not banned.
+fn active_admin_count(conn: &Connection) -> Result<i64, Error> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND banned_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+/// Whether `user_id` is currently an unbanned admin.
+fn is_active_admin(conn: &Connection, user_id: i64) -> Result<bool, Error> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1 AND role = 'admin' AND banned_at IS NULL)",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Change a user's role. Refuses (`Conflict`) to demote the last active
+/// admin, so an instance can never lock itself out of `/admin`.
+pub fn set_user_role(conn: &Connection, user_id: i64, role: &Role) -> Result<(), Error> {
+    let tx = conn.unchecked_transaction()?;
+    if *role != Role::Admin && is_active_admin(&tx, user_id)? && active_admin_count(&tx)? <= 1 {
+        return Err(Error::Conflict("cannot demote the last admin".into()));
+    }
+    let n = tx.execute(
+        "UPDATE users SET role = ?1 WHERE id = ?2",
+        rusqlite::params![role.as_str(), user_id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("user id={user_id}")));
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Ban or unban a user. Banning deletes their sessions and refuses
+/// (`Conflict`) to ban the last active admin.
+pub fn set_user_banned(
+    conn: &Connection,
+    user_id: i64,
+    banned: bool,
+    now: &str,
+) -> Result<(), Error> {
+    let tx = conn.unchecked_transaction()?;
+    if banned && is_active_admin(&tx, user_id)? && active_admin_count(&tx)? <= 1 {
+        return Err(Error::Conflict("cannot ban the last admin".into()));
+    }
+    let value = banned.then_some(now);
+    let n = tx.execute(
+        "UPDATE users SET banned_at = ?1 WHERE id = ?2",
+        rusqlite::params![value, user_id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("user id={user_id}")));
+    }
+    if banned {
+        tx.execute(
+            "DELETE FROM sessions WHERE user_id = ?1",
+            rusqlite::params![user_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Append to the moderation audit log.
+pub fn insert_mod_log(
+    conn: &Connection,
+    actor_id: i64,
+    action: &str,
+    target_user_id: Option<i64>,
+    detail: &str,
+) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO mod_log (actor_id, action, target_user_id, detail) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![actor_id, action, target_user_id, detail],
+    )?;
+    Ok(())
+}
+
+/// Most recent moderation log entries, newest first.
+pub fn list_mod_log(conn: &Connection, limit: i64) -> Result<Vec<ModLogEntry>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT a.name, l.action, t.name, l.detail, l.created_at
+         FROM mod_log l
+         JOIN users a ON a.id = l.actor_id
+         LEFT JOIN users t ON t.id = l.target_user_id
+         ORDER BY l.id DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![limit], |row| {
+        Ok(ModLogEntry {
+            actor: row.get(0)?,
+            action: row.get(1)?,
+            target: row.get(2)?,
+            detail: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
 /// Find a user by email. `NotFound` when missing.
 pub fn find_user_by_email(conn: &Connection, email: &str) -> Result<User, Error> {
     conn.query_row(
-        "SELECT id, name, email, password_hash, role, locale, created_at FROM users WHERE email = ?1",
+        "SELECT id, name, email, password_hash, role, locale, created_at, banned_at FROM users WHERE email = ?1",
         rusqlite::params![email],
         map_user_row,
     )
@@ -736,9 +884,9 @@ pub fn insert_session(
 /// Find the user owning a live session token (`expires_at > now`).
 pub fn find_user_by_session(conn: &Connection, token: &str, now: &str) -> Result<User, Error> {
     conn.query_row(
-        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.created_at
+        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.created_at, u.banned_at
          FROM users u JOIN sessions s ON s.user_id = u.id
-         WHERE s.token = ?1 AND s.expires_at > ?2",
+         WHERE s.token = ?1 AND s.expires_at > ?2 AND u.banned_at IS NULL",
         rusqlite::params![token, now],
         map_user_row,
     )
@@ -779,7 +927,7 @@ pub fn find_user_by_oauth(
     provider_user_id: &str,
 ) -> Result<User, Error> {
     conn.query_row(
-        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.created_at
+        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.created_at, u.banned_at
          FROM users u JOIN oauth_accounts o ON o.user_id = u.id
          WHERE o.provider = ?1 AND o.provider_user_id = ?2",
         rusqlite::params![provider, provider_user_id],
@@ -854,7 +1002,7 @@ pub fn delete_sessions_for_user(conn: &Connection, user_id: i64) -> Result<(), E
 /// All users ordered by id (admin list).
 pub fn list_users(conn: &Connection) -> Result<Vec<User>, Error> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, email, password_hash, role, locale, created_at FROM users ORDER BY id ASC",
+        "SELECT id, name, email, password_hash, role, locale, created_at, banned_at FROM users ORDER BY id ASC",
     )?;
     let rows = stmt.query_map([], map_user_row)?;
     let mut out = Vec::new();
@@ -1155,6 +1303,116 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "100% Hero");
         assert_eq!(list_series_cards(&conn, Some("hero")).unwrap().len(), 2);
+    }
+
+    fn new_user(email: &str, role: Role) -> NewUser {
+        NewUser {
+            name: email.split('@').next().unwrap().into(),
+            email: email.into(),
+            password_hash: "h".into(),
+            role,
+        }
+    }
+
+    #[test]
+    fn legacy_editor_role_reads_and_migrates_as_moderator() {
+        let conn = mem();
+        let id = create_user(&conn, &new_user("e@x.io", Role::Member)).unwrap();
+        conn.execute("UPDATE users SET role = 'editor' WHERE id = ?1", [id])
+            .unwrap();
+        assert_eq!(
+            find_user_by_email(&conn, "e@x.io").unwrap().role,
+            Role::Moderator
+        );
+        init_db(&conn).unwrap();
+        let stored: String = conn
+            .query_row("SELECT role FROM users WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, "moderator");
+    }
+
+    #[test]
+    fn first_admin_is_created_only_on_an_empty_instance() {
+        let conn = mem();
+        let first = create_first_admin(&conn, &new_user("a@x.io", Role::Member)).unwrap();
+        assert!(first.is_some());
+        assert_eq!(
+            find_user_by_email(&conn, "a@x.io").unwrap().role,
+            Role::Admin
+        );
+        let second = create_first_admin(&conn, &new_user("b@x.io", Role::Member)).unwrap();
+        assert_eq!(second, None);
+        assert_eq!(count_users(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn last_admin_cannot_be_demoted_or_banned() {
+        let conn = mem();
+        let admin = create_first_admin(&conn, &new_user("a@x.io", Role::Member))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            set_user_role(&conn, admin, &Role::Member),
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            set_user_banned(&conn, admin, true, "2026-10-14 00:00:00"),
+            Err(Error::Conflict(_))
+        ));
+        let other = create_user(&conn, &new_user("b@x.io", Role::Member)).unwrap();
+        set_user_role(&conn, other, &Role::Admin).unwrap();
+        set_user_role(&conn, admin, &Role::Moderator).unwrap();
+        assert_eq!(
+            find_user_by_email(&conn, "a@x.io").unwrap().role,
+            Role::Moderator
+        );
+        assert!(matches!(
+            set_user_role(&conn, 999, &Role::Member),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn banned_user_sessions_stop_resolving_and_unban_restores_login() {
+        let conn = mem();
+        create_first_admin(&conn, &new_user("a@x.io", Role::Member)).unwrap();
+        let id = create_user(&conn, &new_user("m@x.io", Role::Member)).unwrap();
+        insert_session(&conn, id, "tok", "2099-01-01 00:00:00", "t").unwrap();
+        set_user_banned(&conn, id, true, "2026-10-14 00:00:00").unwrap();
+        assert!(matches!(
+            find_user_by_session(&conn, "tok", "2026-10-14 00:00:00"),
+            Err(Error::NotFound(_))
+        ));
+        assert!(
+            find_user_by_email(&conn, "m@x.io")
+                .unwrap()
+                .banned_at
+                .is_some()
+        );
+        set_user_banned(&conn, id, false, "2026-10-14 00:00:00").unwrap();
+        assert!(
+            find_user_by_email(&conn, "m@x.io")
+                .unwrap()
+                .banned_at
+                .is_none()
+        );
+        insert_session(&conn, id, "tok2", "2099-01-01 00:00:00", "t").unwrap();
+        assert!(find_user_by_session(&conn, "tok2", "2026-10-14 00:00:00").is_ok());
+    }
+
+    #[test]
+    fn mod_log_lists_newest_first_with_names() {
+        let conn = mem();
+        let a = create_first_admin(&conn, &new_user("a@x.io", Role::Member))
+            .unwrap()
+            .unwrap();
+        let m = create_user(&conn, &new_user("m@x.io", Role::Member)).unwrap();
+        insert_mod_log(&conn, a, "role", Some(m), "member -> moderator").unwrap();
+        insert_mod_log(&conn, a, "ban", Some(m), "").unwrap();
+        let log = list_mod_log(&conn, 10).unwrap();
+        assert_eq!(log[0].action, "ban");
+        assert_eq!(log[1].actor, "a");
+        assert_eq!(log[1].target.as_deref(), Some("m"));
     }
 
     #[test]

@@ -23,3 +23,7 @@ bcrypt = "0.17"
 reqwest = { version = "0.12", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting", "macros", "std"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

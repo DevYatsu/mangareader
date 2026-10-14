@@ -8,6 +8,8 @@ mod oauth;
 mod routes;
 mod scraper_helper;
 mod templates;
+#[cfg(test)]
+mod test_support;
 
 use axum::{
     Router,
@@ -63,66 +65,54 @@ pub struct AppState {
     pub auto_sync: Mutex<SyncProgress>,
     /// Per-source adapter health (keyed by source name).
     pub adapter_health: Mutex<HashMap<String, AdapterHealth>>,
+    /// One-time token required by `/setup` while the instance has no users.
+    /// `None` once setup is complete (or was never needed).
+    pub setup_token: Mutex<Option<String>>,
 }
 
-/// Application entrypoint.
-///
-/// Initializes tracing, opens the SQLite database (with WAL mode and a busy
-/// timeout so background scrapers do not block reads), seeds sample data,
-/// builds the Axum router with all routes and static file serving, then
-/// binds to `0.0.0.0:3000`.
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+impl AppState {
+    /// Fresh state over an initialized connection, with empty sync bookkeeping.
+    pub fn new(conn: rusqlite::Connection) -> Self {
+        AppState {
+            db: Mutex::new(conn),
+            sync_error: Mutex::new(None),
+            syncing_manga_ids: Mutex::new(Vec::new()),
+            auto_sync: Mutex::new(SyncProgress {
+                running: false,
+                total: 0,
+                current: 0,
+            }),
+            adapter_health: Mutex::new(HashMap::from([
+                (
+                    "demonicscans".into(),
+                    AdapterHealth {
+                        source: "demonicscans".into(),
+                        healthy: true,
+                        consecutive_failures: 0,
+                        last_attempt: "never".into(),
+                        last_error: None,
+                    },
+                ),
+                (
+                    "manhuaplus".into(),
+                    AdapterHealth {
+                        source: "manhuaplus".into(),
+                        healthy: true,
+                        consecutive_failures: 0,
+                        last_attempt: "never".into(),
+                        last_error: None,
+                    },
+                ),
+            ])),
+            setup_token: Mutex::new(None),
+        }
+    }
+}
 
-    let conn = db::open_db()?;
-    db::init_db(&conn)?;
-
-    let boot = crate::config::SiteConfig::from_env();
-    tracing::info!(site_title = %boot.site_title, accent = %boot.accent, "boot defaults loaded");
-
-    let state = Arc::new(AppState {
-        db: Mutex::new(conn),
-        sync_error: Mutex::new(None),
-        syncing_manga_ids: Mutex::new(Vec::new()),
-        auto_sync: Mutex::new(SyncProgress {
-            running: false,
-            total: 0,
-            current: 0,
-        }),
-        adapter_health: Mutex::new(HashMap::from([
-            (
-                "demonicscans".into(),
-                AdapterHealth {
-                    source: "demonicscans".into(),
-                    healthy: true,
-                    consecutive_failures: 0,
-                    last_attempt: "never".into(),
-                    last_error: None,
-                },
-            ),
-            (
-                "manhuaplus".into(),
-                AdapterHealth {
-                    source: "manhuaplus".into(),
-                    healthy: true,
-                    consecutive_failures: 0,
-                    last_attempt: "never".into(),
-                    last_error: None,
-                },
-            ),
-        ])),
-    });
-
-    // Start the background sync loop (scan → sequential sync → sleep → repeat).
-    tracing::info!("starting background sync loop...");
-    crate::scraper_helper::start_sync_loop(state.clone());
-
-    let app = Router::new()
+/// Build the full router. Kept separate from `main` so tests can drive every
+/// route in-process without binding a port or starting the sync loop.
+pub fn app(state: Arc<AppState>) -> Router {
+    Router::new()
         .route("/", get(crate::routes::home::home))
         .route("/series", get(crate::routes::series::series_list))
         .route("/series/{id}", get(crate::routes::series::series_detail))
@@ -149,6 +139,10 @@ async fn main() -> anyhow::Result<()> {
             "/auth/{provider}/callback",
             get(crate::routes::oauth::oauth_callback),
         )
+        .route(
+            "/setup",
+            get(crate::routes::setup::setup_page).post(crate::routes::setup::setup_submit),
+        )
         .route("/settings", get(crate::routes::settings::settings_page))
         .route(
             "/settings/profile",
@@ -164,6 +158,14 @@ async fn main() -> anyhow::Result<()> {
             get(crate::routes::admin::branding_page).post(crate::routes::admin::branding_submit),
         )
         .route("/admin/users", get(crate::routes::admin::users_page))
+        .route(
+            "/admin/users/{id}/role",
+            post(crate::routes::admin::user_set_role),
+        )
+        .route(
+            "/admin/users/{id}/ban",
+            post(crate::routes::admin::user_set_banned),
+        )
         .route(
             "/admin/users/{id}/reset-link",
             post(crate::routes::admin::user_reset_link),
@@ -221,8 +223,42 @@ async fn main() -> anyhow::Result<()> {
                     .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/static").to_string()),
             ),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::routes::setup::setup_gate,
+        ))
         .layer(CompressionLayer::new())
-        .with_state(state);
+        .with_state(state)
+}
+
+/// Application entrypoint.
+///
+/// Initializes tracing, opens the SQLite database (with WAL mode and a busy
+/// timeout so background scrapers do not block reads), seeds sample data,
+/// builds the Axum router with all routes and static file serving, then
+/// binds to `0.0.0.0:3000`.
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    let conn = db::open_db()?;
+    db::init_db(&conn)?;
+
+    let boot = crate::config::SiteConfig::from_env();
+    tracing::info!(site_title = %boot.site_title, accent = %boot.accent, "boot defaults loaded");
+
+    let state = Arc::new(AppState::new(conn));
+    crate::routes::setup::arm_if_needed(&state).await;
+
+    // Start the background sync loop (scan → sequential sync → sleep → repeat).
+    tracing::info!("starting background sync loop...");
+    crate::scraper_helper::start_sync_loop(state.clone());
+
+    let app = app(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tracing::info!("listening on http://0.0.0.0:3000");

@@ -414,7 +414,11 @@ pub async fn branding_submit(
     Redirect::to("/admin/branding").into_response()
 }
 
-fn users_content(users: &[(mangaread_core::domain::User, String)], notice: Markup) -> Markup {
+fn users_content(
+    users: &[(mangaread_core::domain::User, String)],
+    notice: Markup,
+    me: i64,
+) -> Markup {
     html! {
         section {
             h1 class="title is-2" { "Users" }
@@ -437,14 +441,49 @@ fn users_content(users: &[(mangaread_core::domain::User, String)], notice: Marku
                             @for (u, prov) in users {
                                 tr {
                                     td { (u.id) }
-                                    td { (u.name) }
+                                    td {
+                                        (u.name)
+                                        @if u.banned_at.is_some() {
+                                            " " span class="tag is-danger is-light" { "Banned" }
+                                        }
+                                    }
                                     td { (u.email) }
-                                    td { (u.role.as_str()) }
+                                    td {
+                                        form method="post" action=(format!("/admin/users/{}/role", u.id)) {
+                                            div class="field has-addons" {
+                                                div class="control" {
+                                                    div class="select is-small" {
+                                                        select name="role" aria-label={"Role for " (u.name)} {
+                                                            @for r in [Role::Member, Role::Moderator, Role::Admin] {
+                                                                option value=(r.as_str()) selected[r == u.role] { (role_label(&r)) }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                div class="control" {
+                                                    button class="button is-small" type="submit" { "Save" }
+                                                }
+                                            }
+                                        }
+                                    }
                                     td { (prov) }
                                     td { (u.created_at) }
                                     td {
-                                        form method="post" action=(format!("/admin/users/{}/reset-link", u.id)) {
-                                            button class="button is-small is-light" type="submit" { "Reset link" }
+                                        div class="buttons are-small" {
+                                            form method="post" action=(format!("/admin/users/{}/reset-link", u.id)) {
+                                                button class="button is-small is-light" type="submit" { "Reset link" }
+                                            }
+                                            @if u.id != me {
+                                                form method="post" action=(format!("/admin/users/{}/ban", u.id)) {
+                                                    @if u.banned_at.is_some() {
+                                                        input type="hidden" name="banned" value="0";
+                                                        button class="button is-small is-light" type="submit" { "Unban" }
+                                                    } @else {
+                                                        input type="hidden" name="banned" value="1";
+                                                        button class="button is-small is-danger is-light" type="submit" { "Ban" }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -456,6 +495,33 @@ fn users_content(users: &[(mangaread_core::domain::User, String)], notice: Marku
             a class="button is-light" href="/admin" { "Back to admin" }
         }
     }
+}
+
+fn role_label(r: &Role) -> &'static str {
+    match r {
+        Role::Member => "User",
+        Role::Moderator => "Moderator",
+        Role::Admin => "Admin",
+    }
+}
+
+/// Fixed notice copy for `?ok=` / `?err=` codes. Only known codes render, so
+/// the query string cannot inject arbitrary text into the page.
+fn user_action_notice(q: &HashMap<String, String>) -> Option<Markup> {
+    let (class, text) = match (
+        q.get("ok").map(String::as_str),
+        q.get("err").map(String::as_str),
+    ) {
+        (Some("role"), _) => ("is-success", "Role updated."),
+        (Some("ban"), _) => ("is-success", "User banned. Their sessions were signed out."),
+        (Some("unban"), _) => ("is-success", "User unbanned."),
+        (_, Some("last_admin")) => ("is-danger", "The last admin cannot be demoted or banned."),
+        (_, Some("self_ban")) => ("is-danger", "You cannot ban yourself."),
+        (_, Some("not_found")) => ("is-danger", "That user no longer exists."),
+        (_, Some("bad_role")) => ("is-danger", "Unknown role."),
+        _ => return None,
+    };
+    Some(html! { div class=(format!("notification is-light {class}")) { (text) } })
 }
 
 /// GET `/admin/users` — minimal user table with per-row reset-link generator.
@@ -502,9 +568,15 @@ pub async fn users_page(
                 html! { div class="notification is-danger is-light" { "Reset link for user " (id) ": " code { (link) } } }
             }
         }
-        _ => html! {},
+        _ => user_action_notice(&q).unwrap_or_default(),
     };
-    page(&cfg, "Users", users_content(&users, notice), Some(&user)).into_response()
+    page(
+        &cfg,
+        "Users",
+        users_content(&users, notice, user.id),
+        Some(&user),
+    )
+    .into_response()
 }
 
 /// POST `/admin/users/{id}/reset-link` — mint a 1h token, redirect back with the link.
@@ -544,6 +616,77 @@ pub async fn user_reset_link(
         "",
     )
         .into_response()
+}
+
+fn back_to_users(query: &str) -> Response {
+    Redirect::to(&format!("/admin/users?{query}")).into_response()
+}
+
+fn error_code(e: &mangaread_core::error::Error) -> &'static str {
+    match e {
+        mangaread_core::error::Error::Conflict(_) => "last_admin",
+        mangaread_core::error::Error::NotFound(_) => "not_found",
+        _ => "not_found",
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct RoleForm {
+    pub role: String,
+}
+
+/// POST `/admin/users/{id}/role` — change a user's role; logged to `mod_log`.
+pub async fn user_set_role(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::Form(form): axum::Form<RoleForm>,
+) -> Response {
+    if require_role(&user, Role::Admin).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let role = match form.role.as_str() {
+        "member" => Role::Member,
+        "moderator" => Role::Moderator,
+        "admin" => Role::Admin,
+        _ => return back_to_users("err=bad_role"),
+    };
+    let db = state.db.lock().await;
+    if let Err(e) = mangaread_core::db::set_user_role(&db, id, &role) {
+        return back_to_users(&format!("err={}", error_code(&e)));
+    }
+    let _ = mangaread_core::db::insert_mod_log(&db, user.id, "role", Some(id), role.as_str());
+    back_to_users("ok=role")
+}
+
+#[derive(serde::Deserialize)]
+pub struct BanForm {
+    pub banned: String,
+}
+
+/// POST `/admin/users/{id}/ban` — ban (`banned=1`) or unban (`banned=0`).
+/// Banning signs the user out everywhere; admins cannot ban themselves.
+pub async fn user_set_banned(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::Form(form): axum::Form<BanForm>,
+) -> Response {
+    if require_role(&user, Role::Admin).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let banned = form.banned == "1";
+    if banned && id == user.id {
+        return back_to_users("err=self_ban");
+    }
+    let db = state.db.lock().await;
+    let now = crate::auth::now_utc_string();
+    if let Err(e) = mangaread_core::db::set_user_banned(&db, id, banned, &now) {
+        return back_to_users(&format!("err={}", error_code(&e)));
+    }
+    let action = if banned { "ban" } else { "unban" };
+    let _ = mangaread_core::db::insert_mod_log(&db, user.id, action, Some(id), "");
+    back_to_users(&format!("ok={action}"))
 }
 
 #[cfg(test)]
@@ -679,8 +822,9 @@ mod tests {
             role: Role::Member,
             locale: "en".into(),
             created_at: "2026-09-24 12:00:00".into(),
+            banned_at: None,
         };
-        let markup = users_content(&[(user, "google".into())], html! {}).into_string();
+        let markup = users_content(&[(user, "google".into())], html! {}, 1).into_string();
         assert!(markup.contains("class=\"table-container\""));
         assert!(markup.contains("class=\"table is-fullwidth is-hoverable\""));
         assert!(markup.contains("action=\"/admin/users/7/reset-link\""));
@@ -710,5 +854,104 @@ mod tests {
             mangaread_core::db::get_setting(&conn, "site_title").unwrap(),
             Some("Original".into())
         );
+    }
+
+    use crate::test_support::app_with_admin;
+
+    #[tokio::test]
+    async fn members_cannot_manage_users() {
+        let (app, _) = app_with_admin().await;
+        let (target, member) = app.member("m@example.com").await;
+        let res = app
+            .post_form(
+                &format!("/admin/users/{target}/role"),
+                &[("role", "admin")],
+                Some(&member),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn promote_writes_mod_log_and_shows_notice() {
+        let (app, admin) = app_with_admin().await;
+        let (target, _) = app.member("m@example.com").await;
+        let res = app
+            .post_form(
+                &format!("/admin/users/{target}/role"),
+                &[("role", "moderator")],
+                Some(&admin),
+            )
+            .await;
+        assert_eq!(res.location.as_deref(), Some("/admin/users?ok=role"));
+        {
+            let db = app.state.db.lock().await;
+            let log = mangaread_core::db::list_mod_log(&db, 5).unwrap();
+            assert_eq!(log[0].action, "role");
+            assert_eq!(log[0].detail, "moderator");
+        }
+        let page = app.get("/admin/users?ok=role", Some(&admin)).await;
+        assert!(page.body.contains("Role updated."));
+    }
+
+    #[tokio::test]
+    async fn last_admin_cannot_demote_themself() {
+        let (app, admin) = app_with_admin().await;
+        let res = app
+            .post_form("/admin/users/1/role", &[("role", "member")], Some(&admin))
+            .await;
+        assert_eq!(res.location.as_deref(), Some("/admin/users?err=last_admin"));
+        assert_eq!(app.get("/admin", Some(&admin)).await.status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn ban_signs_out_and_blocks_login_until_unban() {
+        let (app, admin) = app_with_admin().await;
+        let (target, member) = app.member("m@example.com").await;
+        let res = app
+            .post_form(
+                &format!("/admin/users/{target}/ban"),
+                &[("banned", "1")],
+                Some(&admin),
+            )
+            .await;
+        assert_eq!(res.location.as_deref(), Some("/admin/users?ok=ban"));
+        // The old session no longer resolves: the settings page bounces to login.
+        let settings = app.get("/settings", Some(&member)).await;
+        assert_eq!(settings.location.as_deref(), Some("/login"));
+        let login = app
+            .post_form(
+                "/login",
+                &[("email", "m@example.com"), ("password", "password1")],
+                None,
+            )
+            .await;
+        assert_eq!(login.status, StatusCode::FORBIDDEN);
+        assert!(login.body.contains("suspended"));
+        app.post_form(
+            &format!("/admin/users/{target}/ban"),
+            &[("banned", "0")],
+            Some(&admin),
+        )
+        .await;
+        let login = app
+            .post_form(
+                "/login",
+                &[("email", "m@example.com"), ("password", "password1")],
+                None,
+            )
+            .await;
+        assert_eq!(login.status, StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn admin_cannot_ban_self_and_unknown_codes_render_nothing() {
+        let (app, admin) = app_with_admin().await;
+        let res = app
+            .post_form("/admin/users/1/ban", &[("banned", "1")], Some(&admin))
+            .await;
+        assert_eq!(res.location.as_deref(), Some("/admin/users?err=self_ban"));
+        let page = app.get("/admin/users?err=%3Cscript%3E", Some(&admin)).await;
+        assert!(!page.body.contains("<script>"));
     }
 }

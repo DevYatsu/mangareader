@@ -153,10 +153,16 @@ pub async fn oauth_callback(
     let db = state.db.lock().await;
     // 1. already linked → login
     if let Ok(u) = mangaread_core::db::find_user_by_oauth(&db, p.key(), &profile.provider_user_id) {
+        if u.banned_at.is_some() {
+            return fail("This account is suspended.");
+        }
         return open_session(&db, u.id, &format!("oauth:{}", p.key()));
     }
     // 2. matching verified email → link then login
     if let Ok(u) = mangaread_core::db::find_user_by_email(&db, &email) {
+        if u.banned_at.is_some() {
+            return fail("This account is suspended.");
+        }
         if mangaread_core::db::link_oauth_account(&db, u.id, p.key(), &profile.provider_user_id)
             .is_err()
         {
@@ -164,19 +170,14 @@ pub async fn oauth_callback(
         }
         return open_session(&db, u.id, &format!("oauth:{}", p.key()));
     }
-    // 3. new account (bootstrap admin iff first user)
-    let role = match mangaread_core::db::count_users(&db) {
-        Ok(0) => Role::Admin,
-        Ok(_) => Role::Member,
-        Err(_) => return fail("Login with this provider failed."),
-    };
+    // 3. new account. Always a member: the first admin comes from `/setup`.
     let id = match mangaread_core::db::create_user(
         &db,
         &NewUser {
             name,
             email,
             password_hash: marker,
-            role,
+            role: Role::Member,
         },
     ) {
         Ok(id) => id,

@@ -13,6 +13,7 @@
 //! - `settings`:  user settings (profile, appearance, password)
 //! - `admin`:     admin dashboard + branding (site title, theme, legal)
 //! - `legal`:     public terms + privacy pages
+//! - `setup`:     first-run admin claim and the setup gate middleware
 pub mod admin;
 pub mod api;
 pub mod auth_pages;
@@ -29,5 +30,6 @@ pub mod reader;
 pub mod reader_prefs;
 pub mod series;
 pub mod settings;
+pub mod setup;
 pub mod source;
 pub mod sync;
