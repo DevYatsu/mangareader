@@ -1,5 +1,7 @@
 use axum::extract::{Path, Query, State};
-use axum::response::Html;
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
+use mangaread_core::domain::Role;
 use maud::html;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,11 +17,41 @@ fn chapter_badge(count: i64) -> String {
 }
 
 /// GET `/series/{id}` — render the series detail page.
+///
+/// Missing series and series hidden by an admin are a 404 for everyone
+/// except admins, who see hidden series with a notice.
 pub async fn series_detail(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
     user: Option<AuthUser>,
-) -> Html<String> {
+) -> Response {
+    let is_admin = user.as_ref().is_some_and(|u| u.role == Role::Admin);
+    {
+        let db = state.db.lock().await;
+        let visible =
+            mangaread_core::db::get_series_by_id(&db, id).is_ok_and(|s| !s.hidden || is_admin);
+        if !visible {
+            let cfg = crate::config::site_config(&db);
+            return (
+                StatusCode::NOT_FOUND,
+                crate::templates::layout::page(
+                    &cfg,
+                    "Not Found",
+                    crate::templates::layout::Nav::Series,
+                    user.as_ref(),
+                    crate::templates::layout::error_content(
+                        "Not Found",
+                        "This series doesn't exist or may have been removed.",
+                    ),
+                ),
+            )
+                .into_response();
+        }
+    }
+    render_series(state, id, user).await.into_response()
+}
+
+async fn render_series(state: Arc<AppState>, id: i64, user: Option<AuthUser>) -> Html<String> {
     let db = state.db.lock().await;
     let s = match mangaread_core::db::get_series_by_id(&db, id) {
         Ok(s) => s,
@@ -81,13 +113,23 @@ pub async fn series_detail(
         .map(|c| (c.source.as_str(), c.manga_id, c.chapter_id, c.number))
         .collect();
     let first_chapter = mangaread_core::service::series::first_chapter(&manga_entries, &db);
-    let cover_url = primary.cover_url.clone();
+    let cover_url = s
+        .cover_override
+        .clone()
+        .or_else(|| primary.cover_url.clone());
     let all_sources: Vec<&str> = manga_entries.iter().map(|m| m.source.as_str()).collect();
     let sources_json = serde_json::to_string(&all_sources).unwrap_or_else(|_| "[]".to_string());
     let current_href = format!("/series/{}", id);
 
     let content = html! {
         (content::breadcrumb(&[("/", "Home"), ("/series", "Series"), (&current_href, &s.title)]))
+
+        @if s.hidden {
+            div class="notification is-warning is-light" {
+                "Hidden from readers. Only admins can see this page. "
+                a href=(format!("/admin/series/{}", s.id)) { "Manage series" }
+            }
+        }
 
         div id="series-detail-hero" class="media" {
             div class="media-left" {

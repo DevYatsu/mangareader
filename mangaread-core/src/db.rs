@@ -185,6 +185,12 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
             "ALTER TABLE series ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0",
         )?;
     }
+    if !has_column(conn, "series", "hidden_at")? {
+        conn.execute_batch("ALTER TABLE series ADD COLUMN hidden_at TEXT")?;
+    }
+    if !has_column(conn, "series", "cover_override")? {
+        conn.execute_batch("ALTER TABLE series ADD COLUMN cover_override TEXT")?;
+    }
     if !has_column(conn, "users", "banned_at")? {
         conn.execute_batch("ALTER TABLE users ADD COLUMN banned_at TEXT")?;
     }
@@ -398,13 +404,17 @@ pub fn insert_series(conn: &Connection, title: &str) -> Result<i64, Error> {
 /// Returns `Error::NotFound` if no series matches the given id.
 pub fn get_series_by_id(conn: &Connection, id: i64) -> Result<Series, Error> {
     conn.query_row(
-        "SELECT id, title, created_at FROM series WHERE id = ?1",
+        "SELECT id, title, created_at, hidden_at IS NOT NULL, cover_override, title_locked
+         FROM series WHERE id = ?1",
         rusqlite::params![id],
         |row| {
             Ok(Series {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 created_at: row.get(2)?,
+                hidden: row.get(3)?,
+                cover_override: row.get(4)?,
+                title_locked: row.get::<_, i64>(5)? != 0,
             })
         },
     )
@@ -468,11 +478,12 @@ pub fn list_series_cards(
             JOIN manga m ON m.id = c.manga_id
             GROUP BY m.series_id
         )
-        SELECT s.id, s.title, cv.cover_url, counts.n
+        SELECT s.id, s.title, COALESCE(s.cover_override, cv.cover_url), counts.n
         FROM series s
         JOIN counts ON counts.series_id = s.id
         LEFT JOIN covers cv ON cv.series_id = s.id AND cv.rn = 1
-        WHERE ?1 IS NULL OR s.title LIKE ?1 ESCAPE '\\'
+        WHERE s.hidden_at IS NULL
+          AND (?1 IS NULL OR s.title LIKE ?1 ESCAPE '\\')
         ORDER BY s.title
         LIMIT ?2";
     let pattern = search.map(|q| format!("%{}%", escape_like(q)));
@@ -572,10 +583,11 @@ pub fn update_series_title(conn: &Connection, series_id: i64, title: &str) -> Re
 pub fn list_recent_chapters(conn: &Connection, limit: i64) -> Result<Vec<RecentChapter>, Error> {
     let mut stmt = conn.prepare(
         "SELECT c.id, c.number, c.title, c.url, c.created_at,
-                m.id, m.series_id, s.title, m.cover_url
+                m.id, m.series_id, s.title, COALESCE(s.cover_override, m.cover_url)
          FROM chapters c
          JOIN manga m ON m.id = c.manga_id
          JOIN series s ON s.id = m.series_id
+         WHERE s.hidden_at IS NULL
          ORDER BY c.created_at DESC
          LIMIT ?1",
     )?;
@@ -699,7 +711,9 @@ pub fn count_series_with_chapters(conn: &Connection) -> Result<i64, Error> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(DISTINCT m.series_id)
          FROM manga m
-         JOIN chapters c ON c.manga_id = m.id",
+         JOIN chapters c ON c.manga_id = m.id
+         JOIN series s ON s.id = m.series_id
+         WHERE s.hidden_at IS NULL",
         [],
         |row| row.get(0),
     )?;
@@ -756,6 +770,129 @@ fn map_page_row(row: &rusqlite::Row) -> rusqlite::Result<Page> {
         image_url: row.get(3)?,
         downloaded: row.get::<_, i32>(4)? != 0,
     })
+}
+
+// ── Catalog management (admin-only) ──
+
+/// Series for the admin list, hidden ones included, optionally filtered by
+/// a title substring. Newest first, capped at `limit`.
+pub fn admin_list_series(
+    conn: &Connection,
+    search: Option<&str>,
+    limit: i64,
+) -> Result<Vec<AdminSeriesRow>, Error> {
+    let pattern = search.map(|q| format!("%{}%", escape_like(q)));
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.title, s.hidden_at IS NOT NULL, s.title_locked,
+                (SELECT COUNT(DISTINCT c.number) FROM chapters c
+                   JOIN manga m ON m.id = c.manga_id WHERE m.series_id = s.id),
+                (SELECT COUNT(*) FROM manga m WHERE m.series_id = s.id)
+         FROM series s
+         WHERE ?1 IS NULL OR s.title LIKE ?1 ESCAPE '\\'
+         ORDER BY s.id DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![pattern, limit], |row| {
+        Ok(AdminSeriesRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            hidden: row.get(2)?,
+            title_locked: row.get::<_, i64>(3)? != 0,
+            chapter_count: row.get(4)?,
+            manga_count: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
+/// Fail with `NotFound` when an UPDATE touched no series.
+fn expect_series_row(changed: usize, id: i64) -> Result<(), Error> {
+    if changed == 0 {
+        Err(Error::NotFound(format!("series id={id}")))
+    } else {
+        Ok(())
+    }
+}
+
+/// Rename a series and lock the title, so syncs stop overwriting it.
+pub fn rename_series(conn: &Connection, id: i64, title: &str) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE series SET title = ?2, title_locked = 1 WHERE id = ?1",
+        rusqlite::params![id, title],
+    )?;
+    expect_series_row(n, id)
+}
+
+/// Hide (`now` = timestamp) or show (`None`) a series for non-admins.
+pub fn set_series_hidden(conn: &Connection, id: i64, hidden_at: Option<&str>) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE series SET hidden_at = ?2 WHERE id = ?1",
+        rusqlite::params![id, hidden_at],
+    )?;
+    expect_series_row(n, id)
+}
+
+/// Set or clear (`None`) the admin cover.
+pub fn set_series_cover(conn: &Connection, id: i64, cover: Option<&str>) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE series SET cover_override = ?2 WHERE id = ?1",
+        rusqlite::params![id, cover],
+    )?;
+    expect_series_row(n, id)
+}
+
+/// Merge series `from` into `into`: its source entries and bookmarks move,
+/// then `from` is deleted. One transaction, so a failure changes nothing.
+///
+/// Bookmarks use `INSERT OR IGNORE` because a user may have bookmarked
+/// both series; they keep one bookmark on the survivor.
+pub fn merge_series(conn: &Connection, from: i64, into: i64) -> Result<(), Error> {
+    if from == into {
+        return Err(Error::Conflict("cannot merge a series into itself".into()));
+    }
+    let tx = conn.unchecked_transaction()?;
+    get_series_by_id(&tx, from)?;
+    get_series_by_id(&tx, into)?;
+    tx.execute(
+        "UPDATE manga SET series_id = ?2 WHERE series_id = ?1",
+        rusqlite::params![from, into],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO bookmarks (user_id, series_id, created_at)
+         SELECT user_id, ?2, created_at FROM bookmarks WHERE series_id = ?1",
+        rusqlite::params![from, into],
+    )?;
+    tx.execute(
+        "DELETE FROM bookmarks WHERE series_id = ?1",
+        rusqlite::params![from],
+    )?;
+    tx.execute("DELETE FROM series WHERE id = ?1", rusqlite::params![from])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Move one source entry out of its series into a new series of its own.
+/// Refuses (`Conflict`) when it is the series' only entry. Returns the new
+/// series id.
+pub fn split_manga(conn: &Connection, manga_id: i64) -> Result<i64, Error> {
+    let tx = conn.unchecked_transaction()?;
+    let manga = get_manga_by_id(&tx, manga_id)?;
+    let Some(old) = manga.series_id else {
+        return Err(Error::Conflict("manga is not in a series".into()));
+    };
+    let siblings: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM manga WHERE series_id = ?1",
+        rusqlite::params![old],
+        |row| row.get(0),
+    )?;
+    if siblings <= 1 {
+        return Err(Error::Conflict("it is already the only entry".into()));
+    }
+    let new_id = insert_series(&tx, &clean_display_title(&manga.title))?;
+    link_manga_to_series(&tx, manga_id, new_id)?;
+    tx.commit()?;
+    Ok(new_id)
 }
 
 // ── Sync runs (admin visibility into scraping) ──
@@ -1853,6 +1990,106 @@ mod tests {
         assert_eq!(
             get_series_by_id(&conn, target).unwrap().title,
             "Manual Pick"
+        );
+    }
+
+    #[test]
+    fn hidden_series_vanish_from_reader_lists_and_cover_override_wins() {
+        let conn = mem();
+        let a = seed_series(&conn, "Alpha", &[("a", Some("src.jpg"), &[1.0])]);
+        let b = seed_series(&conn, "Beta", &[("a", None, &[1.0])]);
+        set_series_cover(&conn, a, Some("mine.jpg")).unwrap();
+        let cards = list_series_cards(&conn, None).unwrap();
+        assert_eq!(cards[0].cover_url.as_deref(), Some("mine.jpg"));
+        set_series_hidden(&conn, b, Some("2026-10-14 00:00:00")).unwrap();
+        let titles: Vec<_> = list_series_cards(&conn, None)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.title)
+            .collect();
+        assert_eq!(titles, ["Alpha"]);
+        assert_eq!(count_series_with_chapters(&conn).unwrap(), 1);
+        assert!(
+            list_recent_chapters(&conn, 10)
+                .unwrap()
+                .iter()
+                .all(|c| c.series_id == a)
+        );
+        assert!(get_series_by_id(&conn, b).unwrap().hidden);
+        let admin_rows = admin_list_series(&conn, None, 50).unwrap();
+        assert_eq!(admin_rows.len(), 2, "admins still see hidden series");
+        set_series_hidden(&conn, b, None).unwrap();
+        assert_eq!(list_series_cards(&conn, None).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rename_locks_the_title_against_syncs() {
+        let conn = mem();
+        let a = seed_series(&conn, "Alpha", &[("a", None, &[1.0])]);
+        rename_series(&conn, a, "Alpha (Official)").unwrap();
+        update_series_title(&conn, a, "alpha raw").unwrap();
+        let s = get_series_by_id(&conn, a).unwrap();
+        assert_eq!(s.title, "Alpha (Official)");
+        assert!(s.title_locked);
+        assert!(matches!(
+            rename_series(&conn, 999, "x"),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn merge_moves_entries_and_bookmarks_then_deletes_source_series() {
+        let conn = mem();
+        let keep = seed_series(&conn, "Solo Leveling", &[("a", None, &[1.0, 2.0])]);
+        let dup = seed_series(&conn, "Only I Level Up", &[("b", None, &[2.0, 3.0])]);
+        let u1 = create_user(&conn, &new_user("u1@x.io", Role::Member)).unwrap();
+        let u2 = create_user(&conn, &new_user("u2@x.io", Role::Member)).unwrap();
+        for (u, s) in [(u1, keep), (u1, dup), (u2, dup)] {
+            conn.execute(
+                "INSERT INTO bookmarks (user_id, series_id) VALUES (?1, ?2)",
+                [u, s],
+            )
+            .unwrap();
+        }
+        merge_series(&conn, dup, keep).unwrap();
+        assert!(matches!(
+            get_series_by_id(&conn, dup),
+            Err(Error::NotFound(_))
+        ));
+        assert_eq!(list_manga_by_series(&conn, keep).unwrap().len(), 2);
+        let cards = list_series_cards(&conn, None).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].chapter_count, 3);
+        let bookmarks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bookmarks WHERE series_id = ?1",
+                [keep],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bookmarks, 2, "u1 keeps one bookmark, u2's moves over");
+        assert!(matches!(
+            merge_series(&conn, keep, keep),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn split_moves_one_entry_out_but_never_the_last() {
+        let conn = mem();
+        let s = seed_series(&conn, "Mixed", &[("a", None, &[1.0]), ("b", None, &[1.0])]);
+        let entries = list_manga_by_series(&conn, s).unwrap();
+        let new_id = split_manga(&conn, entries[1].id).unwrap();
+        assert_ne!(new_id, s);
+        assert_eq!(list_manga_by_series(&conn, s).unwrap().len(), 1);
+        assert!(matches!(
+            split_manga(&conn, entries[0].id),
+            Err(Error::Conflict(_))
+        ));
+        // The next scan keeps the split instead of relinking by title.
+        assert_eq!(
+            ensure_manga_linked(&conn, "Mixed", entries[1].id).unwrap(),
+            new_id
         );
     }
 

@@ -145,6 +145,9 @@ pub async fn progress_series(
         let Ok(series) = mangaread_core::db::get_series_by_id(&db, series_id) else {
             continue;
         };
+        if series.hidden {
+            continue;
+        }
         let manga_entries =
             mangaread_core::db::list_manga_by_series(&db, series_id).unwrap_or_default();
         let primary = mangaread_core::service::series::pick_primary(&manga_entries, &db)
@@ -161,7 +164,10 @@ pub async fn progress_series(
             results.push(ProgressSeriesItem {
                 id: series_id,
                 title: series.title,
-                cover_url: m.cover_url.clone(),
+                cover_url: series
+                    .cover_override
+                    .clone()
+                    .or_else(|| m.cover_url.clone()),
                 manga_id: m.id,
                 chapter_id: ch.id,
                 chapter_number: ch.number,

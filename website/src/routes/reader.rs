@@ -231,6 +231,30 @@ pub async fn chapter_reader(
             )
                 .into_response();
         }
+        // A series hidden by an admin is unreadable for everyone else.
+        let is_admin = user
+            .as_ref()
+            .is_some_and(|u| u.role == mangaread_core::domain::Role::Admin);
+        let hidden = manga.series_id.is_some_and(|sid| {
+            mangaread_core::db::get_series_by_id(&db, sid).is_ok_and(|s| s.hidden)
+        });
+        if hidden && !is_admin {
+            let cfg = crate::config::site_config(&db);
+            return (
+                StatusCode::NOT_FOUND,
+                crate::templates::layout::page(
+                    &cfg,
+                    "Not Found",
+                    crate::templates::layout::Nav::None,
+                    user.as_ref(),
+                    crate::templates::layout::error_content(
+                        "Not Found",
+                        "This chapter doesn't exist or may have been removed.",
+                    ),
+                ),
+            )
+                .into_response();
+        }
         let pages = mangaread_core::db::list_pages_by_chapter(&db, chapter.id).unwrap_or_default();
         (manga, chapter, pages.is_empty())
     };

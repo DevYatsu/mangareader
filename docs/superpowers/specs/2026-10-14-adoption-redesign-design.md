@@ -131,6 +131,7 @@ Findings are ordered by impact on adoption. Each one names the evidence.
 7. **Moderation queue:** `/mod/reports` lists open reports grouped by comment. It offers hide, dismiss, and mute (1 day / 7 days / permanent). One click shows the comment in its chapter.
 8. **Anti-spam:** at most 1 comment per 15 s and 50 per day per user. Muted or banned users get a 403 with the reason and the end date.
 9. **Deferred:** reply notifications, reactions, comments on series pages.
+10. **Merge interplay:** `merge_series` (Slice A) must move comments from the merged series to the survivor, and keep `(series_id, chapter_number)` collisions as separate threads under the survivor.
 
 ### Slice D — Discovery & library
 1. **Metadata.** Add `series.status`, `series.genres` (normalized `series_genres` table), and `series.alt_titles`. Extend `MangaInfo` with optional fields so adapters fill what they can; nothing breaks when an adapter returns `None`.

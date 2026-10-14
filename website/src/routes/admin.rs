@@ -202,6 +202,17 @@ fn dashboard_content(mail_configured: bool) -> Markup {
                     }
                 }
                 div class="column is-half-mobile is-one-third-tablet" {
+                    a class="card" href="/admin/series" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Series" }
+                            p { "Rename, set covers, hide, merge duplicates, or split wrong merges." }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" { "Open series" }
+                        }
+                    }
+                }
+                div class="column is-half-mobile is-one-third-tablet" {
                     a class="card" href="/admin/sources" {
                         div class="card-content" {
                             h2 class="title is-4" { "Sources" }

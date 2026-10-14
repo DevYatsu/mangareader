@@ -153,6 +153,34 @@ pub fn app(state: Arc<AppState>) -> Router {
             post(crate::routes::admin_email::email_test),
         )
         .route(
+            "/admin/series",
+            get(crate::routes::admin_series::series_list),
+        )
+        .route(
+            "/admin/series/{id}",
+            get(crate::routes::admin_series::series_edit),
+        )
+        .route(
+            "/admin/series/{id}/rename",
+            post(crate::routes::admin_series::series_rename),
+        )
+        .route(
+            "/admin/series/{id}/cover",
+            post(crate::routes::admin_series::series_cover),
+        )
+        .route(
+            "/admin/series/{id}/hide",
+            post(crate::routes::admin_series::series_hide),
+        )
+        .route(
+            "/admin/series/{id}/merge",
+            post(crate::routes::admin_series::series_merge),
+        )
+        .route(
+            "/admin/manga/{id}/split",
+            post(crate::routes::admin_series::manga_split),
+        )
+        .route(
             "/admin/sources",
             get(crate::routes::admin_sync::sources_page),
         )

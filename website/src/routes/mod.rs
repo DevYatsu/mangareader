@@ -13,12 +13,14 @@
 //! - `settings`:  user settings (profile, appearance, password)
 //! - `admin`:     admin dashboard + branding (site title, theme, legal)
 //! - `admin_email`: SMTP settings, unverified sign-up switch, test send
+//! - `admin_series`: rename, cover, hide, merge and split series
 //! - `admin_sync`: source health and toggles, sync history, retries
 //! - `legal`:     public terms + privacy pages
 //! - `setup`:     first-run admin claim and the setup gate middleware
 //! - `signup`:    open registration verified by an emailed link
 pub mod admin;
 pub mod admin_email;
+pub mod admin_series;
 pub mod admin_sync;
 pub mod api;
 pub mod auth_pages;

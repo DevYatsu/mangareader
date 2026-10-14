@@ -36,6 +36,14 @@
 - [x] Dashboard links both pages; the "Sources: not available yet" card is gone.
 - [x] Tests: admin-only on all six endpoints, health and escaping, toggle round trip, retry rules, loop wake.
 
-## A3 — `/admin/series` (detailed when A2 lands)
+## A3 — `/admin/series`
 
-Search including hidden series; rename (locks the title); hide/unhide (hidden series disappear for non-admins); cover override; merge two series (moves manga and bookmarks); split one manga into its own series. Admin-only; every action logged in `mod_log`.
+- [x] `series.hidden_at` and `series.cover_override`. Hidden series leave the grid, search, home recents, the series count and continue-reading, and their series page and chapters return 404 for everyone but admins (who see a notice). The override cover wins everywhere a cover is shown.
+- [x] `/admin/series`: search over all series (hidden included), newest first, capped at 100.
+- [x] `/admin/series/{id}`: rename (sets `title_locked`), cover override (http/https only, blank clears), hide/show, merge into another series (moves source entries and bookmarks, deletes the merged series, one transaction), split a source entry into a new series (never the last one).
+- [x] Admin-only (moderators get 403). Every change is written to `mod_log`.
+- [x] Tests: permissions, hidden 404s for readers, cover/title validation, merge and split round trip including bad targets.
+
+### Follow-ups for later slices
+- Slice C: `merge_series` must also move comments (keyed by `series_id`) once they exist.
+- Slice D: `/source/{source}` still lists hidden series' titles (their links 404). It is removed in D.
