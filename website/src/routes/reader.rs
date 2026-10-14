@@ -320,7 +320,7 @@ pub async fn chapter_reader(
                 .unwrap_or_default()
                 .into_iter()
                 .take(3)
-                .map(|p| p.image_url)
+                .map(|p| crate::image_proxy::page_src(&p))
                 .collect::<Vec<_>>();
             (c.id, urls)
         })
@@ -471,7 +471,7 @@ if(++a>=20)clearInterval(iv)
                     @let load = if i == 0 { "eager" } else { "lazy" };
                     section class="reader-page" data-page-idx=(i + 1) data-page-state="idle" {
                         div class="reader-page-placeholder" aria-hidden="true" {}
-                        img src=(page.image_url) alt={"Page "(i + 1)} loading=(load) decoding="async";
+                        img src=(crate::image_proxy::page_src(page)) alt={"Page "(i + 1)} loading=(load) decoding="async";
                         div class="reader-page-error" hidden {
                             p { "Could not load this page." }
                             button class="button is-primary is-small reader-retry-btn" type="button" { "Retry" }

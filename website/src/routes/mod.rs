@@ -9,6 +9,7 @@
 //! - `check`:   lightweight API endpoints for sync polling
 //! - `comments`: chapter comment JSON API (read, post, edit, report, hide)
 //! - `health`:   liveness probe for Docker
+//! - `images`:   reader page images through the caching image proxy
 //! - `api`:     sync management, progress tracking
 //! - `library`:   member shelves (server) and the visitor list (client-side)
 //! - `settings`:  user settings (profile, appearance, password)
@@ -29,6 +30,7 @@ pub mod check;
 pub mod comments;
 pub mod health;
 pub mod home;
+pub mod images;
 pub mod legal;
 pub mod library;
 pub mod manga;

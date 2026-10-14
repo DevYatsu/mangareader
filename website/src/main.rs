@@ -5,6 +5,7 @@
 mod auth;
 mod config;
 mod email;
+mod image_proxy;
 mod oauth;
 mod rate_limit;
 mod routes;
@@ -64,6 +65,8 @@ pub struct AppState {
     pub mailer: Arc<dyn crate::email::Mailer>,
     /// Sliding-window limits for mail-sending endpoints.
     pub rate_limiter: crate::rate_limit::RateLimiter,
+    /// Fetches and caches reader page images (`/img/{page_id}`).
+    pub images: crate::image_proxy::ImageProxy,
 }
 
 impl AppState {
@@ -84,6 +87,7 @@ impl AppState {
             setup_token: Mutex::new(None),
             mailer: Arc::new(crate::email::SmtpMailer),
             rate_limiter: crate::rate_limit::RateLimiter::default(),
+            images: crate::image_proxy::ImageProxy::from_env(),
         }
     }
 }
@@ -304,6 +308,7 @@ pub fn app(state: Arc<AppState>) -> Router {
             "/api/comments/{id}/restore",
             post(crate::routes::comments::restore),
         )
+        .route("/img/{page_id}", get(crate::routes::images::page_image))
         .route("/health", get(crate::routes::health::health))
         .route(
             "/favicon.ico",
@@ -346,6 +351,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(site_title = %boot.site_title, accent = %boot.accent, "boot defaults loaded");
 
     let state = Arc::new(AppState::new(conn));
+    {
+        let state = state.clone();
+        // Counting a large cache walks every file; keep it off the boot path.
+        tokio::task::spawn_blocking(move || state.images.scan_usage());
+    }
     crate::routes::setup::arm_if_needed(&state).await;
 
     // Start the background sync loop (scan → sequential sync → sleep → repeat).

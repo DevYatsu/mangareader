@@ -37,6 +37,11 @@ pub async fn test_app() -> TestApp {
             recorder.lock().unwrap().push(job);
             true
         }),
+        // Never the real cache next to a developer's database.
+        images: crate::image_proxy::ImageProxy::new(
+            crate::image_proxy::tests::temp_dir(),
+            Default::default(),
+        ),
         ..AppState::new(conn)
     });
     let setup_token = crate::routes::setup::arm_if_needed(&state).await;

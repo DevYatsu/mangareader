@@ -21,6 +21,7 @@ serde_json = "1"
 form_urlencoded = "1"
 bcrypt = "0.17"
 reqwest = { version = "0.12", features = ["json"] }
+url = "2"
 uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting", "macros", "std"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }

@@ -872,6 +872,30 @@ pub fn list_pages_by_chapter(conn: &Connection, chapter_id: i64) -> Result<Vec<P
         .map_err(Error::from)
 }
 
+/// Origin URL, source and visibility of one page. `Ok(None)` when missing.
+pub fn get_page_origin(conn: &Connection, page_id: i64) -> Result<Option<PageOrigin>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT p.image_url, m.source, s.hidden_at IS NOT NULL
+         FROM pages p
+         JOIN chapters c ON c.id = p.chapter_id
+         JOIN manga m ON m.id = c.manga_id
+         LEFT JOIN series s ON s.id = m.series_id
+         WHERE p.id = ?1",
+    )?;
+    match stmt.query_row(rusqlite::params![page_id], |row| {
+        Ok(PageOrigin {
+            image_url: row.get(0)?,
+            source: row.get(1)?,
+            // LEFT JOIN: a manga without a series yields NULL, i.e. visible.
+            hidden: row.get::<_, Option<bool>>(2)?.unwrap_or(false),
+        })
+    }) {
+        Ok(o) => Ok(Some(o)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Get the IDs of all manga entries that have zero chapters synced.
 ///
 /// Used by the background sync loop to discover which manga still need
