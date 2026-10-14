@@ -232,6 +232,10 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
             error TEXT
          );
          CREATE INDEX IF NOT EXISTS idx_sync_runs_source ON sync_runs(source, id);
+         CREATE VIRTUAL TABLE IF NOT EXISTS series_search USING fts5(
+            series_id UNINDEXED, title, other_titles, authors, description,
+            tokenize = 'unicode61 remove_diacritics 2'
+         );
          CREATE TABLE IF NOT EXISTS comments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
@@ -450,60 +454,228 @@ pub fn find_or_create_series(conn: &Connection, title: &str) -> Result<i64, Erro
     insert_series(conn, &display)
 }
 
-/// List series cards for the grid in one query, optionally filtered by a
-/// title substring. Series without chapters are excluded.
+/// CTEs shared by every series-card query.
 ///
-/// The cost is constant in round trips regardless of library size: the
-/// previous implementation loaded every manga entry and every chapter list
-/// per series just to pick a cover and count chapters.
-///
-/// Search results are capped at 50, matching the previous behavior.
-pub fn list_series_cards(
-    conn: &Connection,
-    search: Option<&str>,
-) -> Result<Vec<SeriesCard>, Error> {
-    // `ROW_NUMBER()` picks one cover per series: the manga with the most
-    // chapters wins, and the lowest id breaks ties deterministically.
-    let sql = "
-        WITH per_manga AS (
-            SELECT m.id, m.series_id, m.cover_url, COUNT(c.id) AS cnt
-            FROM manga m
-            LEFT JOIN chapters c ON c.manga_id = m.id
-            WHERE m.series_id IS NOT NULL
-            GROUP BY m.id
-        ),
-        covers AS (
-            SELECT series_id, cover_url,
-                   ROW_NUMBER() OVER (PARTITION BY series_id ORDER BY cnt DESC, id ASC) AS rn
-            FROM per_manga
-        ),
-        counts AS (
-            SELECT m.series_id, COUNT(DISTINCT c.number) AS n
-            FROM chapters c
-            JOIN manga m ON m.id = c.manga_id
-            GROUP BY m.series_id
-        )
-        SELECT s.id, s.title, COALESCE(s.cover_override, cv.cover_url), counts.n
-        FROM series s
-        JOIN counts ON counts.series_id = s.id
-        LEFT JOIN covers cv ON cv.series_id = s.id AND cv.rn = 1
-        WHERE s.hidden_at IS NULL
-          AND (?1 IS NULL OR s.title LIKE ?1 ESCAPE '\\')
-        ORDER BY s.title
-        LIMIT ?2";
-    let pattern = search.map(|q| format!("%{}%", escape_like(q)));
-    let limit: i64 = if search.is_some() { 50 } else { -1 };
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(rusqlite::params![pattern, limit], |row| {
-        Ok(SeriesCard {
+/// `covers` picks one cover per series with `ROW_NUMBER()`: the manga with
+/// the most chapters wins, the lowest id breaks ties. `counts` gives the
+/// distinct chapter numbers and the newest chapter time. One statement,
+/// constant round trips regardless of library size.
+const CARD_CTES: &str = "
+    WITH per_manga AS (
+        SELECT m.id, m.series_id, m.cover_url, COUNT(c.id) AS cnt
+        FROM manga m
+        LEFT JOIN chapters c ON c.manga_id = m.id
+        WHERE m.series_id IS NOT NULL
+        GROUP BY m.id
+    ),
+    covers AS (
+        SELECT series_id, cover_url,
+               ROW_NUMBER() OVER (PARTITION BY series_id ORDER BY cnt DESC, id ASC) AS rn
+        FROM per_manga
+    ),
+    counts AS (
+        SELECT m.series_id, COUNT(DISTINCT c.number) AS n, MAX(c.created_at) AS last_at
+        FROM chapters c
+        JOIN manga m ON m.id = c.manga_id
+        GROUP BY m.series_id
+    )";
+
+/// Columns and joins every card query selects. Hidden series and series
+/// without chapters never appear.
+const CARD_FROM: &str = "
+    SELECT s.id, s.title, COALESCE(s.cover_override, cv.cover_url), counts.n,
+           counts.last_at
+    FROM series s
+    JOIN counts ON counts.series_id = s.id
+    LEFT JOIN covers cv ON cv.series_id = s.id AND cv.rn = 1";
+
+fn map_card(row: &rusqlite::Row) -> rusqlite::Result<(SeriesCard, String)> {
+    Ok((
+        SeriesCard {
             id: row.get(0)?,
             title: row.get(1)?,
             cover_url: row.get(2)?,
             chapter_count: row.get(3)?,
+        },
+        row.get(4)?,
+    ))
+}
+
+/// How the series grid is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BrowseSort {
+    /// Newest chapter first: what readers come back for.
+    #[default]
+    Updated,
+    /// Newest series first.
+    Added,
+    /// A–Z by title.
+    Title,
+}
+
+impl BrowseSort {
+    pub fn from_param(s: &str) -> Self {
+        match s {
+            "added" => BrowseSort::Added,
+            "az" => BrowseSort::Title,
+            _ => BrowseSort::Updated,
+        }
+    }
+
+    pub fn param(self) -> &'static str {
+        match self {
+            BrowseSort::Updated => "updated",
+            BrowseSort::Added => "added",
+            BrowseSort::Title => "az",
+        }
+    }
+}
+
+/// One page of the grid and the cursor for the next page, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowsePage {
+    pub cards: Vec<SeriesCard>,
+    pub next: Option<String>,
+}
+
+/// One page of the series grid with keyset pagination.
+///
+/// `after` is the opaque cursor from the previous page. Keyset (not
+/// `OFFSET`) keeps pages stable while the sync loop inserts rows, and costs
+/// the same on page 100 as on page 1.
+pub fn browse_series(
+    conn: &Connection,
+    sort: BrowseSort,
+    after: Option<&str>,
+    limit: i64,
+) -> Result<BrowsePage, Error> {
+    // Cursor: "<sort key>~<series id>"; the key may itself contain '~'.
+    let (key, id) = after
+        .and_then(|c| c.rsplit_once('~'))
+        .and_then(|(k, id)| id.parse::<i64>().ok().map(|id| (k.to_string(), id)))
+        .map_or((None, None), |(k, id)| (Some(k), Some(id)));
+    // Sort keys come from this enum, never from user text.
+    let (predicate, order) = match sort {
+        BrowseSort::Updated => (
+            "(counts.last_at, s.id) < (?1, ?2)",
+            "counts.last_at DESC, s.id DESC",
+        ),
+        BrowseSort::Added => ("s.id < ?2", "s.id DESC"),
+        BrowseSort::Title => ("(lower(s.title), s.id) > (?1, ?2)", "lower(s.title), s.id"),
+    };
+    let sql = format!(
+        "{CARD_CTES} {CARD_FROM}
+         WHERE s.hidden_at IS NULL AND (?2 IS NULL OR {predicate})
+         ORDER BY {order}
+         LIMIT ?3"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt
+        .query_map(rusqlite::params![key, id, limit + 1], map_card)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let next = if rows.len() as i64 > limit {
+        rows.truncate(limit as usize);
+        rows.last().map(|(card, last_at)| match sort {
+            BrowseSort::Updated => format!("{last_at}~{}", card.id),
+            BrowseSort::Added => format!("~{}", card.id),
+            BrowseSort::Title => format!("{}~{}", card.title.to_lowercase(), card.id),
         })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Error::from)
+    } else {
+        None
+    };
+    Ok(BrowsePage {
+        cards: rows.into_iter().map(|(c, _)| c).collect(),
+        next,
+    })
+}
+
+/// Rebuild the full-text index from series and their source entries.
+///
+/// A full rebuild is a single statement and takes milliseconds at the
+/// 1-20-reader scale this app targets, so it runs at boot, after scans, at
+/// the end of each sync pass, and after admin catalog edits, instead of
+/// per-row triggers spread over every write path (KISS).
+pub fn rebuild_search_index(conn: &Connection) -> Result<(), Error> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM series_search", [])?;
+    tx.execute(
+        "INSERT INTO series_search (series_id, title, other_titles, authors, description)
+         SELECT s.id, s.title,
+                COALESCE(group_concat(DISTINCT m.title), ''),
+                COALESCE(group_concat(DISTINCT m.author), ''),
+                COALESCE(MAX(m.description), '')
+         FROM series s
+         LEFT JOIN manga m ON m.series_id = s.id
+         GROUP BY s.id",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// FTS5 query for user input: every word must match as a prefix. Quotes are
+/// doubled, so input cannot inject FTS operators.
+fn fts_query(q: &str) -> Option<String> {
+    let words: Vec<String> = q
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// Search series cards, best match first, at most `limit`.
+///
+/// Full-text search covers the title, every source's title for the series,
+/// authors and descriptions, with title hits weighted highest. Queries
+/// under 3 characters, or with no full-text hits, fall back to a substring
+/// match on the title (which also catches fragments inside words).
+pub fn search_series_cards(
+    conn: &Connection,
+    q: &str,
+    limit: i64,
+) -> Result<Vec<SeriesCard>, Error> {
+    let q = q.trim();
+    if q.chars().count() >= 3
+        && let Some(fts) = fts_query(q)
+    {
+        // bm25 weights per column: id 0, title 10, other titles 5,
+        // authors 2, description 1. Lower bm25 = better.
+        let sql = format!(
+            "{CARD_CTES},
+             hits AS (
+                 SELECT CAST(series_id AS INTEGER) AS series_id,
+                        bm25(series_search, 0.0, 10.0, 5.0, 2.0, 1.0) AS score
+                 FROM series_search WHERE series_search MATCH ?1
+             )
+             {CARD_FROM}
+             JOIN hits ON hits.series_id = s.id
+             WHERE s.hidden_at IS NULL
+             ORDER BY hits.score
+             LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let hits = stmt
+            .query_map(rusqlite::params![fts, limit], map_card)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !hits.is_empty() {
+            return Ok(hits.into_iter().map(|(c, _)| c).collect());
+        }
+    }
+    let sql = format!(
+        "{CARD_CTES} {CARD_FROM}
+         WHERE s.hidden_at IS NULL AND s.title LIKE ?1 ESCAPE '\\'
+         ORDER BY lower(s.title), s.id
+         LIMIT ?2"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![format!("%{}%", escape_like(q)), limit],
+            map_card,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().map(|(c, _)| c).collect())
 }
 
 /// Escape `LIKE` wildcards so user input matches literally (SQL `ESCAPE '\'`).
@@ -1988,7 +2160,9 @@ mod tests {
                 ("b", Some("full.jpg"), &[1.0, 2.0, 3.0]),
             ],
         );
-        let cards = list_series_cards(&conn, None).unwrap();
+        let cards = browse_series(&conn, BrowseSort::Title, None, 1000)
+            .unwrap()
+            .cards;
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].chapter_count, 3);
         assert_eq!(cards[0].cover_url.as_deref(), Some("full.jpg"));
@@ -2001,8 +2175,9 @@ mod tests {
         seed_series(&conn, "Zeta", &[("a", None, &[1.0])]);
         seed_series(&conn, "Empty", &[("a", None, &[])]);
         seed_series(&conn, "Beta", &[("a", None, &[1.0])]);
-        let titles: Vec<_> = list_series_cards(&conn, None)
+        let titles: Vec<_> = browse_series(&conn, BrowseSort::Title, None, 1000)
             .unwrap()
+            .cards
             .into_iter()
             .map(|c| c.title)
             .collect();
@@ -2011,14 +2186,88 @@ mod tests {
     }
 
     #[test]
-    fn series_card_search_treats_wildcards_literally() {
+    fn short_search_falls_back_to_literal_substring() {
         let conn = mem();
         seed_series(&conn, "100% Hero", &[("a", None, &[1.0])]);
         seed_series(&conn, "100 Heroes", &[("a", None, &[1.0])]);
-        let hits = list_series_cards(&conn, Some("100%")).unwrap();
+        rebuild_search_index(&conn).unwrap();
+        // Under 3 characters: substring match, wildcards literal.
+        let hits = search_series_cards(&conn, "0%", 50).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "100% Hero");
-        assert_eq!(list_series_cards(&conn, Some("hero")).unwrap().len(), 2);
+        // Full text ignores punctuation: both titles start with "100".
+        assert_eq!(search_series_cards(&conn, "100%", 50).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn full_text_search_weights_titles_and_covers_alt_titles() {
+        let conn = mem();
+        let a = seed_series(&conn, "Tower of God", &[("a", None, &[1.0])]);
+        let b = seed_series(&conn, "Dungeon Diary", &[("a", None, &[1.0])]);
+        conn.execute(
+            "UPDATE manga SET description = 'Climbing the tower is deadly', author = 'SIU' WHERE series_id = ?1",
+            [b],
+        )
+        .unwrap();
+        let c = seed_series(&conn, "Solo Leveling", &[("a", None, &[1.0])]);
+        conn.execute(
+            "UPDATE manga SET title = 'Only I Level Up' WHERE series_id = ?1",
+            [c],
+        )
+        .unwrap();
+        rebuild_search_index(&conn).unwrap();
+        let tower: Vec<i64> = search_series_cards(&conn, "tower", 10)
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(tower, [a, b], "title hit outranks description hit");
+        assert_eq!(
+            search_series_cards(&conn, "only i lev", 10).unwrap()[0].id,
+            c,
+            "alt title, prefix"
+        );
+        assert_eq!(
+            search_series_cards(&conn, "siu", 10).unwrap()[0].id,
+            b,
+            "author"
+        );
+        // FTS syntax in input is neutralized, not an error.
+        for evil in ["\"tower", "tower NEAR(", "AND OR NOT", "title:tower"] {
+            assert!(search_series_cards(&conn, evil, 10).is_ok(), "{evil}");
+        }
+    }
+
+    #[test]
+    fn browse_pages_by_keyset_for_every_sort() {
+        let conn = mem();
+        for t in ["Delta", "alpha", "Charlie", "bravo", "Echo"] {
+            seed_series(&conn, t, &[("a", None, &[1.0])]);
+        }
+        // Distinct update times: newest chapter belongs to the last seeded.
+        conn.execute(
+            "UPDATE chapters SET created_at = datetime('2026-01-01', '+' || id || ' minutes')",
+            [],
+        )
+        .unwrap();
+        for sort in [BrowseSort::Title, BrowseSort::Updated, BrowseSort::Added] {
+            let mut seen = Vec::new();
+            let mut after: Option<String> = None;
+            loop {
+                let page = browse_series(&conn, sort, after.as_deref(), 2).unwrap();
+                seen.extend(page.cards.iter().map(|c| c.title.clone()));
+                match page.next {
+                    Some(n) => after = Some(n),
+                    None => break,
+                }
+            }
+            let expected: Vec<&str> = match sort {
+                BrowseSort::Title => vec!["alpha", "bravo", "Charlie", "Delta", "Echo"],
+                _ => vec!["Echo", "bravo", "Charlie", "alpha", "Delta"],
+            };
+            assert_eq!(seen, expected, "{sort:?}");
+        }
+        assert!(browse_series(&conn, BrowseSort::Title, Some("garbage"), 2).is_ok());
     }
 
     fn new_user(email: &str, role: Role) -> NewUser {
@@ -2290,11 +2539,14 @@ mod tests {
         let a = seed_series(&conn, "Alpha", &[("a", Some("src.jpg"), &[1.0])]);
         let b = seed_series(&conn, "Beta", &[("a", None, &[1.0])]);
         set_series_cover(&conn, a, Some("mine.jpg")).unwrap();
-        let cards = list_series_cards(&conn, None).unwrap();
+        let cards = browse_series(&conn, BrowseSort::Title, None, 1000)
+            .unwrap()
+            .cards;
         assert_eq!(cards[0].cover_url.as_deref(), Some("mine.jpg"));
         set_series_hidden(&conn, b, Some("2026-10-14 00:00:00")).unwrap();
-        let titles: Vec<_> = list_series_cards(&conn, None)
+        let titles: Vec<_> = browse_series(&conn, BrowseSort::Title, None, 1000)
             .unwrap()
+            .cards
             .into_iter()
             .map(|c| c.title)
             .collect();
@@ -2310,7 +2562,13 @@ mod tests {
         let admin_rows = admin_list_series(&conn, None, 50).unwrap();
         assert_eq!(admin_rows.len(), 2, "admins still see hidden series");
         set_series_hidden(&conn, b, None).unwrap();
-        assert_eq!(list_series_cards(&conn, None).unwrap().len(), 2);
+        assert_eq!(
+            browse_series(&conn, BrowseSort::Title, None, 1000)
+                .unwrap()
+                .cards
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -2348,7 +2606,9 @@ mod tests {
             Err(Error::NotFound(_))
         ));
         assert_eq!(list_manga_by_series(&conn, keep).unwrap().len(), 2);
-        let cards = list_series_cards(&conn, None).unwrap();
+        let cards = browse_series(&conn, BrowseSort::Title, None, 1000)
+            .unwrap()
+            .cards;
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].chapter_count, 3);
         let bookmarks: i64 = conn

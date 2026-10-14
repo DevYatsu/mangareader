@@ -8,6 +8,9 @@ use std::sync::Arc;
 
 use crate::{AppState, auth::AuthUser, templates::content};
 
+/// Cards per browse page: divisible by 2, 3, 4 and 6 grid columns.
+const PAGE_SIZE: i64 = 48;
+
 fn chapter_badge(count: i64) -> String {
     if count == 1 {
         format!("{} Ch.", count)
@@ -239,11 +242,27 @@ pub async fn series_list(
     user: Option<AuthUser>,
 ) -> Html<String> {
     let search = query.get("q").map(|s| s.trim()).unwrap_or("");
+    let sort = mangaread_core::db::BrowseSort::from_param(
+        query.get("sort").map(String::as_str).unwrap_or(""),
+    );
+    let after = query.get("after").map(String::as_str);
     let db = state.db.lock().await;
-    let all_series =
-        mangaread_core::db::list_series_cards(&db, (!search.is_empty()).then_some(search))
-            .unwrap_or_default();
-    let cards: Vec<_> = all_series
+    // Search shows the 50 best matches; browsing pages through everything.
+    let (found, next) = if search.is_empty() {
+        let page = mangaread_core::db::browse_series(&db, sort, after, PAGE_SIZE).unwrap_or(
+            mangaread_core::db::BrowsePage {
+                cards: Vec::new(),
+                next: None,
+            },
+        );
+        (page.cards, page.next)
+    } else {
+        (
+            mangaread_core::db::search_series_cards(&db, search, 50).unwrap_or_default(),
+            None,
+        )
+    };
+    let cards: Vec<_> = found
         .iter()
         .map(|s| {
             let href = format!("/series/{}", s.id);
@@ -251,6 +270,14 @@ pub async fn series_list(
             content::manga_card(&href, &s.title, s.cover_url.as_deref(), Some(&badge))
         })
         .collect();
+    let sort_href = |s: mangaread_core::db::BrowseSort| format!("/series?sort={}", s.param());
+    let next_href = next.map(|n| {
+        let q = form_urlencoded::Serializer::new(String::new())
+            .append_pair("sort", sort.param())
+            .append_pair("after", &n)
+            .finish();
+        format!("/series?{q}")
+    });
 
     let content = html! {
         div class="box" {
@@ -259,9 +286,10 @@ pub async fn series_list(
                     h1 class="title is-2" { "Series" }
                 }
                 div class="level-right" {
-                    form class="field has-addons" action="/series" method="get" {
+                    form class="field has-addons" action="/series" method="get" role="search" {
                         div class="control" {
-                            input class="input" type="search" name="q" placeholder="Search series…" value=(search);
+                            input class="input" type="search" name="q" placeholder="Title, author, or alternate title" value=(search)
+                                aria-label="Search series";
                         }
                         div class="control" {
                             button class="button is-primary" type="submit" { "Search" }
@@ -269,19 +297,58 @@ pub async fn series_list(
                     }
                 }
             }
+            @if search.is_empty() {
+                div class="tabs is-toggle is-small" {
+                    ul {
+                        @for (s, label) in [
+                            (mangaread_core::db::BrowseSort::Updated, "Latest updates"),
+                            (mangaread_core::db::BrowseSort::Added, "New"),
+                            (mangaread_core::db::BrowseSort::Title, "A–Z"),
+                        ] {
+                            li class=[(s == sort).then_some("is-active")] {
+                                a href=(sort_href(s)) aria-current=[(s == sort).then_some("page")] { (label) }
+                            }
+                        }
+                    }
+                }
+            } @else {
+                p class="m-text-muted" {
+                    (found.len()) @if found.len() == 1 { " result" } @else { " results" }
+                    " for \"" (search) "\". "
+                    a href="/series" { "Clear search" }
+                }
+            }
         }
 
-        @if all_series.is_empty() {
+        @if found.is_empty() {
             @if search.is_empty() {
-                (content::empty_state(
-                    "No series synced yet. The background sync loop will fetch them.",
-                    true,
-                ))
+                @if after.is_some() {
+                    (content::empty_state("That's everything.", false))
+                } @else {
+                    (content::empty_state(
+                        "No series yet. New titles appear here as the library fills up.",
+                        true,
+                    ))
+                }
             } @else {
                 (content::empty_state(&format!("No series match \"{}\".", search), false))
             }
         } @else {
             (content::manga_grid(&cards))
+            @if after.is_some() || next_href.is_some() {
+                nav class="level mt-5" aria-label="Pages" {
+                    div class="level-left" {
+                        @if after.is_some() {
+                            a class="button is-light" href=(sort_href(sort)) { "First page" }
+                        }
+                    }
+                    div class="level-right" {
+                        @if let Some(href) = next_href {
+                            a class="button is-primary" href=(href) { "Next page" }
+                        }
+                    }
+                }
+            }
         }
     };
 
@@ -293,4 +360,68 @@ pub async fn series_list(
         user.as_ref(),
         content,
     )
+}
+
+#[cfg(test)]
+mod route_tests {
+    use crate::test_support::{TestApp, app_with_admin};
+    use axum::http::StatusCode;
+
+    /// `n` series, each with one chapter; later ids have newer chapters.
+    async fn seed(app: &TestApp, titles: &[&str]) {
+        let db = app.state.db.lock().await;
+        for (i, t) in titles.iter().enumerate() {
+            let sid = mangaread_core::db::insert_series(&db, t).unwrap();
+            db.execute(
+                "INSERT INTO manga (source, source_id, title, author, detail_url, series_id)
+                 VALUES ('a', ?1, ?1, 'Some Author', 'u', ?2)",
+                rusqlite::params![t, sid],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chapters (manga_id, source_id, number, url, created_at)
+                 VALUES (last_insert_rowid(), '1', 1, 'u', datetime('2026-01-01', ?1))",
+                [format!("+{i} minutes")],
+            )
+            .unwrap();
+        }
+        mangaread_core::db::rebuild_search_index(&db).unwrap();
+    }
+
+    #[tokio::test]
+    async fn default_sort_is_latest_updates_and_pages_follow() {
+        let (app, _) = app_with_admin().await;
+        let titles: Vec<String> = (0..50).map(|i| format!("Series {i:02}")).collect();
+        let refs: Vec<&str> = titles.iter().map(String::as_str).collect();
+        seed(&app, &refs).await;
+        let first = app.get("/series", None).await;
+        assert_eq!(first.status, StatusCode::OK);
+        let pos = |body: &str, t: &str| body.find(t).unwrap_or(usize::MAX);
+        assert!(
+            pos(&first.body, "Series 49") < pos(&first.body, "Series 48"),
+            "newest first"
+        );
+        assert!(!first.body.contains("Series 01"), "48 per page");
+        let next = first
+            .body
+            .split("href=\"")
+            .find_map(|s| s.split('"').next().filter(|h| h.contains("after=")))
+            .expect("next page link")
+            .replace("&amp;", "&");
+        let second = app.get(&next, None).await;
+        assert!(second.body.contains("Series 01") && second.body.contains("Series 00"));
+        assert!(second.body.contains("First page"));
+    }
+
+    #[tokio::test]
+    async fn search_uses_the_full_text_index() {
+        let (app, _) = app_with_admin().await;
+        seed(&app, &["Tower of God", "The Gamer"]).await;
+        let res = app.get("/series?q=some+author", None).await;
+        assert!(res.body.contains("2 results"));
+        let res = app.get("/series?q=towe", None).await;
+        assert!(res.body.contains("Tower of God") && !res.body.contains("The Gamer"));
+        let none = app.get("/series?q=zzzz", None).await;
+        assert!(none.body.contains("No series match"));
+    }
 }

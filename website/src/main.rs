@@ -332,6 +332,7 @@ async fn main() -> anyhow::Result<()> {
 
     let conn = db::open_db()?;
     db::init_db(&conn)?;
+    db::rebuild_search_index(&conn)?;
 
     let boot = crate::config::SiteConfig::from_env();
     tracing::info!(site_title = %boot.site_title, accent = %boot.accent, "boot defaults loaded");

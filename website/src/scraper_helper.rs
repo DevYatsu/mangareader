@@ -224,7 +224,19 @@ pub(crate) async fn run_job(job: Job) -> Result<usize, String> {
     if let Err(e) = mangaread_core::db::finish_sync_run(&db, run, recorded) {
         tracing::error!("could not record sync run {run}: {e}");
     }
+    // Scans add series; make them searchable right away.
+    if matches!(job, Job::Scan(_)) && outcome.is_ok() {
+        refresh_search_index(&db);
+    }
     outcome
+}
+
+/// Rebuild the search index, logging instead of failing: a stale index only
+/// costs search freshness until the next rebuild.
+pub(crate) fn refresh_search_index(db: &rusqlite::Connection) {
+    if let Err(e) = mangaread_core::db::rebuild_search_index(db) {
+        tracing::error!("search index rebuild failed: {e}");
+    }
 }
 
 // ── Public API ──
@@ -383,6 +395,9 @@ async fn run_pass(state: &Arc<AppState>) {
         }
     }
 
+    if let Ok(db) = open_db() {
+        refresh_search_index(&db);
+    }
     let mut p = state.auto_sync.lock().await;
     p.running = false;
     p.last_finished = Some(crate::auth::now_utc_string());

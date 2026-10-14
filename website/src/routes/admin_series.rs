@@ -345,6 +345,7 @@ pub async fn series_rename(
     let db = state.db.lock().await;
     let result = mangaread_core::db::rename_series(&db, id, title);
     if result.is_ok() {
+        crate::scraper_helper::refresh_search_index(&db);
         let _ = mangaread_core::db::insert_mod_log(
             &db,
             user.id,
@@ -440,6 +441,7 @@ pub async fn series_merge(
     let db = state.db.lock().await;
     match mangaread_core::db::merge_series(&db, id, form.into) {
         Ok(()) => {
+            crate::scraper_helper::refresh_search_index(&db);
             let _ = mangaread_core::db::insert_mod_log(
                 &db,
                 user.id,
@@ -471,6 +473,7 @@ pub async fn manga_split(
     let old = manga.series_id.unwrap_or(0);
     match mangaread_core::db::split_manga(&db, manga_id) {
         Ok(new_id) => {
+            crate::scraper_helper::refresh_search_index(&db);
             let _ = mangaread_core::db::insert_mod_log(
                 &db,
                 user.id,
