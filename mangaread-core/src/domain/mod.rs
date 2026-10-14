@@ -4,6 +4,7 @@
 //! `series` → `manga` → `chapter` → `page`.
 
 pub mod chapter;
+pub mod comment;
 pub mod manga;
 pub mod page;
 pub mod reader;
@@ -13,6 +14,7 @@ pub mod title;
 pub mod user;
 
 pub use chapter::*;
+pub use comment::*;
 pub use manga::*;
 pub use page::*;
 pub use reader::*;

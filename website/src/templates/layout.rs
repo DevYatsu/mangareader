@@ -14,6 +14,7 @@ pub enum Nav {
     Series,
     Bookmarks,
     Admin,
+    Moderation,
     None,
 }
 
@@ -89,6 +90,9 @@ pub fn base_layout(
                             a class=(nav.class(Nav::Series)) href="/series" { "Series" }
                             a class=(nav.class(Nav::Bookmarks)) href="/bookmarks" { "Bookmarks" }
                             @if let Some(u) = user {
+                                @if u.role.at_least(&Role::Moderator) {
+                                    a class=(nav.class(Nav::Moderation)) href="/mod/reports" { "Moderation" }
+                                }
                                 @if u.role == Role::Admin {
                                     a class=(nav.class(Nav::Admin)) href="/admin" { "Admin" }
                                 }
@@ -227,6 +231,7 @@ pub fn reader_layout(
             script src="/static/app.js" {}
             script src="/static/auth.js" {}
             script src="/static/reader.js" defer {}
+            script src="/static/comments.js" defer {}
             (PreEscaped("</body>"))
         }
     }

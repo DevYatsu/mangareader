@@ -214,6 +214,19 @@ pub fn app(state: Arc<AppState>) -> Router {
             "/admin/users/{id}/reset-link",
             post(crate::routes::admin::user_reset_link),
         )
+        .route("/mod/reports", get(crate::routes::moderation::reports_page))
+        .route(
+            "/mod/comments/{id}/hide",
+            post(crate::routes::moderation::hide),
+        )
+        .route(
+            "/mod/comments/{id}/dismiss",
+            post(crate::routes::moderation::dismiss),
+        )
+        .route(
+            "/mod/users/{id}/mute",
+            post(crate::routes::moderation::mute),
+        )
         .route("/terms", get(crate::routes::legal::terms))
         .route("/privacy", get(crate::routes::legal::privacy))
         .route("/source/{source}", get(crate::routes::source::source_list))
@@ -254,6 +267,30 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route(
             "/api/notes",
             get(crate::routes::notes::list_notes).post(crate::routes::notes::create_note),
+        )
+        .route(
+            "/api/comments",
+            get(crate::routes::comments::list).post(crate::routes::comments::create),
+        )
+        .route(
+            "/api/comments/{id}/edit",
+            post(crate::routes::comments::edit),
+        )
+        .route(
+            "/api/comments/{id}/delete",
+            post(crate::routes::comments::delete),
+        )
+        .route(
+            "/api/comments/{id}/report",
+            post(crate::routes::comments::report),
+        )
+        .route(
+            "/api/comments/{id}/hide",
+            post(crate::routes::comments::hide),
+        )
+        .route(
+            "/api/comments/{id}/restore",
+            post(crate::routes::comments::restore),
         )
         .route("/health", get(crate::routes::health::health))
         .route(

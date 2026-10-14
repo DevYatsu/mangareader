@@ -148,4 +148,21 @@ impl TestApp {
         }
         self.send(req.body(Body::from(body)).unwrap()).await
     }
+
+    /// POST a JSON body (as the reader's fetch calls do).
+    pub async fn post_json(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        cookie: Option<&str>,
+    ) -> Res {
+        let mut req = Request::post(path)
+            .header(header::ACCEPT, "application/json")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(c) = cookie {
+            req = req.header(header::COOKIE, c);
+        }
+        self.send(req.body(Body::from(body.to_string())).unwrap())
+            .await
+    }
 }

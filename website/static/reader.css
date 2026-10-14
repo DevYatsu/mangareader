@@ -2178,3 +2178,146 @@ body.reader-page #reader-images {
     max-height: none;
   }
 }
+
+/* ── Chapter comments ──
+   Strip: an inline section after the chapter. Paged layouts: a bottom sheet
+   above the fixed tap zones (z-index 50) and below the notes panel (210),
+   shown with `.is-open` from the end-of-chapter overlay. */
+.reader-comments {
+  position: relative;
+  z-index: 60;
+  width: calc(100% - 2rem);
+  max-width: var(--r-max-w, 700px);
+  margin: 1.5rem auto 4rem;
+  color: var(--r-chrome-fg, #ffffff);
+}
+
+.reader-comments-inner {
+  padding: 1rem;
+  background: var(--r-surface, rgba(18, 18, 18, 0.96));
+  border: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.14));
+  border-radius: 12px;
+}
+
+.reader-comments .title,
+.reader-comments .label {
+  color: inherit;
+}
+
+.reader-comments-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.reader-comments-head .title {
+  margin-bottom: 0;
+}
+
+/* The close button only means something for the sheet. */
+body[data-r-layout="strip"] .reader-comments-close {
+  display: none;
+}
+
+body:not([data-r-layout="strip"]) .reader-comments {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 200;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  transform: translateY(100%);
+  visibility: hidden;
+  transition: transform var(--m-dur, 200ms) var(--m-ease, ease), visibility 0s linear var(--m-dur, 200ms);
+}
+
+body:not([data-r-layout="strip"]) .reader-comments.is-open {
+  transform: none;
+  visibility: visible;
+  transition: transform var(--m-dur, 200ms) var(--m-ease, ease);
+}
+
+body:not([data-r-layout="strip"]) .reader-comments-inner {
+  max-width: var(--r-max-w, 700px);
+  max-height: 80dvh;
+  margin: 0 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-end-start-radius: 0;
+  border-end-end-radius: 0;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.reader-comments-list,
+.reader-comment-root,
+.reader-comment-replies {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.reader-comment-thread {
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--r-chrome-border, rgba(255, 255, 255, 0.08));
+}
+
+.reader-comment-replies {
+  margin-inline-start: 1rem;
+  padding-inline-start: 0.75rem;
+  border-inline-start: 2px solid var(--r-chrome-border, rgba(255, 255, 255, 0.1));
+}
+
+.reader-comment-replies .reader-comment {
+  padding-top: 0.5rem;
+}
+
+.reader-comment-meta {
+  margin-bottom: 0.25rem;
+}
+
+.reader-comment-body p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Spoilers stay unreadable until revealed; the reveal button sits on top. */
+.reader-comment-body.is-spoiler {
+  position: relative;
+}
+
+.reader-comment-body.is-spoiler p {
+  filter: blur(6px);
+  user-select: none;
+}
+
+.reader-comment-reveal {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: max-content;
+  height: max-content;
+  z-index: 1;
+}
+
+.reader-comment-actions .button {
+  padding-inline: 0.4rem;
+  color: var(--r-chrome-muted, rgba(255, 255, 255, 0.65));
+}
+
+.reader-comment-inline {
+  margin-top: 0.5rem;
+}
+
+.reader-comments-more {
+  margin-top: 0.75rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body:not([data-r-layout="strip"]) .reader-comments,
+  body:not([data-r-layout="strip"]) .reader-comments.is-open {
+    transition: none;
+  }
+}

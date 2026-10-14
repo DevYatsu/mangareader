@@ -4,9 +4,11 @@
 //! - `home`:    landing page with stats and recent chapters
 //! - `series`:  series listing and detail pages
 //! - `manga`:   manga-to-series redirect logic
+//! - `moderation`: report queue, hide/dismiss, comment mutes (moderators)
 //! - `reader`:  chapter reading interface
 //! - `source`:  per-source manga listing
 //! - `check`:   lightweight API endpoints for sync polling
+//! - `comments`: chapter comment JSON API (read, post, edit, report, hide)
 //! - `health`:   liveness probe for Docker
 //! - `api`:     sync management, progress tracking
 //! - `bookmarks`: client-side bookmark page
@@ -26,10 +28,12 @@ pub mod api;
 pub mod auth_pages;
 pub mod bookmarks;
 pub mod check;
+pub mod comments;
 pub mod health;
 pub mod home;
 pub mod legal;
 pub mod manga;
+pub mod moderation;
 pub mod notes;
 pub mod oauth;
 pub mod password_reset;

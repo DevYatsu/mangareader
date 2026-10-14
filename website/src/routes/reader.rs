@@ -295,6 +295,13 @@ pub async fn chapter_reader(
         Some(u) => mangaread_core::db::list_notes(&db, u.id, chapter.id).unwrap_or_default(),
         None => Vec::new(),
     };
+    // Comment count for the end-of-chapter button; the list loads lazily.
+    let comment_count = manga
+        .series_id
+        .map(|sid| {
+            mangaread_core::db::count_visible_comments(&db, sid, chapter.number).unwrap_or(0)
+        })
+        .unwrap_or(0);
 
     let prev_url = prev_chapter.map(|c| format!("/read/{}/{}", manga_id, c.id));
     let next_url = next_chapter.map(|c| format!("/read/{}/{}", manga_id, c.id));
@@ -529,6 +536,11 @@ if(++a>=20)clearInterval(iv)
                         span class="button is-small reader-nav-btn disabled" { "First Chapter" }
                     }
                     a href=(back_url) class="button is-small reader-nav-btn secondary" { "Series Page" }
+                    @if manga.series_id.is_some() {
+                        button class="button is-small reader-nav-btn secondary" type="button" data-comments-open {
+                            "Comments (" span data-comments-count { (comment_count) } ")"
+                        }
+                    }
                     @if let Some(next) = next_chapter {
                         a href={"/read/"(manga_id)"/"(next.id)} class="button is-small reader-nav-btn" {
                             "Ch. " (next.number)
@@ -555,6 +567,45 @@ if(++a>=20)clearInterval(iv)
                         button class="button is-small is-ghost reader-nextup-prefetch" type="button"
                             data-prefetch-state="idle" aria-label="Warm up chapter" {}
                     }
+                }
+            }
+        }
+
+        // ── Chapter comments ──
+        // Inline below the chapter in `strip`; a bottom sheet above the tap
+        // zones in paged layouts, opened from the end-of-chapter overlay.
+        // `comments.js` fills the list lazily from `/api/comments`.
+        @if let Some(series_id) = manga.series_id {
+            section id="chapter-comments" class="reader-comments" aria-labelledby="chapter-comments-title"
+                data-series-id=(series_id) data-chapter-number=(chapter.number)
+                data-logged-in=(if user.is_some() { "1" } else { "0" }) {
+                div class="reader-comments-inner" {
+                    div class="reader-comments-head" {
+                        h2 id="chapter-comments-title" class="title is-5" {
+                            "Comments " span class="tag is-light" data-comments-count { (comment_count) }
+                        }
+                        button class="delete reader-comments-close" type="button" aria-label="Close comments" {}
+                    }
+                    @if user.is_some() {
+                        form class="reader-comment-form" data-comment-form {
+                            textarea class="textarea" name="body" rows="3" maxlength=(crate::routes::comments::MAX_COMMENT_CHARS)
+                                placeholder="Share your thoughts on this chapter" aria-label="Write a comment" required {}
+                            div class="level is-mobile mt-2" {
+                                label class="checkbox is-size-7" {
+                                    input type="checkbox" name="spoiler";
+                                    " Contains spoilers"
+                                }
+                                button class="button is-primary is-small" type="submit" { "Post" }
+                            }
+                        }
+                    } @else {
+                        p class="reader-comments-login" {
+                            a href="/login" { "Log in" } " or " a href="/register" { "sign up" } " to join the discussion."
+                        }
+                    }
+                    p class="reader-comments-status is-size-7" role="status" aria-live="polite" {}
+                    ol class="reader-comments-list" {}
+                    button class="button is-small is-fullwidth reader-comments-more" type="button" hidden { "Load older comments" }
                 }
             }
         }

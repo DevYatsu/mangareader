@@ -194,6 +194,10 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
     if !has_column(conn, "users", "banned_at")? {
         conn.execute_batch("ALTER TABLE users ADD COLUMN banned_at TEXT")?;
     }
+    // Comment mute: the user can read and log in but not post until then.
+    if !has_column(conn, "users", "muted_until")? {
+        conn.execute_batch("ALTER TABLE users ADD COLUMN muted_until TEXT")?;
+    }
     // `editor` was the pre-2026-10 name of the moderator rank.
     conn.execute_batch(
         "UPDATE users SET role = 'moderator' WHERE role = 'editor';
@@ -227,7 +231,33 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
             items INTEGER,
             error TEXT
          );
-         CREATE INDEX IF NOT EXISTS idx_sync_runs_source ON sync_runs(source, id);",
+         CREATE INDEX IF NOT EXISTS idx_sync_runs_source ON sync_runs(source, id);
+         CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+            chapter_number REAL NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE,
+            body TEXT NOT NULL,
+            spoiler INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            edited_at TEXT,
+            hidden_at TEXT,
+            hidden_by INTEGER REFERENCES users(id),
+            deleted_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_comments_thread
+            ON comments(series_id, chapter_number, parent_id, id);
+         CREATE TABLE IF NOT EXISTS comment_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+            reporter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved_by INTEGER REFERENCES users(id),
+            resolved_at TEXT,
+            UNIQUE(comment_id, reporter_id)
+         );",
     )?;
     Ok(())
 }
@@ -867,6 +897,11 @@ pub fn merge_series(conn: &Connection, from: i64, into: i64) -> Result<(), Error
         "DELETE FROM bookmarks WHERE series_id = ?1",
         rusqlite::params![from],
     )?;
+    // Before the series row goes: `ON DELETE CASCADE` would drop them.
+    tx.execute(
+        "UPDATE comments SET series_id = ?2 WHERE series_id = ?1",
+        rusqlite::params![from, into],
+    )?;
     tx.execute("DELETE FROM series WHERE id = ?1", rusqlite::params![from])?;
     tx.commit()?;
     Ok(())
@@ -893,6 +928,287 @@ pub fn split_manga(conn: &Connection, manga_id: i64) -> Result<i64, Error> {
     link_manga_to_series(&tx, manga_id, new_id)?;
     tx.commit()?;
     Ok(new_id)
+}
+
+// ── Comments ──
+
+const COMMENT_COLUMNS: &str = "c.id, c.series_id, c.chapter_number, c.user_id, u.name, c.parent_id,
+     c.body, c.spoiler, c.created_at, c.edited_at, c.hidden_at, c.deleted_at";
+
+fn map_comment(row: &rusqlite::Row) -> rusqlite::Result<Comment> {
+    Ok(Comment {
+        id: row.get(0)?,
+        series_id: row.get(1)?,
+        chapter_number: row.get(2)?,
+        user_id: row.get(3)?,
+        author: row.get(4)?,
+        parent_id: row.get(5)?,
+        body: row.get(6)?,
+        spoiler: row.get::<_, i64>(7)? != 0,
+        created_at: row.get(8)?,
+        edited_at: row.get(9)?,
+        hidden_at: row.get(10)?,
+        deleted_at: row.get(11)?,
+    })
+}
+
+/// One comment by id.
+pub fn get_comment(conn: &Connection, id: i64) -> Result<Comment, Error> {
+    conn.query_row(
+        &format!("SELECT {COMMENT_COLUMNS} FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?1"),
+        rusqlite::params![id],
+        map_comment,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("comment id={id}")),
+        other => other.into(),
+    })
+}
+
+/// Post a comment. A reply to a reply attaches to the top-level parent, so
+/// threads stay one level deep. The parent must be in the same chapter
+/// discussion and not deleted (`Conflict` otherwise).
+pub fn create_comment(conn: &Connection, c: &NewComment) -> Result<i64, Error> {
+    let parent_id = match c.parent_id {
+        None => None,
+        Some(pid) => {
+            let parent = get_comment(conn, pid)?;
+            if parent.series_id != c.series_id
+                || parent.chapter_number != c.chapter_number
+                || parent.deleted_at.is_some()
+            {
+                return Err(Error::Conflict("cannot reply to that comment".into()));
+            }
+            Some(parent.parent_id.unwrap_or(parent.id))
+        }
+    };
+    conn.execute(
+        "INSERT INTO comments (series_id, chapter_number, user_id, parent_id, body, spoiler)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            c.series_id,
+            c.chapter_number,
+            c.user_id,
+            parent_id,
+            c.body,
+            c.spoiler as i64
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// A page of a chapter discussion: up to `limit` top-level comments older
+/// than `before` (newest first), plus every reply to them (oldest first).
+/// Raw rows: the caller decides what each viewer may see.
+pub fn list_comment_page(
+    conn: &Connection,
+    series_id: i64,
+    chapter_number: f64,
+    before: Option<i64>,
+    limit: i64,
+) -> Result<(Vec<Comment>, Vec<Comment>), Error> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COMMENT_COLUMNS} FROM comments c JOIN users u ON u.id = c.user_id
+         WHERE c.series_id = ?1 AND c.chapter_number = ?2 AND c.parent_id IS NULL
+           AND (?3 IS NULL OR c.id < ?3)
+         ORDER BY c.id DESC
+         LIMIT ?4"
+    ))?;
+    let tops = stmt
+        .query_map(
+            rusqlite::params![series_id, chapter_number, before, limit],
+            map_comment,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let ids: Vec<i64> = tops.iter().map(|c| c.id).collect();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COMMENT_COLUMNS} FROM comments c JOIN users u ON u.id = c.user_id
+         WHERE c.parent_id IN (SELECT value FROM json_each(?1))
+         ORDER BY c.id ASC"
+    ))?;
+    let replies = stmt
+        .query_map(
+            rusqlite::params![serde_json::to_string(&ids).unwrap_or_else(|_| "[]".into())],
+            map_comment,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok((tops, replies))
+}
+
+/// A readable chapter row for `(series, number)`: `(manga_id, chapter_id)`.
+/// `None` when the series has no such chapter, so nobody can open
+/// discussions on chapters that do not exist.
+pub fn find_chapter_in_series(
+    conn: &Connection,
+    series_id: i64,
+    chapter_number: f64,
+) -> Result<Option<(i64, i64)>, Error> {
+    match conn.query_row(
+        "SELECT m.id, c.id FROM chapters c JOIN manga m ON m.id = c.manga_id
+         WHERE m.series_id = ?1 AND c.number = ?2
+         ORDER BY c.id LIMIT 1",
+        rusqlite::params![series_id, chapter_number],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ) {
+        Ok(pair) => Ok(Some(pair)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Comments readers can see in a chapter discussion (not hidden, not deleted).
+pub fn count_visible_comments(
+    conn: &Connection,
+    series_id: i64,
+    chapter_number: f64,
+) -> Result<i64, Error> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM comments
+         WHERE series_id = ?1 AND chapter_number = ?2 AND hidden_at IS NULL AND deleted_at IS NULL",
+        rusqlite::params![series_id, chapter_number],
+        |row| row.get(0),
+    )?)
+}
+
+/// Edit one's own live comment. `NotFound` when it is not the author's or
+/// is deleted or hidden, so nobody can probe other users' comments.
+pub fn edit_comment(conn: &Connection, id: i64, user_id: i64, body: &str) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE comments SET body = ?3, edited_at = datetime('now')
+         WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL AND hidden_at IS NULL",
+        rusqlite::params![id, user_id, body],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("comment id={id}")));
+    }
+    Ok(())
+}
+
+/// Delete one's own comment (soft: replies keep their place under "[deleted]").
+pub fn delete_comment(conn: &Connection, id: i64, user_id: i64) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE comments SET deleted_at = datetime('now')
+         WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL",
+        rusqlite::params![id, user_id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("comment id={id}")));
+    }
+    Ok(())
+}
+
+/// Hide (moderator) or restore a comment. Hiding resolves its open reports.
+pub fn set_comment_hidden(conn: &Connection, id: i64, by: i64, hidden: bool) -> Result<(), Error> {
+    let tx = conn.unchecked_transaction()?;
+    let n = if hidden {
+        tx.execute(
+            "UPDATE comments SET hidden_at = datetime('now'), hidden_by = ?2 WHERE id = ?1",
+            rusqlite::params![id, by],
+        )?
+    } else {
+        tx.execute(
+            "UPDATE comments SET hidden_at = NULL, hidden_by = NULL WHERE id = ?1",
+            rusqlite::params![id],
+        )?
+    };
+    if n == 0 {
+        return Err(Error::NotFound(format!("comment id={id}")));
+    }
+    if hidden {
+        resolve_reports(&tx, id, by)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Report a comment. Reporting the same comment twice is a no-op, so one
+/// user cannot inflate the count. Authors cannot report themselves.
+pub fn report_comment(
+    conn: &Connection,
+    id: i64,
+    reporter: i64,
+    reason: &str,
+) -> Result<(), Error> {
+    let comment = get_comment(conn, id)?;
+    if comment.user_id == reporter {
+        return Err(Error::Conflict("cannot report your own comment".into()));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO comment_reports (comment_id, reporter_id, reason) VALUES (?1, ?2, ?3)",
+        rusqlite::params![id, reporter, reason],
+    )?;
+    Ok(())
+}
+
+/// Close every open report on a comment.
+pub fn resolve_reports(conn: &Connection, comment_id: i64, by: i64) -> Result<usize, Error> {
+    Ok(conn.execute(
+        "UPDATE comment_reports SET resolved_by = ?2, resolved_at = datetime('now')
+         WHERE comment_id = ?1 AND resolved_at IS NULL",
+        rusqlite::params![comment_id, by],
+    )?)
+}
+
+/// The moderation queue: comments with open reports, most-reported first.
+pub fn list_open_reports(conn: &Connection, limit: i64) -> Result<Vec<ReportGroup>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT r.comment_id, COUNT(*), MIN(r.created_at),
+                COALESCE(json_group_array(DISTINCT NULLIF(r.reason, '')), '[]'),
+                s.title
+         FROM comment_reports r
+         JOIN comments c ON c.id = r.comment_id
+         JOIN series s ON s.id = c.series_id
+         WHERE r.resolved_at IS NULL
+         GROUP BY r.comment_id
+         ORDER BY COUNT(*) DESC, MIN(r.created_at) ASC
+         LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![limit], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (comment_id, count, first, reasons_json, series_title) in rows {
+        let reasons: Vec<Option<String>> = serde_json::from_str(&reasons_json).unwrap_or_default();
+        out.push(ReportGroup {
+            comment: get_comment(conn, comment_id)?,
+            series_title,
+            report_count: count,
+            reasons: reasons.into_iter().flatten().collect(),
+            first_reported_at: first,
+        });
+    }
+    Ok(out)
+}
+
+/// Mute a user from commenting until `until` (`None` lifts the mute).
+pub fn set_user_muted(conn: &Connection, user_id: i64, until: Option<&str>) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE users SET muted_until = ?2 WHERE id = ?1",
+        rusqlite::params![user_id, until],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("user id={user_id}")));
+    }
+    Ok(())
+}
+
+/// When the user's comment mute ends, if it is still in force at `now`.
+pub fn muted_until(conn: &Connection, user_id: i64, now: &str) -> Result<Option<String>, Error> {
+    Ok(conn
+        .query_row(
+            "SELECT muted_until FROM users WHERE id = ?1 AND muted_until > ?2",
+            rusqlite::params![user_id, now],
+            |row| row.get(0),
+        )
+        .ok())
 }
 
 // ── Sync runs (admin visibility into scraping) ──
@@ -2091,6 +2407,122 @@ mod tests {
             ensure_manga_linked(&conn, "Mixed", entries[1].id).unwrap(),
             new_id
         );
+    }
+
+    fn comment(series_id: i64, user_id: i64, parent_id: Option<i64>, body: &str) -> NewComment {
+        NewComment {
+            series_id,
+            chapter_number: 12.0,
+            user_id,
+            parent_id,
+            body: body.into(),
+            spoiler: false,
+        }
+    }
+
+    #[test]
+    fn replies_flatten_to_one_level_and_pages_by_keyset() {
+        let conn = mem();
+        let s = insert_series(&conn, "S").unwrap();
+        let u = create_user(&conn, &new_user("u@x.io", Role::Member)).unwrap();
+        let top = create_comment(&conn, &comment(s, u, None, "first")).unwrap();
+        let reply = create_comment(&conn, &comment(s, u, Some(top), "reply")).unwrap();
+        let nested = create_comment(&conn, &comment(s, u, Some(reply), "nested")).unwrap();
+        assert_eq!(get_comment(&conn, nested).unwrap().parent_id, Some(top));
+        let second = create_comment(&conn, &comment(s, u, None, "second")).unwrap();
+
+        let (tops, replies) = list_comment_page(&conn, s, 12.0, None, 1).unwrap();
+        assert_eq!(tops.iter().map(|c| c.id).collect::<Vec<_>>(), [second]);
+        assert!(replies.is_empty());
+        let (tops, replies) = list_comment_page(&conn, s, 12.0, Some(second), 10).unwrap();
+        assert_eq!(tops.iter().map(|c| c.id).collect::<Vec<_>>(), [top]);
+        assert_eq!(
+            replies.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [reply, nested]
+        );
+        assert_eq!(tops[0].author, "u");
+        // Other chapters are separate discussions.
+        assert!(
+            list_comment_page(&conn, s, 13.0, None, 10)
+                .unwrap()
+                .0
+                .is_empty()
+        );
+        let mut elsewhere = comment(s, u, Some(top), "x");
+        elsewhere.chapter_number = 13.0;
+        assert!(matches!(
+            create_comment(&conn, &elsewhere),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn only_authors_edit_or_delete_and_counts_skip_removed() {
+        let conn = mem();
+        let s = insert_series(&conn, "S").unwrap();
+        let a = create_user(&conn, &new_user("a@x.io", Role::Member)).unwrap();
+        let b = create_user(&conn, &new_user("b@x.io", Role::Member)).unwrap();
+        let c1 = create_comment(&conn, &comment(s, a, None, "one")).unwrap();
+        let c2 = create_comment(&conn, &comment(s, a, None, "two")).unwrap();
+        assert!(matches!(
+            edit_comment(&conn, c1, b, "hijack"),
+            Err(Error::NotFound(_))
+        ));
+        edit_comment(&conn, c1, a, "one!").unwrap();
+        assert!(get_comment(&conn, c1).unwrap().edited_at.is_some());
+        assert!(matches!(
+            delete_comment(&conn, c2, b),
+            Err(Error::NotFound(_))
+        ));
+        delete_comment(&conn, c2, a).unwrap();
+        assert_eq!(count_visible_comments(&conn, s, 12.0).unwrap(), 1);
+        set_comment_hidden(&conn, c1, b, true).unwrap();
+        assert_eq!(count_visible_comments(&conn, s, 12.0).unwrap(), 0);
+        assert!(matches!(
+            edit_comment(&conn, c1, a, "sneaky"),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn reports_dedupe_group_and_resolve_on_hide() {
+        let conn = mem();
+        let s = insert_series(&conn, "Series T").unwrap();
+        let a = create_user(&conn, &new_user("a@x.io", Role::Member)).unwrap();
+        let b = create_user(&conn, &new_user("b@x.io", Role::Member)).unwrap();
+        let m = create_user(&conn, &new_user("m@x.io", Role::Moderator)).unwrap();
+        let c = create_comment(&conn, &comment(s, a, None, "rude")).unwrap();
+        assert!(matches!(
+            report_comment(&conn, c, a, ""),
+            Err(Error::Conflict(_))
+        ));
+        report_comment(&conn, c, b, "spam").unwrap();
+        report_comment(&conn, c, b, "again").unwrap();
+        report_comment(&conn, c, m, "").unwrap();
+        let q = list_open_reports(&conn, 10).unwrap();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].report_count, 2);
+        assert_eq!(q[0].reasons, ["spam"]);
+        assert_eq!(q[0].series_title, "Series T");
+        set_comment_hidden(&conn, c, m, true).unwrap();
+        assert!(list_open_reports(&conn, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mute_expires_and_merge_keeps_comments() {
+        let conn = mem();
+        let u = create_user(&conn, &new_user("u@x.io", Role::Member)).unwrap();
+        let now = "2026-10-14 12:00:00";
+        assert_eq!(muted_until(&conn, u, now).unwrap(), None);
+        set_user_muted(&conn, u, Some("2026-10-15 12:00:00")).unwrap();
+        assert!(muted_until(&conn, u, now).unwrap().is_some());
+        assert_eq!(muted_until(&conn, u, "2026-10-16 00:00:00").unwrap(), None);
+
+        let keep = insert_series(&conn, "Keep").unwrap();
+        let dup = insert_series(&conn, "Dup").unwrap();
+        let c = create_comment(&conn, &comment(dup, u, None, "hi")).unwrap();
+        merge_series(&conn, dup, keep).unwrap();
+        assert_eq!(get_comment(&conn, c).unwrap().series_id, keep);
     }
 
     #[test]
