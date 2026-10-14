@@ -103,56 +103,16 @@ pub async fn sync_manga(
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("bg sync rt");
         rt.block_on(async move {
-            tracing::info!("api sync: manga {} starting...", id);
-
-            let engine = crate::scraper_helper::build_engine();
-
-            let driver = match crate::scraper_helper::create_webdriver(
-                crate::scraper_helper::build_chrome_caps(),
-            )
-            .await
-            {
-                Ok(d) => d,
-                Err(e) => {
-                    *state_clone.sync_error.lock().await = Some(format!("WebDriver error: {e}"));
-                    state_clone
-                        .syncing_manga_ids
-                        .lock()
-                        .await
-                        .retain(|&x| x != id);
-                    return;
-                }
-            };
-
-            let db = match crate::scraper_helper::open_db() {
-                Ok(db) => db,
-                Err(e) => {
-                    *state_clone.sync_error.lock().await = Some(format!("DB error: {e}"));
-                    state_clone
-                        .syncing_manga_ids
-                        .lock()
-                        .await
-                        .retain(|&x| x != id);
-                    let _ = driver.quit().await;
-                    return;
-                }
-            };
-
-            if let Err(e) = engine.sync_manga(&driver, &db, id).await {
+            let job = crate::scraper_helper::Job::Manga(id);
+            if let Err(e) = crate::scraper_helper::run_job(job).await {
                 *state_clone.sync_error.lock().await =
                     Some(format!("Sync failed for manga {id}: {e}"));
             }
-
-            if let Err(e) = driver.quit().await {
-                tracing::warn!("api sync: driver quit error: {:?}", e);
-            }
-
             state_clone
                 .syncing_manga_ids
                 .lock()
                 .await
                 .retain(|&x| x != id);
-            tracing::info!("api sync: manga {} complete", id);
         });
     });
 

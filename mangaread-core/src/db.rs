@@ -179,6 +179,12 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
     if !has_reader_prefs {
         conn.execute_batch("ALTER TABLE users ADD COLUMN reader_prefs TEXT NOT NULL DEFAULT '{}'")?;
     }
+    // Set when an admin renames a series, so syncs stop overwriting it.
+    if !has_column(conn, "series", "title_locked")? {
+        conn.execute_batch(
+            "ALTER TABLE series ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
     if !has_column(conn, "users", "banned_at")? {
         conn.execute_batch("ALTER TABLE users ADD COLUMN banned_at TEXT")?;
     }
@@ -203,7 +209,19 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
             used_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
          );
-         CREATE INDEX IF NOT EXISTS idx_email_tokens_email ON email_tokens(email, purpose);",
+         CREATE INDEX IF NOT EXISTS idx_email_tokens_email ON email_tokens(email, purpose);
+         CREATE TABLE IF NOT EXISTS sync_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            target_id INTEGER,
+            started_at TEXT NOT NULL DEFAULT (datetime('now')),
+            finished_at TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            items INTEGER,
+            error TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_sync_runs_source ON sync_runs(source, id);",
     )?;
     Ok(())
 }
@@ -515,6 +533,23 @@ pub fn link_manga_to_series(conn: &Connection, manga_id: i64, series_id: i64) ->
     Ok(())
 }
 
+/// Link a manga to a series by title only if it has none yet. Returns the
+/// manga's series id either way.
+///
+/// Scans call this on every pass. Relinking an already-linked manga would
+/// undo an admin's manual merge or split, so existing links are kept.
+pub fn ensure_manga_linked(conn: &Connection, title: &str, manga_id: i64) -> Result<i64, Error> {
+    let current: Option<i64> = conn.query_row(
+        "SELECT series_id FROM manga WHERE id = ?1",
+        rusqlite::params![manga_id],
+        |row| row.get(0),
+    )?;
+    match current {
+        Some(sid) => Ok(sid),
+        None => ensure_manga_in_series(conn, title, manga_id),
+    }
+}
+
 /// Try to find or create a series for this manga, then link it.
 /// Returns the series id.
 pub fn ensure_manga_in_series(conn: &Connection, title: &str, manga_id: i64) -> Result<i64, Error> {
@@ -524,9 +559,10 @@ pub fn ensure_manga_in_series(conn: &Connection, title: &str, manga_id: i64) -> 
 }
 
 /// Update the series title (e.g. with a clean detail-page title after sync).
+/// A no-op for series an admin renamed (`title_locked`).
 pub fn update_series_title(conn: &Connection, series_id: i64, title: &str) -> Result<(), Error> {
     conn.execute(
-        "UPDATE series SET title = ?1 WHERE id = ?2 AND title != ?1",
+        "UPDATE series SET title = ?1 WHERE id = ?2 AND title != ?1 AND title_locked = 0",
         rusqlite::params![title, series_id],
     )?;
     Ok(())
@@ -679,10 +715,11 @@ pub fn list_manga_ids_needing_sync(
     stale_minutes: i64,
 ) -> Result<Vec<i64>, Error> {
     let mut stmt = conn.prepare(
+        // `NOT EXISTS`, not a join: a join returned a stale manga once per
+        // chapter, so one pass could re-sync the same manga up to 50 times.
         "SELECT m.id
          FROM manga m
-         LEFT JOIN chapters c ON c.manga_id = m.id
-         WHERE c.id IS NULL
+         WHERE NOT EXISTS (SELECT 1 FROM chapters c WHERE c.manga_id = m.id)
             OR m.chapters_synced_at IS NULL
             OR m.chapters_synced_at < datetime('now', ?1)
          ORDER BY m.chapters_synced_at IS NOT NULL, m.chapters_synced_at ASC
@@ -712,6 +749,182 @@ fn map_page_row(row: &rusqlite::Row) -> rusqlite::Result<Page> {
         image_url: row.get(3)?,
         downloaded: row.get::<_, i32>(4)? != 0,
     })
+}
+
+// ── Sync runs (admin visibility into scraping) ──
+
+/// What a sync run did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncKind {
+    /// Discover manga listings on one source.
+    Scan,
+    /// Fetch one manga's metadata and chapter list.
+    Manga,
+    /// Fetch one chapter's page URLs.
+    Chapter,
+}
+
+impl SyncKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SyncKind::Scan => "scan",
+            SyncKind::Manga => "manga",
+            SyncKind::Chapter => "chapter",
+        }
+    }
+}
+
+/// One row of `sync_runs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncRun {
+    pub id: i64,
+    pub source: String,
+    pub kind: String,
+    pub target_id: Option<i64>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    /// `running`, `ok`, or `failed`.
+    pub status: String,
+    pub items: Option<i64>,
+    pub error: Option<String>,
+}
+
+/// Open a run in `running` state and return its id.
+pub fn start_sync_run(
+    conn: &Connection,
+    source: &str,
+    kind: SyncKind,
+    target_id: Option<i64>,
+) -> Result<i64, Error> {
+    conn.execute(
+        "INSERT INTO sync_runs (source, kind, target_id) VALUES (?1, ?2, ?3)",
+        rusqlite::params![source, kind.as_str(), target_id],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Close a run: `Ok(items)` marks it `ok`, `Err(message)` marks it `failed`.
+pub fn finish_sync_run(
+    conn: &Connection,
+    run_id: i64,
+    outcome: Result<i64, &str>,
+) -> Result<(), Error> {
+    let (status, items, error) = match outcome {
+        Ok(n) => ("ok", Some(n), None),
+        Err(e) => ("failed", None, Some(e)),
+    };
+    conn.execute(
+        "UPDATE sync_runs SET status = ?2, items = ?3, error = ?4, finished_at = datetime('now')
+         WHERE id = ?1",
+        rusqlite::params![run_id, status, items, error],
+    )?;
+    Ok(())
+}
+
+/// On boot, runs still marked `running` were cut off by a restart.
+pub fn fail_interrupted_sync_runs(conn: &Connection) -> Result<usize, Error> {
+    Ok(conn.execute(
+        "UPDATE sync_runs SET status = 'failed', error = 'interrupted by restart',
+                finished_at = datetime('now')
+         WHERE status = 'running'",
+        [],
+    )?)
+}
+
+/// Delete finished runs older than `days`.
+pub fn prune_sync_runs(conn: &Connection, days: i64) -> Result<usize, Error> {
+    Ok(conn.execute(
+        "DELETE FROM sync_runs WHERE status != 'running' AND started_at < datetime('now', ?1)",
+        rusqlite::params![format!("-{days} days")],
+    )?)
+}
+
+/// Most recent runs, newest first, optionally only failures.
+pub fn list_sync_runs(
+    conn: &Connection,
+    failed_only: bool,
+    limit: i64,
+) -> Result<Vec<SyncRun>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source, kind, target_id, started_at, finished_at, status, items, error
+         FROM sync_runs
+         WHERE ?1 = 0 OR status = 'failed'
+         ORDER BY id DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![failed_only as i64, limit], map_sync_run)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
+/// One run by id.
+pub fn get_sync_run(conn: &Connection, id: i64) -> Result<SyncRun, Error> {
+    conn.query_row(
+        "SELECT id, source, kind, target_id, started_at, finished_at, status, items, error
+         FROM sync_runs WHERE id = ?1",
+        rusqlite::params![id],
+        map_sync_run,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("sync run id={id}")),
+        other => other.into(),
+    })
+}
+
+fn map_sync_run(row: &rusqlite::Row) -> rusqlite::Result<SyncRun> {
+    Ok(SyncRun {
+        id: row.get(0)?,
+        source: row.get(1)?,
+        kind: row.get(2)?,
+        target_id: row.get(3)?,
+        started_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        status: row.get(6)?,
+        items: row.get(7)?,
+        error: row.get(8)?,
+    })
+}
+
+/// Health of one source, derived from its sync runs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SourceHealth {
+    pub last_success: Option<String>,
+    pub last_failure: Option<String>,
+    /// Failed runs since the last successful one.
+    pub failure_streak: i64,
+    /// Error of the newest failed run, when it is newer than the last success.
+    pub last_error: Option<String>,
+    /// Manga rows discovered on this source.
+    pub manga_count: i64,
+}
+
+/// Health for one source. Unknown sources yield the default (never run).
+pub fn source_health(conn: &Connection, source: &str) -> Result<SourceHealth, Error> {
+    Ok(conn.query_row(
+        "WITH last_ok AS (
+             SELECT MAX(id) AS id FROM sync_runs WHERE source = ?1 AND status = 'ok'
+         )
+         SELECT
+             (SELECT finished_at FROM sync_runs WHERE id = (SELECT id FROM last_ok)),
+             (SELECT finished_at FROM sync_runs WHERE source = ?1 AND status = 'failed'
+                ORDER BY id DESC LIMIT 1),
+             (SELECT COUNT(*) FROM sync_runs WHERE source = ?1 AND status = 'failed'
+                AND id > COALESCE((SELECT id FROM last_ok), 0)),
+             (SELECT error FROM sync_runs WHERE source = ?1 AND status = 'failed'
+                AND id > COALESCE((SELECT id FROM last_ok), 0)
+                ORDER BY id DESC LIMIT 1),
+             (SELECT COUNT(*) FROM manga WHERE source = ?1)",
+        rusqlite::params![source],
+        |row| {
+            Ok(SourceHealth {
+                last_success: row.get(0)?,
+                last_failure: row.get(1)?,
+                failure_streak: row.get(2)?,
+                last_error: row.get(3)?,
+                manga_count: row.get(4)?,
+            })
+        },
+    )?)
 }
 
 // ── Identity (users, sessions, bookmarks, progress, history, notes) ──
@@ -1550,6 +1763,87 @@ mod tests {
         assert_eq!(
             peek_email_token(&conn, "late", TokenPurpose::Reset, now).unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn sync_run_lifecycle_and_health_streak() {
+        let conn = mem();
+        assert_eq!(source_health(&conn, "a").unwrap(), SourceHealth::default());
+        let r1 = start_sync_run(&conn, "a", SyncKind::Scan, None).unwrap();
+        finish_sync_run(&conn, r1, Ok(12)).unwrap();
+        let r2 = start_sync_run(&conn, "a", SyncKind::Manga, Some(7)).unwrap();
+        finish_sync_run(&conn, r2, Err("timeout")).unwrap();
+        let r3 = start_sync_run(&conn, "a", SyncKind::Manga, Some(8)).unwrap();
+        finish_sync_run(&conn, r3, Err("404")).unwrap();
+        let h = source_health(&conn, "a").unwrap();
+        assert!(h.last_success.is_some());
+        assert_eq!(h.failure_streak, 2);
+        assert_eq!(h.last_error.as_deref(), Some("404"));
+        // A success resets the streak and clears the shown error.
+        let r4 = start_sync_run(&conn, "a", SyncKind::Scan, None).unwrap();
+        finish_sync_run(&conn, r4, Ok(3)).unwrap();
+        let h = source_health(&conn, "a").unwrap();
+        assert_eq!(h.failure_streak, 0);
+        assert_eq!(h.last_error, None);
+        assert!(h.last_failure.is_some(), "history keeps the old failure");
+        let failed = list_sync_runs(&conn, true, 10).unwrap();
+        assert_eq!(failed.iter().map(|r| r.id).collect::<Vec<_>>(), [r3, r2]);
+        assert_eq!(get_sync_run(&conn, r2).unwrap().target_id, Some(7));
+    }
+
+    #[test]
+    fn interrupted_runs_fail_on_boot_and_old_runs_prune() {
+        let conn = mem();
+        let r = start_sync_run(&conn, "a", SyncKind::Scan, None).unwrap();
+        assert_eq!(fail_interrupted_sync_runs(&conn).unwrap(), 1);
+        let run = get_sync_run(&conn, r).unwrap();
+        assert_eq!(run.status, "failed");
+        assert_eq!(run.error.as_deref(), Some("interrupted by restart"));
+        conn.execute(
+            "UPDATE sync_runs SET started_at = datetime('now', '-40 days')",
+            [],
+        )
+        .unwrap();
+        start_sync_run(&conn, "a", SyncKind::Scan, None).unwrap();
+        assert_eq!(
+            prune_sync_runs(&conn, 30).unwrap(),
+            1,
+            "running rows are kept"
+        );
+    }
+
+    #[test]
+    fn stale_manga_ids_are_distinct() {
+        let conn = mem();
+        seed_series(&conn, "Many", &[("a", None, &[1.0, 2.0, 3.0])]);
+        let ids = list_manga_ids_needing_sync(&conn, 120).unwrap();
+        assert_eq!(ids.len(), 1);
+    }
+
+    #[test]
+    fn scan_keeps_manual_links_and_renames_stick() {
+        let conn = mem();
+        let target = insert_series(&conn, "Manual Pick").unwrap();
+        seed_series(&conn, "Solo Leveling", &[("a", None, &[1.0])]);
+        let mid: i64 = conn
+            .query_row(
+                "SELECT id FROM manga WHERE title = 'Solo Leveling'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        link_manga_to_series(&conn, mid, target).unwrap();
+        assert_eq!(
+            ensure_manga_linked(&conn, "Solo Leveling", mid).unwrap(),
+            target
+        );
+        conn.execute("UPDATE series SET title_locked = 1 WHERE id = ?1", [target])
+            .unwrap();
+        update_series_title(&conn, target, "Scraped Title").unwrap();
+        assert_eq!(
+            get_series_by_id(&conn, target).unwrap().title,
+            "Manual Pick"
         );
     }
 

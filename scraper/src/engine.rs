@@ -37,45 +37,87 @@ impl ScraperEngine {
         self.adapters.push(adapter);
     }
 
-    /// Run [`discover_manga`](SiteAdapter::discover_manga) for every registered adapter
-    /// and upsert discovered manga into the database.
+    /// An engine over the given adapters (usually [`crate::adapters::all`],
+    /// minus any the admin disabled).
+    pub fn from_adapters(adapters: Vec<Box<dyn SiteAdapter>>) -> Self {
+        Self { adapters }
+    }
+
+    /// Names of the registered sources, in scan order.
+    pub fn source_names(&self) -> Vec<String> {
+        self.adapters
+            .iter()
+            .map(|a| a.source_name().to_string())
+            .collect()
+    }
+
+    /// Scan every registered source independently.
     ///
-    /// Each manga is also auto-linked to a series by its normalized title.
-    ///
-    /// # Arguments
-    /// * `driver` — Shared Selenium WebDriver.
-    /// * `db` — SQLite connection to persist results into.
-    pub async fn scan_all(&self, driver: &WebDriver, db: &Connection) -> anyhow::Result<()> {
+    /// Returns one `(source, result)` per adapter. A failing source no longer
+    /// stops the sources after it from being scanned.
+    pub async fn scan_all(
+        &self,
+        driver: &WebDriver,
+        db: &Connection,
+    ) -> Vec<(String, anyhow::Result<usize>)> {
+        let mut results = Vec::with_capacity(self.adapters.len());
         for adapter in &self.adapters {
-            let source = adapter.source_name();
-            tracing::info!("scanning {source} for manga...");
-
-            let listings = adapter.discover_manga(driver).await?;
-            tracing::info!("found {} manga on {source}", listings.len());
-
-            for listing in listings {
-                tracing::debug!(
-                    "saving manga: \"{}\" ({})",
-                    listing.title,
-                    listing.detail_url
-                );
-                let new_manga = NewManga {
-                    source: source.to_string(),
-                    source_id: listing.detail_url.clone(),
-                    title: listing.title.clone(),
-                    author: None,
-                    cover_url: listing.cover_url,
-                    description: None,
-                    detail_url: listing.detail_url,
-                    series_id: None,
-                };
-                let id = db::insert_manga(db, &new_manga)?;
-                // Auto-link to a series by normalized title
-                db::ensure_manga_in_series(db, &listing.title, id)?;
-                tracing::debug!("saved manga id={} \"{}\"", id, new_manga.title);
+            let source = adapter.source_name().to_string();
+            let result = Self::scan_adapter(adapter.as_ref(), driver, db).await;
+            if let Err(e) = &result {
+                tracing::error!("scan of {source} failed: {e:#}");
             }
+            results.push((source, result));
         }
-        Ok(())
+        results
+    }
+
+    /// Scan one source by name. Errors when no such adapter is registered.
+    pub async fn scan_source(
+        &self,
+        source: &str,
+        driver: &WebDriver,
+        db: &Connection,
+    ) -> anyhow::Result<usize> {
+        let adapter = self
+            .adapters
+            .iter()
+            .find(|a| a.source_name() == source)
+            .ok_or_else(|| anyhow::anyhow!("no adapter for source {source}"))?;
+        Self::scan_adapter(adapter.as_ref(), driver, db).await
+    }
+
+    /// Discover listings on one adapter and upsert them. Returns how many
+    /// listings were found.
+    ///
+    /// New manga are linked to a series by normalized title. Manga that
+    /// already have a series keep it, so admin merges and splits survive.
+    async fn scan_adapter(
+        adapter: &dyn SiteAdapter,
+        driver: &WebDriver,
+        db: &Connection,
+    ) -> anyhow::Result<usize> {
+        let source = adapter.source_name();
+        tracing::info!("scanning {source} for manga...");
+        let listings = adapter.discover_manga(driver).await?;
+        let found = listings.len();
+        tracing::info!("found {found} manga on {source}");
+        for listing in listings {
+            let new_manga = NewManga {
+                source: source.to_string(),
+                source_id: listing.detail_url.clone(),
+                title: listing.title.clone(),
+                author: None,
+                cover_url: listing.cover_url,
+                description: None,
+                detail_url: listing.detail_url,
+                series_id: None,
+            };
+            let id = db::insert_manga(db, &new_manga)?;
+            db::ensure_manga_linked(db, &listing.title, id)?;
+            tracing::debug!("saved manga id={} \"{}\"", id, new_manga.title);
+        }
+        Ok(found)
     }
 
     /// Visit a manga's detail page and upsert its chapters into the database.
@@ -95,7 +137,7 @@ impl ScraperEngine {
         driver: &WebDriver,
         db: &Connection,
         manga_id: i64,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<usize> {
         let manga = db::get_manga_by_id(db, manga_id)?;
 
         let adapter = self
@@ -154,7 +196,7 @@ impl ScraperEngine {
         db::update_series_title(db, series_id, &info.title)?;
 
         tracing::info!("synced {chapter_count} chapters for manga {manga_id}",);
-        Ok(())
+        Ok(chapter_count)
     }
 
     /// Visit a chapter's reader page and upsert its page image URLs into the database.
@@ -172,7 +214,7 @@ impl ScraperEngine {
         driver: &WebDriver,
         db: &Connection,
         chapter_id: i64,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<usize> {
         let chapter = db::get_chapter_by_id(db, chapter_id)?;
         let manga = db::get_manga_by_id(db, chapter.manga_id)?;
 
@@ -211,6 +253,6 @@ impl ScraperEngine {
             page_urls.len(),
             chapter_id
         );
-        Ok(())
+        Ok(page_urls.len())
     }
 }

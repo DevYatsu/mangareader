@@ -18,7 +18,6 @@ use axum::{
     routing::{get, post},
 };
 use mangaread_core::db;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower_http::compression::CompressionLayer;
@@ -33,21 +32,8 @@ pub struct SyncProgress {
     pub total: i64,
     /// How many we have synced so far.
     pub current: i64,
-}
-
-/// Current health status of a single source adapter.
-#[derive(Clone)]
-pub struct AdapterHealth {
-    /// Adapter / source name (e.g. "demonicscans").
-    pub source: String,
-    /// Whether the adapter is currently considered healthy.
-    pub healthy: bool,
-    /// Number of consecutive failures since last success.
-    pub consecutive_failures: u32,
-    /// Timestamp of the last sync attempt.
-    pub last_attempt: String,
-    /// Error message from the most recent failure, if any.
-    pub last_error: Option<String>,
+    /// When the last full pass finished (UTC, SQLite format).
+    pub last_finished: Option<String>,
 }
 
 /// Shared application state.
@@ -65,8 +51,8 @@ pub struct AppState {
     pub syncing_manga_ids: Mutex<Vec<i64>>,
     /// Progress of the automatic sequential sync loop.
     pub auto_sync: Mutex<SyncProgress>,
-    /// Per-source adapter health (keyed by source name).
-    pub adapter_health: Mutex<HashMap<String, AdapterHealth>>,
+    /// Wakes the sync loop early ("Run full sync now").
+    pub sync_wake: tokio::sync::Notify,
     /// One-time token required by `/setup` while the instance has no users.
     /// `None` once setup is complete (or was never needed).
     pub setup_token: Mutex<Option<String>>,
@@ -87,29 +73,9 @@ impl AppState {
                 running: false,
                 total: 0,
                 current: 0,
+                last_finished: None,
             }),
-            adapter_health: Mutex::new(HashMap::from([
-                (
-                    "demonicscans".into(),
-                    AdapterHealth {
-                        source: "demonicscans".into(),
-                        healthy: true,
-                        consecutive_failures: 0,
-                        last_attempt: "never".into(),
-                        last_error: None,
-                    },
-                ),
-                (
-                    "manhuaplus".into(),
-                    AdapterHealth {
-                        source: "manhuaplus".into(),
-                        healthy: true,
-                        consecutive_failures: 0,
-                        last_attempt: "never".into(),
-                        last_error: None,
-                    },
-                ),
-            ])),
+            sync_wake: tokio::sync::Notify::new(),
             setup_token: Mutex::new(None),
             mailer: Arc::new(crate::email::SmtpMailer),
             rate_limiter: crate::rate_limit::RateLimiter::default(),

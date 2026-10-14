@@ -1,6 +1,5 @@
 use clap::{Parser, Subcommand};
 use mangaread_core::db;
-use scraper::adapters::demonicscans::DemonicscansAdapter;
 use scraper::engine::ScraperEngine;
 use thirtyfour::prelude::*;
 use tracing_subscriber;
@@ -39,25 +38,28 @@ async fn main() -> anyhow::Result<()> {
     let conn = db::open_db()?;
     db::init_db(&conn)?;
 
-    let mut engine = ScraperEngine::new();
-    engine.add_adapter(Box::new(DemonicscansAdapter));
-    engine.add_adapter(Box::new(scraper::adapters::manhuaplus::ManhuaplusAdapter));
+    let engine = ScraperEngine::from_adapters(scraper::adapters::all());
 
     match cli.command {
         Commands::Scan => {
-            engine.scan_all(&driver, &conn).await?;
+            for (source, result) in engine.scan_all(&driver, &conn).await {
+                match result {
+                    Ok(n) => tracing::info!("{source}: {n} listings"),
+                    Err(e) => tracing::error!("{source}: scan failed: {e:#}"),
+                }
+            }
             let count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM manga", [], |row| row.get(0))
                 .unwrap_or(0);
             tracing::info!("scan complete. {} manga in database.", count);
         }
         Commands::SyncManga { id } => {
-            engine.sync_manga(&driver, &conn, id).await?;
-            tracing::info!("manga {} synced.", id);
+            let n = engine.sync_manga(&driver, &conn, id).await?;
+            tracing::info!("manga {} synced ({n} chapters).", id);
         }
         Commands::SyncChapter { id } => {
-            engine.sync_chapter(&driver, &conn, id).await?;
-            tracing::info!("chapter {} synced.", id);
+            let n = engine.sync_chapter(&driver, &conn, id).await?;
+            tracing::info!("chapter {} synced ({n} pages).", id);
         }
     }
 

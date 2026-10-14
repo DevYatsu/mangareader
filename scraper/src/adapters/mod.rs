@@ -7,3 +7,15 @@
 pub mod demonicscans;
 pub mod helpers;
 pub mod manhuaplus;
+
+use crate::adapter::SiteAdapter;
+
+/// Every built-in source, in scan order. This is the only registry: the
+/// server, the CLI, and the admin source list all read it, so adding a
+/// source is one line here.
+pub fn all() -> Vec<Box<dyn SiteAdapter>> {
+    vec![
+        Box::new(demonicscans::DemonicscansAdapter),
+        Box::new(manhuaplus::ManhuaplusAdapter),
+    ]
+}
