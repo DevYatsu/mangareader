@@ -57,21 +57,8 @@ fn relative_time(dt: &str) -> String {
 
 /// GET `/` — render the landing page.
 pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) -> Html<String> {
-    let banner = {
-        let p = state.auto_sync.lock().await;
-        if p.running && p.total > 0 {
-            let pct = p.current * 100 / p.total;
-            Some(format!(
-                "Syncing series\u{2026} {} of {} ({}%)",
-                p.current, p.total, pct
-            ))
-        } else {
-            None
-        }
-    };
-
     let db = state.db.lock().await;
-    let series_count = mangaread_core::db::count_manga_with_chapters(&db).unwrap_or(0);
+    let series_count = mangaread_core::db::count_series_with_chapters(&db).unwrap_or(0);
     let chapter_count: i64 = db
         .query_row("SELECT COUNT(*) FROM chapters", [], |row| row.get(0))
         .unwrap_or(0);
@@ -164,17 +151,11 @@ pub async fn home(State(state): State<Arc<AppState>>, user: Option<AuthUser>) ->
     };
 
     let cfg = crate::config::site_config(&db);
-    let css = cfg.theme_overrides();
-    Html(
-        crate::templates::layout::base_layout(
-            "Home",
-            content,
-            banner.as_deref(),
-            &css,
-            &cfg.site_title,
-            user.as_ref(),
-            crate::templates::layout::Nav::Home,
-        )
-        .0,
+    crate::templates::layout::page(
+        &cfg,
+        "Home",
+        crate::templates::layout::Nav::Home,
+        user.as_ref(),
+        content,
     )
 }

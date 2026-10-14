@@ -377,41 +377,71 @@ pub fn find_or_create_series(conn: &Connection, title: &str) -> Result<i64, Erro
     insert_series(conn, &display)
 }
 
-/// List all series with their manga entries and total chapter count.
-pub fn list_all_series(conn: &Connection) -> Result<Vec<SeriesWithManga>, Error> {
-    let mut stmt = conn.prepare(
-        "SELECT s.id, s.title, s.created_at,
-                COALESCE(ch.cnt, 0) AS ch_count
-         FROM series s
-         LEFT JOIN (
-             SELECT m.series_id, COUNT(*) AS cnt
-             FROM chapters c
-             JOIN manga m ON m.id = c.manga_id
-             GROUP BY m.series_id
-         ) ch ON ch.series_id = s.id
-         ORDER BY s.title",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        let series = Series {
+/// List series cards for the grid in one query, optionally filtered by a
+/// title substring. Series without chapters are excluded.
+///
+/// The cost is constant in round trips regardless of library size: the
+/// previous implementation loaded every manga entry and every chapter list
+/// per series just to pick a cover and count chapters.
+///
+/// Search results are capped at 50, matching the previous behavior.
+pub fn list_series_cards(
+    conn: &Connection,
+    search: Option<&str>,
+) -> Result<Vec<SeriesCard>, Error> {
+    // `ROW_NUMBER()` picks one cover per series: the manga with the most
+    // chapters wins, and the lowest id breaks ties deterministically.
+    let sql = "
+        WITH per_manga AS (
+            SELECT m.id, m.series_id, m.cover_url, COUNT(c.id) AS cnt
+            FROM manga m
+            LEFT JOIN chapters c ON c.manga_id = m.id
+            WHERE m.series_id IS NOT NULL
+            GROUP BY m.id
+        ),
+        covers AS (
+            SELECT series_id, cover_url,
+                   ROW_NUMBER() OVER (PARTITION BY series_id ORDER BY cnt DESC, id ASC) AS rn
+            FROM per_manga
+        ),
+        counts AS (
+            SELECT m.series_id, COUNT(DISTINCT c.number) AS n
+            FROM chapters c
+            JOIN manga m ON m.id = c.manga_id
+            GROUP BY m.series_id
+        )
+        SELECT s.id, s.title, cv.cover_url, counts.n
+        FROM series s
+        JOIN counts ON counts.series_id = s.id
+        LEFT JOIN covers cv ON cv.series_id = s.id AND cv.rn = 1
+        WHERE ?1 IS NULL OR s.title LIKE ?1 ESCAPE '\\'
+        ORDER BY s.title
+        LIMIT ?2";
+    let pattern = search.map(|q| format!("%{}%", escape_like(q)));
+    let limit: i64 = if search.is_some() { 50 } else { -1 };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(rusqlite::params![pattern, limit], |row| {
+        Ok(SeriesCard {
             id: row.get(0)?,
             title: row.get(1)?,
-            created_at: row.get(2)?,
-        };
-        let total_chapters: i64 = row.get(3)?;
-        Ok((series, total_chapters))
+            cover_url: row.get(2)?,
+            chapter_count: row.get(3)?,
+        })
     })?;
-    let mut result = Vec::new();
-    for row in rows {
-        let (series, total_chapters) = row?;
-        // Fetch manga entries for this series
-        let manga_entries = list_manga_by_series(conn, series.id)?;
-        result.push(SeriesWithManga {
-            series,
-            manga_entries,
-            total_chapters,
-        });
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
+/// Escape `LIKE` wildcards so user input matches literally (SQL `ESCAPE '\'`).
+fn escape_like(q: &str) -> String {
+    let mut out = String::with_capacity(q.len());
+    for ch in q.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
     }
-    Ok(result)
+    out
 }
 
 /// Get all manga entries linked to a series.
@@ -460,45 +490,6 @@ pub fn update_series_title(conn: &Connection, series_id: i64, title: &str) -> Re
         rusqlite::params![title, series_id],
     )?;
     Ok(())
-}
-
-/// Search series by title (LIKE %query%).
-pub fn search_series(conn: &Connection, query: &str) -> Result<Vec<SeriesWithManga>, Error> {
-    let pattern = format!("%{}%", query);
-    let mut stmt = conn.prepare(
-        "SELECT s.id, s.title, s.created_at,
-                COALESCE(ch.cnt, 0) AS ch_count
-         FROM series s
-         LEFT JOIN (
-             SELECT m.series_id, COUNT(*) AS cnt
-             FROM chapters c
-             JOIN manga m ON m.id = c.manga_id
-             GROUP BY m.series_id
-         ) ch ON ch.series_id = s.id
-         WHERE s.title LIKE ?1
-         ORDER BY s.title
-         LIMIT 50",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![pattern], |row| {
-        let series = Series {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            created_at: row.get(2)?,
-        };
-        let total_chapters: i64 = row.get(3)?;
-        Ok((series, total_chapters))
-    })?;
-    let mut result = Vec::new();
-    for row in rows {
-        let (series, total_chapters) = row?;
-        let manga_entries = list_manga_by_series(conn, series.id)?;
-        result.push(SeriesWithManga {
-            series,
-            manga_entries,
-            total_chapters,
-        });
-    }
-    Ok(result)
 }
 
 /// Get the most recently scraped chapters with their series info.
@@ -627,10 +618,10 @@ pub fn list_manga_ids_with_zero_chapters(conn: &Connection) -> Result<Vec<i64>, 
         .map_err(Error::from)
 }
 
-/// Get the total count of manga that have chapters synced.
-pub fn count_manga_with_chapters(conn: &Connection) -> Result<i64, Error> {
+/// Count series with at least one chapter. A series with two sources counts once.
+pub fn count_series_with_chapters(conn: &Connection) -> Result<i64, Error> {
     let count: i64 = conn.query_row(
-        "SELECT COUNT(DISTINCT m.id)
+        "SELECT COUNT(DISTINCT m.series_id)
          FROM manga m
          JOIN chapters c ON c.manga_id = m.id",
         [],
@@ -1093,6 +1084,77 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_db(&conn).unwrap();
         conn
+    }
+
+    /// Seed one series with manga entries; each entry is
+    /// `(source, cover, chapter numbers)`. Returns the series id.
+    fn seed_series(
+        conn: &Connection,
+        title: &str,
+        entries: &[(&str, Option<&str>, &[f64])],
+    ) -> i64 {
+        let sid = insert_series(conn, title).unwrap();
+        for (source, cover, numbers) in entries {
+            conn.execute(
+                "INSERT INTO manga (source, source_id, title, cover_url, detail_url, series_id)
+                 VALUES (?1, ?2, ?2, ?3, 'u', ?4)",
+                rusqlite::params![source, title, cover, sid],
+            )
+            .unwrap();
+            let mid = conn.last_insert_rowid();
+            for n in *numbers {
+                conn.execute(
+                    "INSERT INTO chapters (manga_id, source_id, number, url) VALUES (?1, ?2, ?3, 'u')",
+                    rusqlite::params![mid, n.to_string(), n],
+                )
+                .unwrap();
+            }
+        }
+        sid
+    }
+
+    #[test]
+    fn series_cards_count_shared_chapters_once_and_pick_fullest_cover() {
+        let conn = mem();
+        seed_series(
+            &conn,
+            "Alpha",
+            &[
+                ("a", Some("small.jpg"), &[1.0, 2.0]),
+                ("b", Some("full.jpg"), &[1.0, 2.0, 3.0]),
+            ],
+        );
+        let cards = list_series_cards(&conn, None).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].chapter_count, 3);
+        assert_eq!(cards[0].cover_url.as_deref(), Some("full.jpg"));
+        assert_eq!(count_series_with_chapters(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn series_cards_exclude_empty_series_and_sort_by_title() {
+        let conn = mem();
+        seed_series(&conn, "Zeta", &[("a", None, &[1.0])]);
+        seed_series(&conn, "Empty", &[("a", None, &[])]);
+        seed_series(&conn, "Beta", &[("a", None, &[1.0])]);
+        let titles: Vec<_> = list_series_cards(&conn, None)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.title)
+            .collect();
+        assert_eq!(titles, ["Beta", "Zeta"]);
+        assert_eq!(count_series_with_chapters(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn series_card_search_treats_wildcards_literally() {
+        let conn = mem();
+        seed_series(&conn, "100% Hero", &[("a", None, &[1.0])]);
+        seed_series(&conn, "100 Heroes", &[("a", None, &[1.0])]);
+        let hits = list_series_cards(&conn, Some("100%")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "100% Hero");
+        assert_eq!(list_series_cards(&conn, Some("hero")).unwrap().len(), 2);
     }
 
     #[test]

@@ -68,19 +68,12 @@ fn page(
     content: maud::Markup,
     user: Option<&AuthUser>,
 ) -> Html<String> {
-    let banner: Option<String> = None;
-    let css = cfg.theme_overrides();
-    Html(
-        crate::templates::layout::base_layout(
-            title,
-            content,
-            banner.as_deref(),
-            &css,
-            &cfg.site_title,
-            user,
-            crate::templates::layout::Nav::None,
-        )
-        .0,
+    crate::templates::layout::page(
+        cfg,
+        title,
+        crate::templates::layout::Nav::None,
+        user,
+        content,
     )
 }
 

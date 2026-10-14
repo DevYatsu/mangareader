@@ -30,17 +30,12 @@ fn page(
     content: maud::Markup,
     user: Option<&AuthUser>,
 ) -> Html<String> {
-    Html(
-        crate::templates::layout::base_layout(
-            title,
-            content,
-            None,
-            &cfg.theme_overrides(),
-            &cfg.site_title,
-            user,
-            crate::templates::layout::Nav::None,
-        )
-        .0,
+    crate::templates::layout::page(
+        cfg,
+        title,
+        crate::templates::layout::Nav::None,
+        user,
+        content,
     )
 }
 

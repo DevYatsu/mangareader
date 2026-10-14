@@ -440,35 +440,3 @@ ul#recent-chapters {
 .m-footer {
   padding: 2.5rem 1.5rem 3rem;
 }
-
-/* The sync banner is a Bulma notification; this keeps it out of normal flow
-   so it never shifts the navbar. */
-.sync-banner {
-  margin-bottom: 0;
-  border-radius: 0;
-}
-
-.sync-banner-spinner {
-  display: inline-block;
-  width: 0.75rem;
-  height: 0.75rem;
-  margin-right: 0.5rem;
-  border: 2px solid currentColor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  vertical-align: -0.1em;
-  animation: m-spin 0.7s linear infinite;
-}
-
-@keyframes m-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* Respect the OS reduced-motion preference for our own animation. */
-@media (prefers-reduced-motion: reduce) {
-  .sync-banner-spinner {
-    animation: none;
-  }
-}

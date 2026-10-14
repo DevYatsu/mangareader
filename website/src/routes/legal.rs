@@ -1,6 +1,6 @@
 //! Public legal pages (`/terms`, `/privacy`).
 //!
-//! Both render the admin-edited plain text in the standard `base_layout`
+//! Both render the admin-edited plain text in the standard page shell
 //! shell (the shared document shell with header and footer).
 //! Maud escapes the text, so stored markup never renders as HTML.
 
@@ -40,19 +40,12 @@ async fn legal_page(
             .unwrap_or_else(|| fallback.to_string());
         (crate::config::site_config(&db), text)
     };
-    let banner: Option<String> = None;
-    let css = cfg.theme_overrides();
-    Html(
-        crate::templates::layout::base_layout(
-            title,
-            legal_content(heading, &body),
-            banner.as_deref(),
-            &css,
-            &cfg.site_title,
-            user,
-            crate::templates::layout::Nav::None,
-        )
-        .0,
+    crate::templates::layout::page(
+        &cfg,
+        title,
+        crate::templates::layout::Nav::None,
+        user,
+        legal_content(heading, &body),
     )
 }
 

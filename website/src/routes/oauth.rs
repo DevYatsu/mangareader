@@ -3,7 +3,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
-    response::{AppendHeaders, Html, IntoResponse, Response},
+    response::{AppendHeaders, IntoResponse, Response},
 };
 use mangaread_core::domain::{NewUser, Role};
 use serde::Deserialize;
@@ -38,17 +38,12 @@ fn state_cookie_with_secure(value: &str, max_age_secs: i64, secure: bool) -> Str
 fn error_page(cfg: &crate::config::SiteConfig, msg: &str, user: Option<&AuthUser>) -> Response {
     (
         StatusCode::BAD_REQUEST,
-        Html(
-            crate::templates::layout::base_layout(
-                "Login",
-                crate::templates::layout::error_content("Login failed", msg),
-                None,
-                &cfg.theme_overrides(),
-                &cfg.site_title,
-                user,
-                crate::templates::layout::Nav::None,
-            )
-            .0,
+        crate::templates::layout::page(
+            cfg,
+            "Login",
+            crate::templates::layout::Nav::None,
+            user,
+            crate::templates::layout::error_content("Login failed", msg),
         ),
     )
         .into_response()

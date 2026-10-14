@@ -64,19 +64,12 @@ fn current_profile(conn: &rusqlite::Connection, user_id: i64) -> CurrentProfile 
 }
 
 fn page(cfg: &crate::config::SiteConfig, content: Markup, user: Option<&AuthUser>) -> Html<String> {
-    let banner: Option<String> = None;
-    let css = cfg.theme_overrides();
-    Html(
-        crate::templates::layout::base_layout(
-            "Settings",
-            content,
-            banner.as_deref(),
-            &css,
-            &cfg.site_title,
-            user,
-            crate::templates::layout::Nav::None,
-        )
-        .0,
+    crate::templates::layout::page(
+        cfg,
+        "Settings",
+        crate::templates::layout::Nav::None,
+        user,
+        content,
     )
 }
 

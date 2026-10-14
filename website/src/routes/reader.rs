@@ -178,23 +178,17 @@ pub async fn chapter_reader(
             Ok(m) => m,
             Err(_) => {
                 let cfg = crate::config::site_config(&db);
-                let css = cfg.theme_overrides();
                 return (
                     StatusCode::NOT_FOUND,
-                    Html(
-                        crate::templates::layout::base_layout(
+                    crate::templates::layout::page(
+                        &cfg,
+                        "Not Found",
+                        crate::templates::layout::Nav::None,
+                        user.as_ref(),
+                        crate::templates::layout::error_content(
                             "Not Found",
-                            crate::templates::layout::error_content(
-                                "Not Found",
-                                "This manga doesn't exist or may have been removed.",
-                            ),
-                            None,
-                            &css,
-                            &cfg.site_title,
-                            user.as_ref(),
-                            crate::templates::layout::Nav::None,
-                        )
-                        .0,
+                            "This manga doesn't exist or may have been removed.",
+                        ),
                     ),
                 )
                     .into_response();
@@ -204,23 +198,17 @@ pub async fn chapter_reader(
             Ok(c) => c,
             Err(_) => {
                 let cfg = crate::config::site_config(&db);
-                let css = cfg.theme_overrides();
                 return (
                     StatusCode::NOT_FOUND,
-                    Html(
-                        crate::templates::layout::base_layout(
+                    crate::templates::layout::page(
+                        &cfg,
+                        "Not Found",
+                        crate::templates::layout::Nav::None,
+                        user.as_ref(),
+                        crate::templates::layout::error_content(
                             "Not Found",
-                            crate::templates::layout::error_content(
-                                "Not Found",
-                                "This chapter doesn't exist or may have been removed.",
-                            ),
-                            None,
-                            &css,
-                            &cfg.site_title,
-                            user.as_ref(),
-                            crate::templates::layout::Nav::None,
-                        )
-                        .0,
+                            "This chapter doesn't exist or may have been removed.",
+                        ),
                     ),
                 )
                     .into_response();
@@ -228,23 +216,17 @@ pub async fn chapter_reader(
         };
         if !chapter_matches_manga(&chapter, manga_id) {
             let cfg = crate::config::site_config(&db);
-            let css = cfg.theme_overrides();
             return (
                 StatusCode::NOT_FOUND,
-                Html(
-                    crate::templates::layout::base_layout(
+                crate::templates::layout::page(
+                    &cfg,
+                    "Not Found",
+                    crate::templates::layout::Nav::None,
+                    user.as_ref(),
+                    crate::templates::layout::error_content(
                         "Not Found",
-                        crate::templates::layout::error_content(
-                            "Not Found",
-                            "This chapter doesn't exist or may have been removed.",
-                        ),
-                        None,
-                        &css,
-                        &cfg.site_title,
-                        user.as_ref(),
-                        crate::templates::layout::Nav::None,
-                    )
-                    .0,
+                        "This chapter doesn't exist or may have been removed.",
+                    ),
                 ),
             )
                 .into_response();

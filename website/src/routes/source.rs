@@ -26,19 +26,6 @@ pub async fn source_list(
     Path(source): Path<String>,
     user: Option<AuthUser>,
 ) -> Html<String> {
-    let banner = {
-        let p = state.auto_sync.lock().await;
-        if p.running && p.total > 0 {
-            let pct = p.current * 100 / p.total;
-            Some(format!(
-                "Syncing series\u{2026} {} of {} ({}%)",
-                p.current, p.total, pct
-            ))
-        } else {
-            None
-        }
-    };
-
     let db = state.db.lock().await;
     let manga_list: Vec<_> = mangaread_core::db::list_manga_by_source_with_count(&db, &source)
         .unwrap_or_default()
@@ -83,17 +70,11 @@ pub async fn source_list(
     };
 
     let cfg = crate::config::site_config(&db);
-    let css = cfg.theme_overrides();
-    Html(
-        crate::templates::layout::base_layout(
-            &source,
-            content,
-            banner.as_deref(),
-            &css,
-            &cfg.site_title,
-            user.as_ref(),
-            crate::templates::layout::Nav::Series,
-        )
-        .0,
+    crate::templates::layout::page(
+        &cfg,
+        &source,
+        crate::templates::layout::Nav::Series,
+        user.as_ref(),
+        content,
     )
 }

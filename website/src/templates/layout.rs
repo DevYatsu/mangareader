@@ -1,4 +1,5 @@
 use crate::auth::AuthUser;
+use axum::response::Html;
 use mangaread_core::domain::Role;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 
@@ -43,7 +44,6 @@ impl Nav {
 pub fn base_layout(
     title: &str,
     content: Markup,
-    sync_banner: Option<&str>,
     overrides: &str,
     site_title: &str,
     user: Option<&AuthUser>,
@@ -62,12 +62,6 @@ pub fn base_layout(
                 style { (PreEscaped(overrides.to_string())) }
             }
             body data-user-id=[user.map(|u| u.id.to_string())] {
-                @if let Some(text) = sync_banner {
-                    div class="notification is-warning sync-banner" {
-                        span class="sync-banner-spinner" {}
-                        (text)
-                    }
-                }
                 nav class="navbar" role="navigation" aria-label="main navigation" {
                     div class="navbar-brand" {
                         a class="navbar-item m-wordmark" href="/" {
@@ -133,6 +127,32 @@ pub fn base_layout(
             }
         }
     }
+}
+
+/// Render a full page in the standard shell.
+///
+/// This is the one entry point route handlers use. It derives the theme
+/// overrides and site title from `cfg`, so handlers no longer repeat that
+/// preamble. Callers build `cfg` while they already hold the DB lock, which
+/// keeps one lock acquisition per request.
+pub fn page(
+    cfg: &crate::config::SiteConfig,
+    title: &str,
+    nav: Nav,
+    user: Option<&AuthUser>,
+    content: Markup,
+) -> Html<String> {
+    Html(
+        base_layout(
+            title,
+            content,
+            &cfg.theme_overrides(),
+            &cfg.site_title,
+            user,
+            nav,
+        )
+        .0,
+    )
 }
 
 /// Inner content for an error page.
@@ -209,5 +229,27 @@ pub fn reader_layout(
             script src="/static/reader.js" defer {}
             (PreEscaped("</body>"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_shell_has_no_sync_banner() {
+        let cfg = crate::config::SiteConfig::from_env();
+        let html = page(&cfg, "Home", Nav::Home, None, html! { p { "body" } }).0;
+        assert!(html.contains("<p>body</p>"));
+        assert!(!html.contains("sync-banner"));
+        assert!(!html.contains("Syncing series"));
+    }
+
+    #[test]
+    fn page_marks_active_nav_and_uses_site_title() {
+        let cfg = crate::config::SiteConfig::from_env();
+        let html = page(&cfg, "Series", Nav::Series, None, html! {}).0;
+        assert!(html.contains(&format!("<title>Series — {}</title>", cfg.site_title)));
+        assert!(html.contains(r#"class="navbar-item m-nav-active" href="/series""#));
     }
 }

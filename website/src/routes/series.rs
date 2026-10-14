@@ -20,39 +20,20 @@ pub async fn series_detail(
     Path(id): Path<i64>,
     user: Option<AuthUser>,
 ) -> Html<String> {
-    let banner = {
-        let p = state.auto_sync.lock().await;
-        if p.running && p.total > 0 {
-            let pct = p.current * 100 / p.total;
-            Some(format!(
-                "Syncing series\u{2026} {} of {} ({}%)",
-                p.current, p.total, pct
-            ))
-        } else {
-            None
-        }
-    };
-
     let db = state.db.lock().await;
     let s = match mangaread_core::db::get_series_by_id(&db, id) {
         Ok(s) => s,
         Err(_) => {
             let cfg = crate::config::site_config(&db);
-            let css = cfg.theme_overrides();
-            return Html(
-                crate::templates::layout::base_layout(
+            return crate::templates::layout::page(
+                &cfg,
+                "Not Found",
+                crate::templates::layout::Nav::Series,
+                user.as_ref(),
+                crate::templates::layout::error_content(
                     "Not Found",
-                    crate::templates::layout::error_content(
-                        "Not Found",
-                        "This series doesn't exist or may have been removed.",
-                    ),
-                    None,
-                    &css,
-                    &cfg.site_title,
-                    user.as_ref(),
-                    crate::templates::layout::Nav::Series,
-                )
-                .0,
+                    "This series doesn't exist or may have been removed.",
+                ),
             );
         }
     };
@@ -65,18 +46,12 @@ pub async fn series_detail(
             h2 class="title is-3" { "Series not found" }
         };
         let cfg = crate::config::site_config(&db);
-        let css = cfg.theme_overrides();
-        return Html(
-            crate::templates::layout::base_layout(
-                &s.title,
-                content,
-                banner.as_deref(),
-                &css,
-                &cfg.site_title,
-                user.as_ref(),
-                crate::templates::layout::Nav::Series,
-            )
-            .0,
+        return crate::templates::layout::page(
+            &cfg,
+            &s.title,
+            crate::templates::layout::Nav::Series,
+            user.as_ref(),
+            content,
         );
     }
 
@@ -214,18 +189,12 @@ pub async fn series_detail(
     };
 
     let cfg = crate::config::site_config(&db);
-    let css = cfg.theme_overrides();
-    Html(
-        crate::templates::layout::base_layout(
-            &s.title,
-            content,
-            banner.as_deref(),
-            &css,
-            &cfg.site_title,
-            user.as_ref(),
-            crate::templates::layout::Nav::Series,
-        )
-        .0,
+    crate::templates::layout::page(
+        &cfg,
+        &s.title,
+        crate::templates::layout::Nav::Series,
+        user.as_ref(),
+        content,
     )
 }
 
@@ -235,46 +204,17 @@ pub async fn series_list(
     query: Query<HashMap<String, String>>,
     user: Option<AuthUser>,
 ) -> Html<String> {
-    let banner = {
-        let p = state.auto_sync.lock().await;
-        if p.running && p.total > 0 {
-            let pct = p.current * 100 / p.total;
-            Some(format!(
-                "Syncing series\u{2026} {} of {} ({}%)",
-                p.current, p.total, pct
-            ))
-        } else {
-            None
-        }
-    };
-
     let search = query.get("q").map(|s| s.trim()).unwrap_or("");
     let db = state.db.lock().await;
-    let all_series: Vec<_> = {
-        let list = if search.is_empty() {
-            mangaread_core::db::list_all_series(&db).unwrap_or_default()
-        } else {
-            mangaread_core::db::search_series(&db, search).unwrap_or_default()
-        };
-        list.into_iter().filter(|s| s.total_chapters > 0).collect()
-    };
+    let all_series =
+        mangaread_core::db::list_series_cards(&db, (!search.is_empty()).then_some(search))
+            .unwrap_or_default();
     let cards: Vec<_> = all_series
         .iter()
-        .map(|swm| {
-            let s = &swm.series;
-            let cover = swm
-                .manga_entries
-                .iter()
-                .max_by_key(|m| {
-                    mangaread_core::db::list_chapters_by_manga(&db, m.id)
-                        .map(|c| c.len())
-                        .unwrap_or(0)
-                })
-                .or_else(|| swm.manga_entries.first())
-                .and_then(|m| m.cover_url.as_ref());
+        .map(|s| {
             let href = format!("/series/{}", s.id);
-            let badge = chapter_badge(swm.total_chapters);
-            content::manga_card(&href, &s.title, cover.map(String::as_str), Some(&badge))
+            let badge = chapter_badge(s.chapter_count);
+            content::manga_card(&href, &s.title, s.cover_url.as_deref(), Some(&badge))
         })
         .collect();
 
@@ -312,17 +252,11 @@ pub async fn series_list(
     };
 
     let cfg = crate::config::site_config(&db);
-    let css = cfg.theme_overrides();
-    Html(
-        crate::templates::layout::base_layout(
-            "Series",
-            content,
-            banner.as_deref(),
-            &css,
-            &cfg.site_title,
-            user.as_ref(),
-            crate::templates::layout::Nav::Series,
-        )
-        .0,
+    crate::templates::layout::page(
+        &cfg,
+        "Series",
+        crate::templates::layout::Nav::Series,
+        user.as_ref(),
+        content,
     )
 }
