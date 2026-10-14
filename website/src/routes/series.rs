@@ -123,12 +123,15 @@ pub async fn series_detail(
                             }
                             span data-bookmark-label { "Bookmark" }
                         }
-                        button id="rescan-btn" class="button is-small is-ghost rescan-btn" data-manga-id=(primary.id) {
-                            svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" {
-                                path d="M23 4v6h-6M1 20v-6h6" {}
-                                path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" {}
+                        // Only admins may trigger a sync (`/api/sync-manga` is admin-only).
+                        @if user.as_ref().is_some_and(|u| u.role == mangaread_core::domain::Role::Admin) {
+                            button id="rescan-btn" class="button is-small is-ghost rescan-btn" data-manga-id=(primary.id) {
+                                svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" {
+                                    path d="M23 4v6h-6M1 20v-6h6" {}
+                                    path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" {}
+                                }
+                                " Refresh"
                             }
-                            " Refresh"
                         }
                     }
                 }

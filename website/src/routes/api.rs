@@ -6,11 +6,16 @@
 //! - `GET /api/progress-series?ids=1,2,3` — series info for continue-reading
 
 use axum::extract::{Path, Query, State};
-use axum::response::Json;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Json, Response};
+use mangaread_core::domain::Role;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::AppState;
+use crate::{
+    AppState,
+    auth::{AuthUser, require_role},
+};
 
 /// Response for the sync-status endpoint.
 #[derive(Serialize)]
@@ -74,12 +79,25 @@ pub async fn sync_status(State(state): State<Arc<AppState>>) -> Json<SyncStatusR
 ///
 /// The server starts syncing and returns immediately. Callers can poll
 /// `/api/sync-status` or rely on the auto-reload on the series page.
+///
+/// Admin-only: every call launches a headless browser, so an open endpoint
+/// lets any visitor exhaust the host's memory. A manga already syncing is
+/// not started twice.
 pub async fn sync_manga(
     State(state): State<Arc<AppState>>,
+    user: AuthUser,
     Path(id): Path<i64>,
-) -> Json<SyncMangaResponse> {
-    // Mark as syncing
-    state.syncing_manga_ids.lock().await.push(id);
+) -> Response {
+    if require_role(&user, Role::Admin).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    {
+        let mut ids = state.syncing_manga_ids.lock().await;
+        if ids.contains(&id) {
+            return Json(SyncMangaResponse { ok: true }).into_response();
+        }
+        ids.push(id);
+    }
 
     let state_clone = state.clone();
     std::thread::spawn(move || {
@@ -138,7 +156,7 @@ pub async fn sync_manga(
         });
     });
 
-    Json(SyncMangaResponse { ok: true })
+    Json(SyncMangaResponse { ok: true }).into_response()
 }
 
 /// `GET /api/progress-series?ids=1,2,3` — fetch series info for continue-reading.

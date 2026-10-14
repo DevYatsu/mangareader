@@ -115,11 +115,54 @@ pub(crate) fn build_engine() -> scraper::engine::ScraperEngine {
 
 // ── Public API ──
 
+/// Cap on concurrent page-view-triggered syncs. Each one runs a headless
+/// browser, so the cap bounds memory no matter how many pages visitors open.
+/// It matches the sync loop's 3 parallel drivers.
+const MAX_ON_DEMAND_SYNCS: usize = 3;
+
+/// Syncs started by page views, keyed by `(kind, id)`.
+static IN_FLIGHT: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<(&'static str, i64)>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// RAII claim on one on-demand sync slot. Dropping it frees the slot, so
+/// every early return in the sync task releases it.
+struct InFlight {
+    key: (&'static str, i64),
+}
+
+impl InFlight {
+    /// `None` when the same item is already syncing or all slots are busy.
+    /// The caller then skips; the next page view retries.
+    fn try_claim(kind: &'static str, id: i64) -> Option<Self> {
+        let mut set = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+        if set.len() >= MAX_ON_DEMAND_SYNCS || !set.insert((kind, id)) {
+            return None;
+        }
+        Some(Self { key: (kind, id) })
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
 /// Sync a manga's chapters in the background.
 ///
-/// Each task creates its own chromedriver and quits it when done.
+/// Each task creates its own chromedriver and quits it when done. Skipped
+/// when this manga is already syncing or the on-demand cap is reached.
 pub fn sync_manga_background(manga_id: i64) {
+    let Some(claim) = InFlight::try_claim("manga", manga_id) else {
+        tracing::debug!("bg sync: manga {} skipped (in flight or at cap)", manga_id);
+        return;
+    };
     spawn_scraper(move || async move {
+        let _claim = claim;
         tracing::info!("bg sync: manga {} starting...", manga_id);
 
         let engine = build_engine();
@@ -157,9 +200,18 @@ pub fn sync_manga_background(manga_id: i64) {
 /// Sync a chapter's pages in the background.
 ///
 /// Each task creates its own chromedriver and quits it when done.
-/// Spawned on a dedicated OS thread with its own tokio runtime.
+/// Spawned on a dedicated OS thread with its own tokio runtime. Skipped
+/// when this chapter is already syncing or the on-demand cap is reached.
 pub fn sync_chapter_background(chapter_id: i64) {
+    let Some(claim) = InFlight::try_claim("chapter", chapter_id) else {
+        tracing::debug!(
+            "bg sync: chapter {} skipped (in flight or at cap)",
+            chapter_id
+        );
+        return;
+    };
     spawn_scraper(move || async move {
+        let _claim = claim;
         tracing::info!("bg sync: chapter {} starting...", chapter_id);
 
         let engine = build_engine();
@@ -390,4 +442,25 @@ pub fn start_sync_loop(state: Arc<AppState>) {
             tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_SECS)).await;
         }
     });
+}
+
+#[cfg(test)]
+mod in_flight_tests {
+    use super::*;
+
+    #[test]
+    fn claims_dedupe_cap_and_release_on_drop() {
+        // Distinct kind so parallel tests in this binary cannot collide.
+        let a = InFlight::try_claim("test", 1).expect("first claim");
+        assert!(
+            InFlight::try_claim("test", 1).is_none(),
+            "duplicate refused"
+        );
+        let b = InFlight::try_claim("test", 2).expect("second");
+        let c = InFlight::try_claim("test", 3).expect("third");
+        assert!(InFlight::try_claim("test", 4).is_none(), "cap reached");
+        drop(a);
+        let d = InFlight::try_claim("test", 1).expect("slot freed on drop");
+        drop((b, c, d));
+    }
 }
