@@ -4,26 +4,44 @@
 //! - `home`:    landing page with stats and recent chapters
 //! - `series`:  series listing and detail pages
 //! - `manga`:   manga-to-series redirect logic
+//! - `moderation`: report queue, hide/dismiss, comment mutes (moderators)
 //! - `reader`:  chapter reading interface
-//! - `source`:  per-source manga listing
 //! - `check`:   lightweight API endpoints for sync polling
+//! - `comments`: chapter comment JSON API (read, post, edit, report, hide)
 //! - `health`:   liveness probe for Docker
+//! - `images`:   reader page images through the caching image proxy
 //! - `api`:     sync management, progress tracking
-//! - `bookmarks`: client-side bookmark page
+//! - `library`:   member shelves (server) and the visitor list (client-side)
 //! - `settings`:  user settings (profile, appearance, password)
 //! - `admin`:     admin dashboard + branding (site title, theme, legal)
+//! - `admin_email`: SMTP settings, unverified sign-up switch, test send
+//! - `admin_series`: rename, cover, hide, merge and split series
+//! - `admin_sync`: source health and toggles, sync history, retries
 //! - `legal`:     public terms + privacy pages
+//! - `setup`:     first-run admin claim and the setup gate middleware
+//! - `signup`:    open registration verified by an emailed link
 pub mod admin;
+pub mod admin_email;
+pub mod admin_series;
+pub mod admin_sync;
 pub mod api;
 pub mod auth_pages;
-pub mod bookmarks;
 pub mod check;
+pub mod comments;
 pub mod health;
 pub mod home;
+pub mod images;
 pub mod legal;
+pub mod library;
 pub mod manga;
+pub mod moderation;
+pub mod notes;
+pub mod oauth;
+pub mod password_reset;
 pub mod reader;
+pub mod reader_prefs;
 pub mod series;
 pub mod settings;
-pub mod source;
+pub mod setup;
+pub mod signup;
 pub mod sync;

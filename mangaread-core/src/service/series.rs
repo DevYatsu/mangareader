@@ -14,9 +14,11 @@ pub struct MergedChapter {
 
 /// Pick the "best" manga entry from a list — the one with the most chapters.
 pub fn pick_primary<'a>(entries: &'a [Manga], db: &Connection) -> Option<&'a Manga> {
-    entries
-        .iter()
-        .max_by_key(|m| db::list_chapters_by_manga(db, m.id).map(|c| c.len()).unwrap_or(0))
+    entries.iter().max_by_key(|m| {
+        db::list_chapters_by_manga(db, m.id)
+            .map(|c| c.len())
+            .unwrap_or(0)
+    })
 }
 
 /// Pick the preferred source — the one with the most chapters.
@@ -43,7 +45,10 @@ pub fn merge_chapters(
                 let num = ch.number;
                 let src = m.source.clone();
                 // Check if we already have this chapter number
-                if let Some(existing) = merged.iter_mut().find(|(n, ..)| (*n - num).abs() < f64::EPSILON) {
+                if let Some(existing) = merged
+                    .iter_mut()
+                    .find(|(n, ..)| (*n - num).abs() < f64::EPSILON)
+                {
                     // Overwrite with preferred source
                     if src == prefer_source {
                         *existing = (num, src, m.id, ch.id);

@@ -20,13 +20,6 @@ pub struct Manga {
     pub series_id: Option<i64>,
 }
 
-/// Manga with the number of scraped chapters.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MangaWithCount {
-    pub manga: Manga,
-    pub chapter_count: i64,
-}
-
 /// Input data for inserting or updating a manga entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewManga {

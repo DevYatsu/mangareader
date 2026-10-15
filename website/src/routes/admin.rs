@@ -1,25 +1,25 @@
-//! Admin dashboard + branding (site title, theme, legal, homepage flags).
+//! Admin dashboard + branding (site identity, legal text, homepage flags).
 //!
 //! Every endpoint requires [`AuthUser`] with the `Admin` role. Logged-out
 //! requests hit the `AuthUser` extractor rejection (login redirect for
 //! browsers); non-admin users get `403` via [`require_role`].
 //!
-//! POST validation checks every field before any `set_setting` write, so an
-//! invalid submission writes nothing.
+//! POST validation checks every field before the transactional settings write,
+//! so invalid input cannot partially rebrand the site.
 
 use axum::{
     extract::State,
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
 };
-use maud::{html, Markup};
 use mangaread_core::domain::Role;
+use maud::{Markup, html};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    auth::{require_role, AuthUser},
     AppState,
+    auth::{AuthUser, require_role},
 };
 
 /// Homepage sections the branding form offers as checkboxes (stored CSV).
@@ -35,14 +35,6 @@ fn is_hex_color(s: &str) -> bool {
     bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(|c| c.is_ascii_hexdigit())
 }
 
-fn theme_label(key: &str) -> &str {
-    crate::config::THEMES
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, label)| *label)
-        .unwrap_or(key)
-}
-
 /// Parsed branding submission.
 #[derive(Default)]
 struct BrandingForm {
@@ -50,7 +42,6 @@ struct BrandingForm {
     site_tagline: String,
     site_accent: String,
     site_bg: String,
-    site_theme: String,
     seo_description: String,
     legal_terms: String,
     legal_privacy: String,
@@ -77,7 +68,6 @@ fn parse_branding(body: &str) -> BrandingForm {
     form.site_tagline = one.remove("site_tagline").unwrap_or_default();
     form.site_accent = one.remove("site_accent").unwrap_or_default();
     form.site_bg = one.remove("site_bg").unwrap_or_default();
-    form.site_theme = one.remove("site_theme").unwrap_or_default();
     form.seo_description = one.remove("seo_description").unwrap_or_default();
     form.legal_terms = one.remove("legal_terms").unwrap_or_default();
     form.legal_privacy = one.remove("legal_privacy").unwrap_or_default();
@@ -86,6 +76,40 @@ fn parse_branding(body: &str) -> BrandingForm {
 
 fn stored(map: &HashMap<String, String>, key: &str) -> String {
     map.get(key).cloned().unwrap_or_default()
+}
+
+fn is_displayable_reset_link(link: &str, base: &str) -> bool {
+    let Ok(base_url) = reqwest::Url::parse(base) else {
+        return false;
+    };
+    let Ok(link_url) = reqwest::Url::parse(link) else {
+        return false;
+    };
+    let (Some(base_host), Some(link_host)) = (base_url.host_str(), link_url.host_str()) else {
+        return false;
+    };
+    if !matches!(base_url.scheme(), "http" | "https")
+        || base_url.scheme() != link_url.scheme()
+        || base_host != link_host
+        || base_url.port_or_known_default() != link_url.port_or_known_default()
+        || !base_url.username().is_empty()
+        || base_url.password().is_some()
+        || !link_url.username().is_empty()
+        || link_url.password().is_some()
+        || link_url.query().is_some()
+        || link_url.fragment().is_some()
+    {
+        return false;
+    }
+
+    let base_path = base_url.path().trim_end_matches('/');
+    let Some(reset_path) = link_url.path().strip_prefix(base_path) else {
+        return false;
+    };
+    let Some(token) = reset_path.strip_prefix("/reset/") else {
+        return false;
+    };
+    !token.is_empty() && !token.contains('/')
 }
 
 /// Split checkbox values on commas so both repeated keys and a single CSV
@@ -99,46 +123,116 @@ fn normalize_sections(values: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn page(
+fn persist_branding(
+    conn: &mut rusqlite::Connection,
+    pairs: &[(&str, String)],
+    updated_by: i64,
+) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    for (key, value) in pairs {
+        tx.execute(
+            "INSERT INTO site_settings (key, value, updated_by, updated_at) VALUES (?1, ?2, ?3, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = datetime('now')",
+            rusqlite::params![key, value, updated_by],
+        )?;
+    }
+    tx.commit()
+}
+
+pub(crate) fn page(
     cfg: &crate::config::SiteConfig,
-    theme: &str,
     title: &str,
     content: Markup,
     user: Option<&AuthUser>,
 ) -> Html<String> {
-    let banner: Option<String> = None;
-    let css = cfg.css_overrides();
-    Html(
-        crate::templates::layout::base_layout(
-            title,
-            content,
-            banner.as_deref(),
-            &css,
-            &cfg.site_title,
-            user,
-            theme,
-        )
-        .0,
+    crate::templates::layout::page(
+        cfg,
+        title,
+        crate::templates::layout::Nav::Admin,
+        user,
+        content,
     )
 }
 
-fn dashboard_content(site_theme: &str) -> Markup {
+fn dashboard_content(mail_configured: bool) -> Markup {
     html! {
-        section class="admin-section" {
-            h1 class="page-title" { "Admin" }
-            p class="admin-current-theme" { "Current theme: " strong { (theme_label(site_theme)) } }
-            div class="admin-cards" {
-                a class="admin-card" href="/admin/branding" {
-                    h2 { "Branding" }
-                    p { "Site title, tagline, colors, theme, SEO, legal text, homepage sections." }
+        section {
+            h1 class="title is-2" { "Admin" }
+            @if !mail_configured {
+                div class="notification is-warning is-light" {
+                    strong { "Email is not set up." }
+                    " Readers cannot sign up until you add SMTP settings. "
+                    a href="/admin/email" { "Set up email" }
                 }
-                div class="admin-card admin-card-disabled" {
-                    h2 { "Users" }
-                    p { "User management lands in Slice 5." }
+            }
+            div class="columns is-multiline" {
+                div class="column is-half-mobile is-one-third-tablet" {
+                    a class="card" href="/admin/email" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Email" }
+                            p {
+                                @if mail_configured { "SMTP is configured. Sign-up links and password resets are sent by email." }
+                                @else { "Not configured. Sign-up is closed until you add SMTP settings." }
+                            }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" { "Open email settings" }
+                        }
+                    }
                 }
-                div class="admin-card admin-card-disabled" {
-                    h2 { "Sources" }
-                    p { "Source management lands in Slice 5." }
+                div class="column is-half-mobile is-one-third-tablet" {
+                    a class="card" href="/admin/branding" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Branding" }
+                            p { "Site title, tagline, colors, SEO, legal text, and homepage sections." }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" { "Open branding" }
+                        }
+                    }
+                }
+                div class="column is-half-mobile is-one-third-tablet" {
+                    a class="card" href="/admin/users" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Users" }
+                            p { "Review accounts and generate one-time password reset links." }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" { "Open users" }
+                        }
+                    }
+                }
+                div class="column is-half-mobile is-one-third-tablet" {
+                    a class="card" href="/admin/series" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Series" }
+                            p { "Rename, set covers, hide, merge duplicates, or split wrong merges." }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" { "Open series" }
+                        }
+                    }
+                }
+                div class="column is-half-mobile is-one-third-tablet" {
+                    a class="card" href="/admin/sources" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Sources" }
+                            p { "Health of each site, enable or disable, and scan on demand." }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" { "Open sources" }
+                        }
+                    }
+                }
+                div class="column is-half-mobile is-one-third-tablet" {
+                    a class="card" href="/admin/sync" {
+                        div class="card-content" {
+                            h2 class="title is-4" { "Sync" }
+                            p { "What the sync loop is doing, recent runs, failures, and retries." }
+                        }
+                        div class="card-footer" {
+                            span class="card-footer-item" { "Open sync" }
+                        }
+                    }
                 }
             }
         }
@@ -151,90 +245,133 @@ fn branding_content(
     error: Option<&str>,
 ) -> Markup {
     html! {
-        section class="admin-section" {
-            h1 class="page-title" { "Branding" }
-            p { a href="/admin" { "← Back to Admin" } }
+        section {
+            h1 class="title is-2" { "Branding" }
+            a class="button is-light" href="/admin" { "Back to admin" }
             @if let Some(msg) = error {
-                p class="auth-error" { (msg) }
+                div class="notification is-danger is-light" { (msg) }
             }
-            form method="post" action="/admin/branding" class="admin-form" {
-                label { "Site title (1-64 chars)" input type="text" name="site_title" maxlength="64" required="" value=(stored(map, "site_title")); }
-                label { "Tagline (up to 140 chars)" input type="text" name="site_tagline" maxlength="140" value=(stored(map, "site_tagline")); }
-                label { "Accent color" input type="color" name="site_accent" value=(stored(map, "site_accent")); }
-                label { "Background color" input type="color" name="site_bg" value=(stored(map, "site_bg")); }
-                fieldset class="theme-picker" {
-                    legend { "Theme" }
-                    @for (key, label) in crate::config::THEMES {
-                        label class="theme-option" {
-                            input type="radio" name="site_theme" value=(key) checked[stored(map, "site_theme") == *key];
-                            (label)
+            div class="box" {
+                form id="admin-branding-form" method="post" action="/admin/branding" {
+                    div class="field is-horizontal" {
+                        div class="field-label" {
+                            label class="label" id="admin-branding-site-title-label" for="admin-branding-site-title" { "Site title (1-64 chars)" }
+                        }
+                        div class="field-body" {
+                            div class="control" {
+                                input id="admin-branding-site-title" class="input" type="text" name="site_title" maxlength="64" required="" value=(stored(map, "site_title"));
+                            }
+                        }
+                    }
+                    div class="field is-horizontal" {
+                        div class="field-label" {
+                            label class="label" id="admin-branding-tagline-label" for="admin-branding-tagline" { "Tagline (up to 140 chars)" }
+                        }
+                        div class="field-body" {
+                            div class="control" {
+                                input id="admin-branding-tagline" class="input" type="text" name="site_tagline" maxlength="140" value=(stored(map, "site_tagline"));
+                            }
+                        }
+                    }
+                    div class="field is-horizontal" {
+                        div class="field-label" {
+                            label class="label" id="admin-branding-accent-label" for="admin-branding-accent" { "Accent color" }
+                        }
+                        div class="field-body" {
+                            div class="control" {
+                                input id="admin-branding-accent" class="input" type="color" name="site_accent" value=(stored(map, "site_accent"));
+                            }
+                        }
+                    }
+                    div class="field is-horizontal" {
+                        div class="field-label" {
+                            label class="label" id="admin-branding-background-label" for="admin-branding-background" { "Background color" }
+                        }
+                        div class="field-body" {
+                            div class="control" {
+                                input id="admin-branding-background" class="input" type="color" name="site_bg" value=(stored(map, "site_bg"));
+                            }
+                        }
+                    }
+                    div class="field" {
+                        label class="label" id="admin-branding-seo-description-label" for="admin-branding-seo-description" { "SEO description (up to 300 chars)" }
+                        div class="control" {
+                            textarea id="admin-branding-seo-description" class="textarea" name="seo_description" maxlength="300" { (stored(map, "seo_description")) }
+                        }
+                    }
+                    div class="field" {
+                        label class="label" id="admin-branding-terms-label" for="admin-branding-terms" { "Terms of Service (plain text)" }
+                        div class="control" {
+                            textarea id="admin-branding-terms" class="textarea" name="legal_terms" rows="6" { (stored(map, "legal_terms")) }
+                        }
+                    }
+                    div class="field" {
+                        label class="label" id="admin-branding-privacy-label" for="admin-branding-privacy" { "Privacy Policy (plain text)" }
+                        div class="control" {
+                            textarea id="admin-branding-privacy" class="textarea" name="legal_privacy" rows="6" { (stored(map, "legal_privacy")) }
+                        }
+                    }
+                    div class="field" {
+                        fieldset {
+                            legend class="label" { "Homepage sections" }
+                            @for (key, label) in HOME_SECTIONS {
+                                p class="control" {
+                                    label class="checkbox" id=(format!("admin-branding-home-{key}-label")) for=(format!("admin-branding-home-{key}")) {
+                                        input id=(format!("admin-branding-home-{key}")) type="checkbox" name="home_sections" value=(key) checked[checked.iter().any(|s| s == key)];
+                                        (label)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div class="field" {
+                        div class="control" {
+                            button class="button is-primary" type="submit" { "Save branding" }
                         }
                     }
                 }
-                label { "SEO description (up to 300 chars)" textarea name="seo_description" maxlength="300" { (stored(map, "seo_description")) } }
-                label { "Terms of Service (plain text)" textarea name="legal_terms" rows="6" { (stored(map, "legal_terms")) } }
-                label { "Privacy Policy (plain text)" textarea name="legal_privacy" rows="6" { (stored(map, "legal_privacy")) } }
-                fieldset class="sections-picker" {
-                    legend { "Homepage sections" }
-                    @for (key, label) in HOME_SECTIONS {
-                        label class="section-option" {
-                            input type="checkbox" name="home_sections" value=(key) checked[checked.iter().any(|s| s == key)];
-                            (label)
-                        }
-                    }
-                }
-                button type="submit" { "Save branding" }
             }
             script src="/static/admin.js" {}
         }
     }
 }
 
-/// GET `/admin` — dashboard with section links + current theme name.
-pub async fn dashboard(
-    State(state): State<Arc<AppState>>,
-    user: AuthUser,
-) -> Response {
+/// GET `/admin` — dashboard with links to the existing account surfaces.
+pub async fn dashboard(State(state): State<Arc<AppState>>, user: AuthUser) -> Response {
     if require_role(&user, Role::Admin).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let (cfg, theme, settings) = {
+    let (cfg, mail_configured) = {
         let db = state.db.lock().await;
         (
             crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
-            mangaread_core::db::all_settings(&db).unwrap_or_default(),
+            crate::email::MailSettings::load(&db).is_some(),
         )
     };
-    let site_theme = stored(&settings, "site_theme");
-    let site_theme = if site_theme.is_empty() {
-        "default".to_string()
-    } else {
-        site_theme
-    };
-    page(&cfg, &theme, "Admin", dashboard_content(&site_theme), Some(&user)).into_response()
+    page(
+        &cfg,
+        "Admin",
+        dashboard_content(mail_configured),
+        Some(&user),
+    )
+    .into_response()
 }
 
 /// GET `/admin/branding` — branding form prefilled from stored settings.
-pub async fn branding_page(
-    State(state): State<Arc<AppState>>,
-    user: AuthUser,
-) -> Response {
+pub async fn branding_page(State(state): State<Arc<AppState>>, user: AuthUser) -> Response {
     if require_role(&user, Role::Admin).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let (cfg, theme, settings) = {
+    let (cfg, settings) = {
         let db = state.db.lock().await;
         (
             crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
             mangaread_core::db::all_settings(&db).unwrap_or_default(),
         )
     };
     let checked = normalize_sections(&[stored(&settings, "home_sections")]);
     page(
         &cfg,
-        &theme,
         "Branding",
         branding_content(&settings, &checked, None),
         Some(&user),
@@ -252,12 +389,9 @@ pub async fn branding_submit(
         return StatusCode::FORBIDDEN.into_response();
     }
     let form = parse_branding(&body);
-    let (cfg, theme) = {
+    let cfg = {
         let db = state.db.lock().await;
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, Some(&user)),
-        )
+        crate::config::site_config(&db)
     };
     // Re-render prefill keeps the submitted values so no input is lost.
     let submitted: HashMap<String, String> = HashMap::from([
@@ -265,11 +399,13 @@ pub async fn branding_submit(
         ("site_tagline".into(), form.site_tagline.clone()),
         ("site_accent".into(), form.site_accent.clone()),
         ("site_bg".into(), form.site_bg.clone()),
-        ("site_theme".into(), form.site_theme.clone()),
         ("seo_description".into(), form.seo_description.clone()),
         ("legal_terms".into(), form.legal_terms.clone()),
         ("legal_privacy".into(), form.legal_privacy.clone()),
-        ("home_sections".into(), normalize_sections(&form.home_sections).join(",")),
+        (
+            "home_sections".into(),
+            normalize_sections(&form.home_sections).join(","),
+        ),
     ]);
     let checked = normalize_sections(&form.home_sections);
     let render_400 = |msg: &str| {
@@ -277,7 +413,6 @@ pub async fn branding_submit(
             StatusCode::BAD_REQUEST,
             page(
                 &cfg,
-                &theme,
                 "Branding",
                 branding_content(&submitted, &checked, Some(msg)),
                 Some(&user),
@@ -300,9 +435,6 @@ pub async fn branding_submit(
     if !is_hex_color(form.site_bg.trim()) {
         return render_400("Background must be a #rrggbb hex color.");
     }
-    if !crate::config::is_theme(&form.site_theme) {
-        return render_400("Unknown theme.");
-    }
     if form.seo_description.chars().count() > 300 {
         return render_400("SEO description must be at most 300 characters.");
     }
@@ -314,23 +446,568 @@ pub async fn branding_submit(
     }
 
     {
-        let db = state.db.lock().await;
+        let mut db = state.db.lock().await;
         let pairs = [
             ("site_title", title),
             ("site_tagline", form.site_tagline.clone()),
             ("site_accent", form.site_accent.trim().to_string()),
             ("site_bg", form.site_bg.trim().to_string()),
-            ("site_theme", form.site_theme.clone()),
             ("seo_description", form.seo_description.clone()),
             ("legal_terms", form.legal_terms.clone()),
             ("legal_privacy", form.legal_privacy.clone()),
             ("home_sections", checked.join(",")),
         ];
-        for (key, value) in pairs {
-            if mangaread_core::db::set_setting(&db, key, &value, user.id).is_err() {
-                return render_400("Could not save branding.");
-            }
+        if persist_branding(&mut db, &pairs, user.id).is_err() {
+            return render_400("Could not save branding.");
         }
     }
     Redirect::to("/admin/branding").into_response()
+}
+
+fn users_content(
+    users: &[(mangaread_core::domain::User, String)],
+    notice: Markup,
+    me: i64,
+) -> Markup {
+    html! {
+        section {
+            h1 class="title is-2" { "Users" }
+            (notice)
+            div class="box" {
+                div class="table-container" {
+                    table class="table is-fullwidth is-hoverable" {
+                        thead {
+                            tr {
+                                th { "ID" }
+                                th { "Name" }
+                                th { "Email" }
+                                th { "Role" }
+                                th { "OAuth" }
+                                th { "Created" }
+                                th { "Actions" }
+                            }
+                        }
+                        tbody {
+                            @for (u, prov) in users {
+                                tr {
+                                    td { (u.id) }
+                                    td {
+                                        (u.name)
+                                        @if u.banned_at.is_some() {
+                                            " " span class="tag is-danger is-light" { "Banned" }
+                                        }
+                                    }
+                                    td { (u.email) }
+                                    td {
+                                        form method="post" action=(format!("/admin/users/{}/role", u.id)) {
+                                            div class="field has-addons" {
+                                                div class="control" {
+                                                    div class="select is-small" {
+                                                        select name="role" aria-label={"Role for " (u.name)} {
+                                                            @for r in [Role::Member, Role::Moderator, Role::Admin] {
+                                                                option value=(r.as_str()) selected[r == u.role] { (role_label(&r)) }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                div class="control" {
+                                                    button class="button is-small" type="submit" { "Save" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    td { (prov) }
+                                    td { (u.created_at) }
+                                    td {
+                                        div class="buttons are-small" {
+                                            form method="post" action=(format!("/admin/users/{}/reset-link", u.id)) {
+                                                button class="button is-small is-light" type="submit" { "Reset link" }
+                                            }
+                                            @if u.id != me {
+                                                form method="post" action=(format!("/admin/users/{}/ban", u.id)) {
+                                                    @if u.banned_at.is_some() {
+                                                        input type="hidden" name="banned" value="0";
+                                                        button class="button is-small is-light" type="submit" { "Unban" }
+                                                    } @else {
+                                                        input type="hidden" name="banned" value="1";
+                                                        button class="button is-small is-danger is-light" type="submit" { "Ban" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            a class="button is-light" href="/admin" { "Back to admin" }
+        }
+    }
+}
+
+fn role_label(r: &Role) -> &'static str {
+    match r {
+        Role::Member => "User",
+        Role::Moderator => "Moderator",
+        Role::Admin => "Admin",
+    }
+}
+
+/// Fixed notice copy for `?ok=` / `?err=` codes. Only known codes render, so
+/// the query string cannot inject arbitrary text into the page.
+fn user_action_notice(q: &HashMap<String, String>) -> Option<Markup> {
+    let (class, text) = match (
+        q.get("ok").map(String::as_str),
+        q.get("err").map(String::as_str),
+    ) {
+        (Some("role"), _) => ("is-success", "Role updated."),
+        (Some("ban"), _) => ("is-success", "User banned. Their sessions were signed out."),
+        (Some("unban"), _) => ("is-success", "User unbanned."),
+        (_, Some("last_admin")) => ("is-danger", "The last admin cannot be demoted or banned."),
+        (_, Some("self_ban")) => ("is-danger", "You cannot ban yourself."),
+        (_, Some("not_found")) => ("is-danger", "That user no longer exists."),
+        (_, Some("bad_role")) => ("is-danger", "Unknown role."),
+        _ => return None,
+    };
+    Some(html! { div class=(format!("notification is-light {class}")) { (text) } })
+}
+
+/// GET `/admin/users` — minimal user table with per-row reset-link generator.
+/// Full user management (roles, suspend, delete) is Slice 5 territory.
+pub async fn users_page(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    if require_role(&user, Role::Admin).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let (cfg, users) = {
+        let db = state.db.lock().await;
+        let users = mangaread_core::db::list_users(&db).unwrap_or_default();
+        let providers: HashMap<i64, String> = users
+            .iter()
+            .map(|u| {
+                let p = mangaread_core::db::user_oauth_providers(&db, u.id)
+                    .unwrap_or_default()
+                    .join(",");
+                (u.id, p)
+            })
+            .collect();
+        (
+            crate::config::site_config(&db),
+            users
+                .into_iter()
+                .map(|u| {
+                    let prov = providers.get(&u.id).cloned().unwrap_or_default();
+                    (u, prov)
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    let notice = match (q.get("reset_link"), q.get("for")) {
+        (Some(link), Some(id)) => {
+            // The display label is independent of whether the attacker-controlled
+            // link may be rendered as an anchor.
+            let is_safe = is_displayable_reset_link(link, &crate::oauth::base_url());
+            if is_safe {
+                html! { div class="notification is-success is-light" { "Reset link for user " (id) ": " a href=(link) { (link) } } }
+            } else {
+                html! { div class="notification is-danger is-light" { "Reset link for user " (id) ": " code { (link) } } }
+            }
+        }
+        _ => user_action_notice(&q).unwrap_or_default(),
+    };
+    page(
+        &cfg,
+        "Users",
+        users_content(&users, notice, user.id),
+        Some(&user),
+    )
+    .into_response()
+}
+
+/// POST `/admin/users/{id}/reset-link` — mint a 1h token, redirect back with the link.
+pub async fn user_reset_link(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Response {
+    if require_role(&user, Role::Admin).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let token = crate::auth::new_token();
+    {
+        let db = state.db.lock().await;
+        let Ok(target) = mangaread_core::db::find_user_by_id(&db, id) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        // Same hashed token store as self-service resets; the raw token only
+        // ever exists in this redirect.
+        if mangaread_core::db::create_email_token(
+            &db,
+            &crate::email::token_hash(&token),
+            &target.email,
+            mangaread_core::db::TokenPurpose::Reset,
+            &crate::routes::password_reset::reset_expires_at(),
+        )
+        .is_err()
+        {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+    let link = format!("{}/reset/{token}", crate::oauth::base_url());
+    let query = form_urlencoded::Serializer::new(String::new())
+        .append_pair("reset_link", &link)
+        .append_pair("for", &id.to_string())
+        .finish();
+    (
+        StatusCode::SEE_OTHER,
+        [(
+            axum::http::header::LOCATION,
+            format!("/admin/users?{query}"),
+        )],
+        "",
+    )
+        .into_response()
+}
+
+fn back_to_users(query: &str) -> Response {
+    Redirect::to(&format!("/admin/users?{query}")).into_response()
+}
+
+fn error_code(e: &mangaread_core::error::Error) -> &'static str {
+    match e {
+        mangaread_core::error::Error::Conflict(_) => "last_admin",
+        mangaread_core::error::Error::NotFound(_) => "not_found",
+        _ => "not_found",
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct RoleForm {
+    pub role: String,
+}
+
+/// POST `/admin/users/{id}/role` — change a user's role; logged to `mod_log`.
+pub async fn user_set_role(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::Form(form): axum::Form<RoleForm>,
+) -> Response {
+    if require_role(&user, Role::Admin).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let role = match form.role.as_str() {
+        "member" => Role::Member,
+        "moderator" => Role::Moderator,
+        "admin" => Role::Admin,
+        _ => return back_to_users("err=bad_role"),
+    };
+    let db = state.db.lock().await;
+    if let Err(e) = mangaread_core::db::set_user_role(&db, id, &role) {
+        return back_to_users(&format!("err={}", error_code(&e)));
+    }
+    let _ = mangaread_core::db::insert_mod_log(&db, user.id, "role", Some(id), role.as_str());
+    back_to_users("ok=role")
+}
+
+#[derive(serde::Deserialize)]
+pub struct BanForm {
+    pub banned: String,
+}
+
+/// POST `/admin/users/{id}/ban` — ban (`banned=1`) or unban (`banned=0`).
+/// Banning signs the user out everywhere; admins cannot ban themselves.
+pub async fn user_set_banned(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::Form(form): axum::Form<BanForm>,
+) -> Response {
+    if require_role(&user, Role::Admin).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let banned = form.banned == "1";
+    if banned && id == user.id {
+        return back_to_users("err=self_ban");
+    }
+    let db = state.db.lock().await;
+    let now = crate::auth::now_utc_string();
+    if let Err(e) = mangaread_core::db::set_user_banned(&db, id, banned, &now) {
+        return back_to_users(&format!("err={}", error_code(&e)));
+    }
+    let action = if banned { "ban" } else { "unban" };
+    let _ = mangaread_core::db::insert_mod_log(&db, user.id, action, Some(id), "");
+    back_to_users(&format!("ok={action}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mangaread_core::domain::{Role, User};
+
+    #[test]
+    fn branding_markup_uses_bulma_without_visible_theme_controls() {
+        let map = HashMap::from([
+            ("site_title".into(), "MangaRead".into()),
+            ("site_tagline".into(), "Read onward".into()),
+            ("site_accent".into(), "#f59e0b".into()),
+            ("site_bg".into(), "#131210".into()),
+        ]);
+        let markup = branding_content(&map, &[], Some("Invalid branding.")).into_string();
+
+        for class_name in [
+            "box",
+            "field is-horizontal",
+            "field-label",
+            "field-body",
+            "input",
+            "textarea",
+            "notification is-danger is-light",
+            "title is-2",
+        ] {
+            assert!(
+                markup.contains(class_name),
+                "missing Bulma class: {class_name}"
+            );
+        }
+        for id in [
+            "admin-branding-site-title",
+            "admin-branding-tagline",
+            "admin-branding-accent",
+            "admin-branding-background",
+            "admin-branding-seo-description",
+            "admin-branding-terms",
+            "admin-branding-privacy",
+            "admin-branding-home-latest",
+            "admin-branding-home-popular",
+            "admin-branding-home-continue",
+        ] {
+            assert!(markup.contains(&format!("id=\"{id}-label\" for=\"{id}\"")));
+            assert!(markup.contains(&format!("id=\"{id}\"")));
+        }
+        assert!(markup.contains("id=\"admin-branding-form\""));
+        assert!(markup.contains("method=\"post\" action=\"/admin/branding\""));
+        assert!(markup.contains("name=\"site_title\""));
+        assert!(markup.contains("name=\"site_tagline\""));
+        assert!(markup.contains("name=\"site_accent\""));
+        assert!(markup.contains("name=\"site_bg\""));
+        assert!(markup.contains("name=\"seo_description\""));
+        assert!(markup.contains("name=\"legal_terms\""));
+        assert!(markup.contains("name=\"legal_privacy\""));
+        assert!(markup.contains("name=\"home_sections\""));
+        assert!(!markup.contains("name=\"site_theme\""));
+        assert!(!markup.contains(concat!("theme", "-picker")));
+        assert!(!markup.contains("Current theme"));
+        assert!(!markup.contains(concat!("admin", "-form")));
+        assert!(!markup.contains(concat!("admin", "-section")));
+    }
+
+    #[test]
+    fn repeated_home_sections_and_csv_values_normalize() {
+        let repeated = parse_branding(
+            "site_title=Read&home_sections=latest&home_sections=continue&home_sections=popular",
+        );
+        assert_eq!(
+            normalize_sections(&repeated.home_sections),
+            ["latest", "continue", "popular"]
+        );
+
+        let csv = parse_branding("home_sections=latest%2Ccontinue");
+        assert_eq!(
+            normalize_sections(&csv.home_sections),
+            ["latest", "continue"]
+        );
+    }
+
+    #[test]
+    fn reset_link_accepts_configured_origin() {
+        assert!(is_displayable_reset_link(
+            "http://localhost:3000/reset/token123",
+            "http://localhost:3000"
+        ));
+    }
+
+    #[test]
+    fn reset_link_rejects_external_https_host() {
+        assert!(!is_displayable_reset_link(
+            "https://evil.example/reset/token123",
+            "http://localhost:3000"
+        ));
+    }
+
+    #[test]
+    fn reset_link_rejects_javascript_and_malformed_urls() {
+        assert!(!is_displayable_reset_link(
+            "javascript:alert(1)",
+            "http://localhost:3000"
+        ));
+        assert!(!is_displayable_reset_link(
+            "not a url",
+            "http://localhost:3000"
+        ));
+    }
+
+    #[test]
+    fn reset_link_rejects_wrong_path() {
+        assert!(!is_displayable_reset_link(
+            "http://localhost:3000/change-password/token123",
+            "http://localhost:3000"
+        ));
+    }
+
+    #[test]
+    fn reset_link_rejects_wrong_port() {
+        assert!(!is_displayable_reset_link(
+            "http://localhost:3001/reset/token123",
+            "http://localhost:3000"
+        ));
+    }
+
+    #[test]
+    fn users_table_uses_bulma_and_keeps_reset_form_contract() {
+        let user = User {
+            id: 7,
+            name: "Reader".into(),
+            email: "reader@example.com".into(),
+            password_hash: "hash".into(),
+            role: Role::Member,
+            locale: "en".into(),
+            created_at: "2026-09-24 12:00:00".into(),
+            banned_at: None,
+        };
+        let markup = users_content(&[(user, "google".into())], html! {}, 1).into_string();
+        assert!(markup.contains("class=\"table-container\""));
+        assert!(markup.contains("class=\"table is-fullwidth is-hoverable\""));
+        assert!(markup.contains("action=\"/admin/users/7/reset-link\""));
+        assert!(markup.contains("method=\"post\""));
+        assert!(markup.contains(">Reset link<"));
+    }
+
+    #[test]
+    fn branding_settings_write_rolls_back_on_database_failure() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        mangaread_core::db::init_db(&conn).unwrap();
+        mangaread_core::db::set_setting(&conn, "site_title", "Original", 1).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_privacy BEFORE INSERT ON site_settings
+             WHEN NEW.key = 'legal_privacy' BEGIN
+                 SELECT RAISE(ABORT, 'test failure');
+             END;",
+        )
+        .unwrap();
+
+        let pairs = [
+            ("site_title", "Changed".to_string()),
+            ("legal_privacy", "Should not persist".to_string()),
+        ];
+        assert!(persist_branding(&mut conn, &pairs, 1).is_err());
+        assert_eq!(
+            mangaread_core::db::get_setting(&conn, "site_title").unwrap(),
+            Some("Original".into())
+        );
+    }
+
+    use crate::test_support::app_with_admin;
+
+    #[tokio::test]
+    async fn members_cannot_manage_users() {
+        let (app, _) = app_with_admin().await;
+        let (target, member) = app.member("m@example.com").await;
+        let res = app
+            .post_form(
+                &format!("/admin/users/{target}/role"),
+                &[("role", "admin")],
+                Some(&member),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn promote_writes_mod_log_and_shows_notice() {
+        let (app, admin) = app_with_admin().await;
+        let (target, _) = app.member("m@example.com").await;
+        let res = app
+            .post_form(
+                &format!("/admin/users/{target}/role"),
+                &[("role", "moderator")],
+                Some(&admin),
+            )
+            .await;
+        assert_eq!(res.location.as_deref(), Some("/admin/users?ok=role"));
+        {
+            let db = app.state.db.lock().await;
+            let log = mangaread_core::db::list_mod_log(&db, 5).unwrap();
+            assert_eq!(log[0].action, "role");
+            assert_eq!(log[0].detail, "moderator");
+        }
+        let page = app.get("/admin/users?ok=role", Some(&admin)).await;
+        assert!(page.body.contains("Role updated."));
+    }
+
+    #[tokio::test]
+    async fn last_admin_cannot_demote_themself() {
+        let (app, admin) = app_with_admin().await;
+        let res = app
+            .post_form("/admin/users/1/role", &[("role", "member")], Some(&admin))
+            .await;
+        assert_eq!(res.location.as_deref(), Some("/admin/users?err=last_admin"));
+        assert_eq!(app.get("/admin", Some(&admin)).await.status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn ban_signs_out_and_blocks_login_until_unban() {
+        let (app, admin) = app_with_admin().await;
+        let (target, member) = app.member("m@example.com").await;
+        let res = app
+            .post_form(
+                &format!("/admin/users/{target}/ban"),
+                &[("banned", "1")],
+                Some(&admin),
+            )
+            .await;
+        assert_eq!(res.location.as_deref(), Some("/admin/users?ok=ban"));
+        // The old session no longer resolves: the settings page bounces to login.
+        let settings = app.get("/settings", Some(&member)).await;
+        assert_eq!(settings.location.as_deref(), Some("/login"));
+        let login = app
+            .post_form(
+                "/login",
+                &[("email", "m@example.com"), ("password", "password1")],
+                None,
+            )
+            .await;
+        assert_eq!(login.status, StatusCode::FORBIDDEN);
+        assert!(login.body.contains("suspended"));
+        app.post_form(
+            &format!("/admin/users/{target}/ban"),
+            &[("banned", "0")],
+            Some(&admin),
+        )
+        .await;
+        let login = app
+            .post_form(
+                "/login",
+                &[("email", "m@example.com"), ("password", "password1")],
+                None,
+            )
+            .await;
+        assert_eq!(login.status, StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn admin_cannot_ban_self_and_unknown_codes_render_nothing() {
+        let (app, admin) = app_with_admin().await;
+        let res = app
+            .post_form("/admin/users/1/ban", &[("banned", "1")], Some(&admin))
+            .await;
+        assert_eq!(res.location.as_deref(), Some("/admin/users?err=self_ban"));
+        let page = app.get("/admin/users?err=%3Cscript%3E", Some(&admin)).await;
+        assert!(!page.body.contains("<script>"));
+    }
 }

@@ -5,33 +5,17 @@
 //! format as the session helpers in `crate::auth`).
 
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use mangaread_core::{db, domain::Progress};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{auth::AuthUser, AppState};
-
-/// Last-write-wins guard: true = incoming row wins (string `>=` on ISO8601
-/// `updated_at`, which orders chronologically in this fixed-width format).
-///
-/// Contract mirror of the authoritative guard in
-/// `mangaread_core::db::upsert_progress` (`ON CONFLICT(user_id, chapter_id)
-/// DO UPDATE ... WHERE excluded.updated_at >= progress.updated_at`):
-/// `post_progress`/`post_migrate` write through that SQL, and this pure fn
-/// pins the same rule for unit tests. Both MUST use `>=` (ties win for the
-/// incoming row) — keep them in sync if either ever changes.
-pub fn merge_progress(existing: Option<&str>, incoming: &str) -> bool {
-    match existing {
-        None => true,
-        Some(current) => incoming >= current,
-    }
-}
+use crate::{AppState, auth::AuthUser};
 
 /// Current UTC time formatted `%Y-%m-%d %H:%M:%S` (matches SQLite datetime).
 fn now_utc_string() -> String {
@@ -80,10 +64,7 @@ fn validate_progress(page: i64, status: &str) -> Option<Response> {
 }
 
 /// GET /api/bookmarks → `{"series":[ids]}`.
-pub async fn get_bookmarks(
-    State(state): State<Arc<AppState>>,
-    user: AuthUser,
-) -> Response {
+pub async fn get_bookmarks(State(state): State<Arc<AppState>>, user: AuthUser) -> Response {
     let series = {
         let conn = state.db.lock().await;
         db::list_bookmarks(&conn, user.id)
@@ -281,30 +262,17 @@ pub async fn post_migrate(
         return db_error(e);
     }
     match tx.commit() {
-        Ok(()) => Json(
-            serde_json::json!({"ok": true, "bookmarks": n_bookmarks, "progress": n_progress}),
-        )
-        .into_response(),
+        Ok(()) => {
+            Json(serde_json::json!({"ok": true, "bookmarks": n_bookmarks, "progress": n_progress}))
+                .into_response()
+        }
         Err(e) => db_error(e),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_progress, validate_progress, valid_status};
-
-    #[test]
-    fn newer_incoming_wins() {
-        assert!(merge_progress(
-            Some("2026-01-01 00:00:00"),
-            "2026-09-19 00:00:00"
-        ));
-        assert!(!merge_progress(
-            Some("2026-09-19 00:00:00"),
-            "2026-01-01 00:00:00"
-        ));
-        assert!(merge_progress(None, "2026-01-01 00:00:00"));
-    }
+    use super::{valid_status, validate_progress};
 
     #[test]
     fn progress_validation_rejects_bad_status_and_page() {

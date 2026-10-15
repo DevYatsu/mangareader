@@ -51,6 +51,7 @@ COPY website/static /app/static
 
 USER mangaread
 EXPOSE 3000
-ENV CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu"
+# --headless is required: the container has no display.
+ENV CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu --headless"
 ENV MANGAREAD_STATIC_DIR=/app/static
 CMD ["/app/mangaread-server"]

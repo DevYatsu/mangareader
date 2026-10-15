@@ -112,24 +112,43 @@ The Axum web server. Serves HTML (rendered with Maud templates), static assets, 
 
 ```
 website/src/
-  main.rs           -- AppState, router setup, tokio::main entrypoint
-  config.rs         -- SiteConfig (reads SITE_TITLE, SITE_COLOR, etc. from env)
-  scraper_helper.rs -- chromedriver management, background sync loop
+  main.rs           -- AppState, app() router, tokio::main entrypoint
+  config.rs         -- SiteConfig: env boot defaults overlaid by site_settings
+  auth.rs           -- sessions, AuthUser extractor, role checks
+  email.rs          -- Mailer port (SMTP adapter, in-memory test double), sign-up mode
+  rate_limit.rs     -- sliding-window limiter, ClientIp extractor
+  scraper_helper.rs -- source registry access, tracked jobs (sync_runs), sync loop
+  test_support.rs   -- in-process HTTP harness for route tests
   routes/
-    home.rs         -- GET /
-    series.rs       -- GET /series, GET /series/{id}
-    bookmarks.rs    -- GET /bookmarks (client-side shell)
-    source.rs       -- GET /source/{source}
-    manga.rs        -- GET /manga/{id} (redirects to series page)
+    home.rs         -- GET /  (continue reading, library updates, latest)
+    series.rs       -- GET /series (search, sort, keyset pages), GET /series/{id}
+    library.rs      -- GET /library, POST /library/{series_id} (shelves)
     reader.rs       -- GET /read/{manga_id}/{chapter_id}
-    check.rs        -- GET /api/check-manga/{id}, /api/check-chapter/{id}
-    api.rs          -- GET /api/sync-status, POST /api/sync-manga/{id}, GET /api/progress-series
+    comments.rs     -- /api/comments JSON API
+    moderation.rs   -- /mod/reports queue, hide/dismiss/mute
+    setup.rs        -- /setup first-run admin claim + setup gate middleware
+    signup.rs       -- /register, /register/{token} (email-link sign-up)
+    auth_pages.rs   -- /login, /logout
+    password_reset.rs -- /forgot, /reset/{token}
+    oauth.rs        -- /auth/{provider}, callback
+    settings.rs     -- /settings
+    admin.rs        -- /admin, /admin/branding, /admin/users (roles, bans)
+    admin_email.rs  -- /admin/email (SMTP, unverified sign-up switch, test send)
+    admin_sync.rs   -- /admin/sources, /admin/sync
+    admin_series.rs -- /admin/series (rename, cover, hide, merge, split)
+    manga.rs        -- GET /manga/{id} (redirects to series page)
+    sync.rs, notes.rs, reader_prefs.rs, api.rs, check.rs -- JSON APIs
+    legal.rs        -- /terms, /privacy
     health.rs       -- GET /health
   templates/
-    layout.rs       -- base_layout, reader_layout, error_layout
+    layout.rs       -- page() helper, base_layout, reader_layout, error_content
+    content.rs      -- cards, grids, empty states, breadcrumbs
   static/
-    style.css       -- all styles (2319 lines, one file)
-    app.js          -- all client-side JavaScript
+    vendor/         -- vendored Bulma and provenance README
+    theme.css       -- shared Ink & Ember identity layer
+    reader.css      -- reader-only geometry and state
+    *.js            -- client behavior (app, auth, reader, comments, admin)
+    fonts/          -- local Inter and Space Grotesk files
     favicon.svg
 ```
 

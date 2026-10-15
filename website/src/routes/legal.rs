@@ -1,20 +1,24 @@
 //! Public legal pages (`/terms`, `/privacy`).
 //!
-//! Both render the admin-edited plain text in the standard `base_layout`
-//! shell (the `error_layout`-style document shell with header and footer).
+//! Both render the admin-edited plain text in the standard page shell
+//! shell (the shared document shell with header and footer).
 //! Maud escapes the text, so stored markup never renders as HTML.
 
 use axum::{extract::State, response::Html};
 use maud::html;
 use std::sync::Arc;
 
-use crate::{auth::AuthUser, AppState};
+use crate::{AppState, auth::AuthUser};
 
 fn legal_content(heading: &str, body: &str) -> maud::Markup {
     html! {
-        section class="legal-section" {
-            h1 class="page-title" { (heading) }
-            p class="legal-body" { (body) }
+        div class="columns is-centered" {
+            div class="column is-8-desktop is-10-tablet" {
+                section class="content" {
+                    h1 class="title is-2" { (heading) }
+                    p class="m-legal-body" { (body) }
+                }
+            }
         }
     }
 }
@@ -27,40 +31,26 @@ async fn legal_page(
     key: &str,
     fallback: &str,
 ) -> Html<String> {
-    let (cfg, theme, body) = {
+    let (cfg, body) = {
         let db = state.db.lock().await;
         let text = mangaread_core::db::get_setting(&db, key)
             .ok()
             .flatten()
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| fallback.to_string());
-        (
-            crate::config::site_config(&db),
-            crate::config::resolve_theme(&db, user),
-            text,
-        )
+        (crate::config::site_config(&db), text)
     };
-    let banner: Option<String> = None;
-    let css = cfg.css_overrides();
-    Html(
-        crate::templates::layout::base_layout(
-            title,
-            legal_content(heading, &body),
-            banner.as_deref(),
-            &css,
-            &cfg.site_title,
-            user,
-            &theme,
-        )
-        .0,
+    crate::templates::layout::page(
+        &cfg,
+        title,
+        crate::templates::layout::Nav::None,
+        user,
+        legal_content(heading, &body),
     )
 }
 
 /// GET `/terms` — Terms of Service from the `legal_terms` setting.
-pub async fn terms(
-    State(state): State<Arc<AppState>>,
-    user: Option<AuthUser>,
-) -> Html<String> {
+pub async fn terms(State(state): State<Arc<AppState>>, user: Option<AuthUser>) -> Html<String> {
     legal_page(
         &state,
         user.as_ref(),
@@ -73,10 +63,7 @@ pub async fn terms(
 }
 
 /// GET `/privacy` — Privacy Policy from the `legal_privacy` setting.
-pub async fn privacy(
-    State(state): State<Arc<AppState>>,
-    user: Option<AuthUser>,
-) -> Html<String> {
+pub async fn privacy(State(state): State<Arc<AppState>>, user: Option<AuthUser>) -> Html<String> {
     legal_page(
         &state,
         user.as_ref(),

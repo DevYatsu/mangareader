@@ -4,18 +4,24 @@
 
 mod auth;
 mod config;
+mod email;
+mod image_proxy;
+mod oauth;
+mod rate_limit;
 mod routes;
 mod scraper_helper;
 mod templates;
+#[cfg(test)]
+mod test_support;
 
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use mangaread_core::db;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 use tracing_subscriber::EnvFilter;
 
@@ -27,21 +33,8 @@ pub struct SyncProgress {
     pub total: i64,
     /// How many we have synced so far.
     pub current: i64,
-}
-
-/// Current health status of a single source adapter.
-#[derive(Clone)]
-pub struct AdapterHealth {
-    /// Adapter / source name (e.g. "demonicscans").
-    pub source: String,
-    /// Whether the adapter is currently considered healthy.
-    pub healthy: bool,
-    /// Number of consecutive failures since last success.
-    pub consecutive_failures: u32,
-    /// Timestamp of the last sync attempt.
-    pub last_attempt: String,
-    /// Error message from the most recent failure, if any.
-    pub last_error: Option<String>,
+    /// When the last full pass finished (UTC, SQLite format).
+    pub last_finished: Option<String>,
 }
 
 /// Shared application state.
@@ -59,11 +52,286 @@ pub struct AppState {
     pub syncing_manga_ids: Mutex<Vec<i64>>,
     /// Progress of the automatic sequential sync loop.
     pub auto_sync: Mutex<SyncProgress>,
-    /// Per-source adapter health (keyed by source name).
-    pub adapter_health: Mutex<HashMap<String, AdapterHealth>>,
+    /// Wakes the sync loop early ("Run full sync now").
+    pub sync_wake: tokio::sync::Notify,
+    /// Starts a background scrape job; returns whether it started. Routes go
+    /// through this instead of calling the scraper directly, so tests can
+    /// record jobs instead of launching Chromium.
+    pub spawn_job: Arc<dyn Fn(crate::scraper_helper::Job) -> bool + Send + Sync>,
+    /// One-time token required by `/setup` while the instance has no users.
+    /// `None` once setup is complete (or was never needed).
+    pub setup_token: Mutex<Option<String>>,
+    /// Outbound mail (SMTP in production, in-memory in tests).
+    pub mailer: Arc<dyn crate::email::Mailer>,
+    /// Sliding-window limits for mail-sending endpoints.
+    pub rate_limiter: crate::rate_limit::RateLimiter,
+    /// Fetches and caches reader page images (`/img/{page_id}`).
+    pub images: crate::image_proxy::ImageProxy,
 }
 
+impl AppState {
+    /// Fresh state over an initialized connection, with empty sync bookkeeping.
+    pub fn new(conn: rusqlite::Connection) -> Self {
+        AppState {
+            db: Mutex::new(conn),
+            sync_error: Mutex::new(None),
+            syncing_manga_ids: Mutex::new(Vec::new()),
+            auto_sync: Mutex::new(SyncProgress {
+                running: false,
+                total: 0,
+                current: 0,
+                last_finished: None,
+            }),
+            sync_wake: tokio::sync::Notify::new(),
+            spawn_job: Arc::new(crate::scraper_helper::spawn_job),
+            setup_token: Mutex::new(None),
+            mailer: Arc::new(crate::email::SmtpMailer),
+            rate_limiter: crate::rate_limit::RateLimiter::default(),
+            images: crate::image_proxy::ImageProxy::from_env(),
+        }
+    }
+}
 
+/// Build the full router. Kept separate from `main` so tests can drive every
+/// route in-process without binding a port or starting the sync loop.
+pub fn app(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/", get(crate::routes::home::home))
+        .route("/series", get(crate::routes::series::series_list))
+        .route("/series/{id}", get(crate::routes::series::series_detail))
+        .route("/library", get(crate::routes::library::library_page))
+        .route(
+            "/library/{series_id}",
+            post(crate::routes::library::set_shelf),
+        )
+        .route(
+            "/bookmarks",
+            get(|| async { axum::response::Redirect::permanent("/library") }),
+        )
+        .route(
+            "/login",
+            get(crate::routes::auth_pages::login_page)
+                .post(crate::routes::auth_pages::login_submit),
+        )
+        .route(
+            "/register",
+            get(crate::routes::signup::register_page).post(crate::routes::signup::register_submit),
+        )
+        .route(
+            "/register/{token}",
+            get(crate::routes::signup::complete_page).post(crate::routes::signup::complete_submit),
+        )
+        .route("/logout", post(crate::routes::auth_pages::logout))
+        .route(
+            "/forgot",
+            get(crate::routes::password_reset::forgot_page)
+                .post(crate::routes::password_reset::forgot_submit),
+        )
+        .route(
+            "/reset/{token}",
+            get(crate::routes::password_reset::reset_page)
+                .post(crate::routes::password_reset::reset_submit),
+        )
+        .route("/auth/{provider}", get(crate::routes::oauth::oauth_start))
+        .route(
+            "/auth/{provider}/callback",
+            get(crate::routes::oauth::oauth_callback),
+        )
+        .route(
+            "/setup",
+            get(crate::routes::setup::setup_page).post(crate::routes::setup::setup_submit),
+        )
+        .route("/settings", get(crate::routes::settings::settings_page))
+        .route(
+            "/settings/profile",
+            post(crate::routes::settings::profile_submit),
+        )
+        .route(
+            "/settings/password",
+            post(crate::routes::settings::password_submit),
+        )
+        .route("/admin", get(crate::routes::admin::dashboard))
+        .route(
+            "/admin/branding",
+            get(crate::routes::admin::branding_page).post(crate::routes::admin::branding_submit),
+        )
+        .route(
+            "/admin/email",
+            get(crate::routes::admin_email::email_page)
+                .post(crate::routes::admin_email::email_submit),
+        )
+        .route(
+            "/admin/email/test",
+            post(crate::routes::admin_email::email_test),
+        )
+        .route(
+            "/admin/series",
+            get(crate::routes::admin_series::series_list),
+        )
+        .route(
+            "/admin/series/{id}",
+            get(crate::routes::admin_series::series_edit),
+        )
+        .route(
+            "/admin/series/{id}/rename",
+            post(crate::routes::admin_series::series_rename),
+        )
+        .route(
+            "/admin/series/{id}/cover",
+            post(crate::routes::admin_series::series_cover),
+        )
+        .route(
+            "/admin/series/{id}/hide",
+            post(crate::routes::admin_series::series_hide),
+        )
+        .route(
+            "/admin/series/{id}/merge",
+            post(crate::routes::admin_series::series_merge),
+        )
+        .route(
+            "/admin/manga/{id}/split",
+            post(crate::routes::admin_series::manga_split),
+        )
+        .route(
+            "/admin/sources",
+            get(crate::routes::admin_sync::sources_page),
+        )
+        .route(
+            "/admin/sources/{name}/toggle",
+            post(crate::routes::admin_sync::source_toggle),
+        )
+        .route(
+            "/admin/sources/{name}/scan",
+            post(crate::routes::admin_sync::source_scan),
+        )
+        .route(
+            "/admin/image-cache",
+            post(crate::routes::admin_sync::image_cache_cap),
+        )
+        .route("/admin/sync", get(crate::routes::admin_sync::sync_page))
+        .route(
+            "/admin/sync/run",
+            post(crate::routes::admin_sync::sync_run_now),
+        )
+        .route(
+            "/admin/sync/retry/{id}",
+            post(crate::routes::admin_sync::sync_retry),
+        )
+        .route("/admin/users", get(crate::routes::admin::users_page))
+        .route(
+            "/admin/users/{id}/role",
+            post(crate::routes::admin::user_set_role),
+        )
+        .route(
+            "/admin/users/{id}/ban",
+            post(crate::routes::admin::user_set_banned),
+        )
+        .route(
+            "/admin/users/{id}/reset-link",
+            post(crate::routes::admin::user_reset_link),
+        )
+        .route("/mod/reports", get(crate::routes::moderation::reports_page))
+        .route(
+            "/mod/comments/{id}/hide",
+            post(crate::routes::moderation::hide),
+        )
+        .route(
+            "/mod/comments/{id}/dismiss",
+            post(crate::routes::moderation::dismiss),
+        )
+        .route(
+            "/mod/users/{id}/mute",
+            post(crate::routes::moderation::mute),
+        )
+        .route("/terms", get(crate::routes::legal::terms))
+        .route("/privacy", get(crate::routes::legal::privacy))
+        // Readers never see sources (spec Slice D); old links land on the grid.
+        .route(
+            "/source/{source}",
+            get(|| async { axum::response::Redirect::permanent("/series") }),
+        )
+        .route("/manga/{id}", get(crate::routes::manga::manga_detail))
+        .route(
+            "/read/{manga_id}/{chapter_id}",
+            get(crate::routes::reader::chapter_reader),
+        )
+        .route(
+            "/api/check-manga/{id}",
+            get(crate::routes::check::check_manga),
+        )
+        .route(
+            "/api/check-chapter/{id}",
+            get(crate::routes::check::check_chapter),
+        )
+        .route("/api/sync-status", get(crate::routes::api::sync_status))
+        .route("/api/sync-manga/{id}", post(crate::routes::api::sync_manga))
+        .route(
+            "/api/progress-series",
+            get(crate::routes::api::progress_series),
+        )
+        .route(
+            "/api/bookmarks",
+            get(crate::routes::sync::get_bookmarks).post(crate::routes::sync::set_bookmark),
+        )
+        .route(
+            "/api/progress",
+            get(crate::routes::sync::get_progress).post(crate::routes::sync::post_progress),
+        )
+        .route("/api/history", post(crate::routes::sync::post_history))
+        .route("/api/migrate", post(crate::routes::sync::post_migrate))
+        .route(
+            "/api/reader-prefs",
+            get(crate::routes::reader_prefs::get_prefs)
+                .post(crate::routes::reader_prefs::post_prefs),
+        )
+        .route(
+            "/api/notes",
+            get(crate::routes::notes::list_notes).post(crate::routes::notes::create_note),
+        )
+        .route(
+            "/api/comments",
+            get(crate::routes::comments::list).post(crate::routes::comments::create),
+        )
+        .route(
+            "/api/comments/{id}/edit",
+            post(crate::routes::comments::edit),
+        )
+        .route(
+            "/api/comments/{id}/delete",
+            post(crate::routes::comments::delete),
+        )
+        .route(
+            "/api/comments/{id}/report",
+            post(crate::routes::comments::report),
+        )
+        .route(
+            "/api/comments/{id}/hide",
+            post(crate::routes::comments::hide),
+        )
+        .route(
+            "/api/comments/{id}/restore",
+            post(crate::routes::comments::restore),
+        )
+        .route("/img/{page_id}", get(crate::routes::images::page_image))
+        .route("/health", get(crate::routes::health::health))
+        .route(
+            "/favicon.ico",
+            get(|| async { axum::response::Redirect::permanent("/static/favicon.svg") }),
+        )
+        .nest_service(
+            "/static",
+            ServeDir::new(
+                std::env::var("MANGAREAD_STATIC_DIR")
+                    .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/static").to_string()),
+            ),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::routes::setup::setup_gate,
+        ))
+        .layer(CompressionLayer::new())
+        .with_state(state)
+}
 
 /// Application entrypoint.
 ///
@@ -74,88 +342,40 @@ pub struct AppState {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let conn = db::open_db()?;
     db::init_db(&conn)?;
+    db::rebuild_search_index(&conn)?;
 
     let boot = crate::config::SiteConfig::from_env();
     tracing::info!(site_title = %boot.site_title, accent = %boot.accent, "boot defaults loaded");
 
-    let state = Arc::new(AppState {
-        db: Mutex::new(conn),
-        sync_error: Mutex::new(None),
-        syncing_manga_ids: Mutex::new(Vec::new()),
-        auto_sync: Mutex::new(SyncProgress { running: false, total: 0, current: 0 }),
-        adapter_health: Mutex::new(HashMap::from([
-            ("demonicscans".into(), AdapterHealth {
-                source: "demonicscans".into(),
-                healthy: true,
-                consecutive_failures: 0,
-                last_attempt: "never".into(),
-                last_error: None,
-            }),
-            ("manhuaplus".into(), AdapterHealth {
-                source: "manhuaplus".into(),
-                healthy: true,
-                consecutive_failures: 0,
-                last_attempt: "never".into(),
-                last_error: None,
-            }),
-        ])),
-    });
+    let state = Arc::new(AppState::new(conn));
+    {
+        let state = state.clone();
+        // Counting a large cache walks every file; keep it off the boot path.
+        tokio::task::spawn_blocking(move || state.images.scan_usage());
+    }
+    crate::routes::setup::arm_if_needed(&state).await;
 
     // Start the background sync loop (scan → sequential sync → sleep → repeat).
     tracing::info!("starting background sync loop...");
     crate::scraper_helper::start_sync_loop(state.clone());
 
-    let app = Router::new()
-        .route("/", get(crate::routes::home::home))
-        .route("/series", get(crate::routes::series::series_list))
-        .route("/series/{id}", get(crate::routes::series::series_detail))
-        .route("/bookmarks", get(crate::routes::bookmarks::bookmarks_page))
-        .route("/login", get(crate::routes::auth_pages::login_page).post(crate::routes::auth_pages::login_submit))
-        .route("/register", get(crate::routes::auth_pages::register_page).post(crate::routes::auth_pages::register_submit))
-        .route("/logout", post(crate::routes::auth_pages::logout))
-        .route("/settings", get(crate::routes::settings::settings_page))
-        .route("/settings/profile", post(crate::routes::settings::profile_submit))
-        .route("/settings/appearance", post(crate::routes::settings::appearance_submit))
-        .route("/settings/password", post(crate::routes::settings::password_submit))
-        .route("/admin", get(crate::routes::admin::dashboard))
-        .route("/admin/branding", get(crate::routes::admin::branding_page).post(crate::routes::admin::branding_submit))
-        .route("/terms", get(crate::routes::legal::terms))
-        .route("/privacy", get(crate::routes::legal::privacy))
-        .route("/source/{source}", get(crate::routes::source::source_list))
-        .route("/manga/{id}", get(crate::routes::manga::manga_detail))
-        .route(
-            "/read/{manga_id}/{chapter_id}",
-            get(crate::routes::reader::chapter_reader),
-        )
-        .route("/api/check-manga/{id}", get(crate::routes::check::check_manga))
-        .route("/api/check-chapter/{id}", get(crate::routes::check::check_chapter))
-        .route("/api/sync-status", get(crate::routes::api::sync_status))
-        .route("/api/sync-manga/{id}", post(crate::routes::api::sync_manga))
-        .route("/api/progress-series", get(crate::routes::api::progress_series))
-        .route("/api/bookmarks", get(crate::routes::sync::get_bookmarks).post(crate::routes::sync::set_bookmark))
-        .route("/api/progress", get(crate::routes::sync::get_progress).post(crate::routes::sync::post_progress))
-        .route("/api/history", post(crate::routes::sync::post_history))
-        .route("/api/migrate", post(crate::routes::sync::post_migrate))
-        .route("/health", get(crate::routes::health::health))
-        .route("/favicon.ico", get(|| async { axum::response::Redirect::permanent("/static/favicon.svg") }))
-        .nest_service(
-            "/static",
-            ServeDir::new(
-                std::env::var("MANGAREAD_STATIC_DIR")
-                    .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/static").to_string()),
-            ),
-        )
-        .with_state(state);
+    let app = app(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     tracing::info!("listening on http://0.0.0.0:3000");
-    axum::serve(listener, app).await?;
+    // Connect info feeds `ClientIp`, which keys the sign-up rate limits.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }

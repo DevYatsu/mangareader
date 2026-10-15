@@ -35,7 +35,10 @@ impl SiteAdapter for ManhuaplusAdapter {
         helpers::wait_for_page(driver, "manhuaplus listing").await;
 
         let page_source = driver.source().await?;
-        tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
+        tracing::info!(
+            "page source fetched ({} bytes), parsing HTML...",
+            page_source.len()
+        );
         let document = Html::parse_document(&page_source);
 
         // Manga entries are in items with a[href*='/manga/']
@@ -48,7 +51,10 @@ impl SiteAdapter for ManhuaplusAdapter {
         for element in document.select(&link_selector) {
             let href = element.value().attr("href").unwrap_or("");
             // Only capture detail-page links (not chapter links, not nav links)
-            let path = href.strip_prefix("https://manhuaplus.top").or_else(|| Some(href)).unwrap();
+            let path = href
+                .strip_prefix("https://manhuaplus.top")
+                .or_else(|| Some(href))
+                .unwrap();
             // A manga detail link looks like /manga/{slug} with no further segments
             if !path.starts_with("/manga/") || path.matches('/').count() > 2 {
                 continue;
@@ -111,17 +117,16 @@ impl SiteAdapter for ManhuaplusAdapter {
         Ok(manga)
     }
 
-    async fn fetch_manga(
-        &self,
-        driver: &WebDriver,
-        detail_url: &str,
-    ) -> anyhow::Result<MangaInfo> {
+    async fn fetch_manga(&self, driver: &WebDriver, detail_url: &str) -> anyhow::Result<MangaInfo> {
         tracing::info!("navigating to manga detail page: {detail_url}");
         driver.goto(detail_url).await?;
         helpers::wait_for_page(driver, "manhuaplus").await;
 
         let page_source = driver.source().await?;
-        tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
+        tracing::info!(
+            "page source fetched ({} bytes), parsing HTML...",
+            page_source.len()
+        );
         let document = Html::parse_document(&page_source);
 
         // Title
@@ -148,10 +153,9 @@ impl SiteAdapter for ManhuaplusAdapter {
             .map(|e| e.text().collect::<String>().trim().to_string());
 
         // Cover — try the detail-page img first
-        let cover_sel = Selector::parse(
-            ".detail-info img, img[class*='cover'], meta[itemprop='image']",
-        )
-        .unwrap();
+        let cover_sel =
+            Selector::parse(".detail-info img, img[class*='cover'], meta[itemprop='image']")
+                .unwrap();
         let cover_url = document
             .select(&cover_sel)
             .next()
@@ -171,10 +175,9 @@ impl SiteAdapter for ManhuaplusAdapter {
             });
 
         // Chapter list
-        let ch_sel = Selector::parse(
-            "#nt_listchapter a[href*='/manga/'], .list-chapter a[href*='chapter']",
-        )
-        .unwrap();
+        let ch_sel =
+            Selector::parse("#nt_listchapter a[href*='/manga/'], .list-chapter a[href*='chapter']")
+                .unwrap();
         let chapters: Vec<ChapterListing> = document
             .select(&ch_sel)
             .filter_map(|e| {
@@ -196,11 +199,7 @@ impl SiteAdapter for ManhuaplusAdapter {
                     Some(text)
                 };
 
-                Some(ChapterListing {
-                    title,
-                    number,
-                    url,
-                })
+                Some(ChapterListing { title, number, url })
             })
             .collect();
 
@@ -208,7 +207,11 @@ impl SiteAdapter for ManhuaplusAdapter {
             "parsed manga: title=\"{}\" author={} description={} cover={} chapters={}",
             title,
             author.as_deref().unwrap_or("none"),
-            if description.is_some() { "found" } else { "none" },
+            if description.is_some() {
+                "found"
+            } else {
+                "none"
+            },
             cover_url.as_deref().unwrap_or("none"),
             chapters.len(),
         );
@@ -234,7 +237,10 @@ impl SiteAdapter for ManhuaplusAdapter {
         helpers::wait_for_page(driver, "manhuaplus chapter").await;
 
         let page_source = driver.source().await?;
-        tracing::info!("page source fetched ({} bytes), parsing HTML...", page_source.len());
+        tracing::info!(
+            "page source fetched ({} bytes), parsing HTML...",
+            page_source.len()
+        );
         let document = Html::parse_document(&page_source);
 
         // Page images are in div.page-chapter img
@@ -260,9 +266,12 @@ impl SiteAdapter for ManhuaplusAdapter {
         tracing::info!(
             "page extraction complete: {} pages found{}",
             pages.len(),
-            if pages.is_empty() { " (no images detected!)" } else { "" }
+            if pages.is_empty() {
+                " (no images detected!)"
+            } else {
+                ""
+            }
         );
         Ok(pages)
     }
 }
-

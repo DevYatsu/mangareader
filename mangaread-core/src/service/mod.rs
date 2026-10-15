@@ -2,5 +2,4 @@
 ///
 /// Services orchestrate operations that span multiple aggregates or
 /// involve business rules beyond simple CRUD.
-
 pub mod series;

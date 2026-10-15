@@ -1,16 +1,27 @@
 # MangaRead
 
-Scrapes chapters from third-party manga sites, merges them into series, and serves them through a local web interface. Bookmarks, reading progress, auto-sync.
+A self-hosted manga library for you and the people you share it with. It fetches chapters from supported sites, merges the same title from several sources into one series, and serves a fast reader with accounts, synced progress, and bookmarks.
 
-## Quick Start
+One Docker container, one SQLite file, sized for 1–20 readers. Runs on a Raspberry Pi 4.
+
+> **Content notice:** chapters come from third-party sites. Run MangaRead for yourself and people you know. Hosting it as a public site redistributes other people's work and invites takedowns.
+
+## Install
 
 ```bash
-docker compose up --build
+curl -O https://raw.githubusercontent.com/DevYatsu/mangareader/master/compose.yaml
+docker compose up -d
+docker compose logs mangaread | grep "setup token"
 ```
 
-Open http://localhost:3000. SQLite database lives in a named volume.
+1. Open `http://localhost:3000/setup`.
+2. Paste the setup token from the log and create the admin account. Until you do, every page redirects to `/setup`, so nobody else can claim the instance.
+3. Set up email at `/admin/email` (setup takes you there). Readers sign up with an emailed link, so **sign-up stays closed until SMTP works**. "Send test email" checks the settings.
+4. Optional: set the title, colors, and homepage at `/admin/branding`.
 
-Development without Docker: see [Running without Docker](#running-without-docker).
+The first sync starts on boot and runs every 6 hours. A large source takes a while on first run.
+
+Before exposing it beyond your LAN, put it behind HTTPS and set `MANGAREAD_BASE_URL` and `MANGAREAD_COOKIE_SECURE=1` in `compose.yaml`.
 
 ### Screenshots
 
@@ -22,174 +33,82 @@ Development without Docker: see [Running without Docker](#running-without-docker
 |----------------|----------------|
 | ![series-details](docs/website/series-details.jpg) | ![chapter](docs/website/chapter.jpg) |
 
-## Architecture
+## Accounts and roles
 
-```mermaid
-flowchart TB
-    subgraph CLI["CLI (scraper)"]
-        SCR[ScraperEngine]
-    end
-    subgraph WEB["Web Server (website)"]
-        APP[AppState<br/>Mutex&lt;Connection&gt;]
-        ASYNC[bg sync loop<br/>6h interval]
-        ROUTES[10 route modules]
-        TMPL[Maud templates<br/>layouts + inline pages]
-    end
-    subgraph BROWSER["Browser"]
-        HTML[HTML pages]
-        JS["app.js<br/>h() · localStorage"]
-    end
-    subgraph DB["SQLite (mangaread.db)"]
-        S[(series)]
-        M[(manga)]
-        C[(chapters)]
-        P[(pages)]
-    end
-    CLI --> DB
-    WEB --> DB
-    WEB <--> BROWSER
-    SCR --> DB
-    ASYNC --> DB
+| Level | How you get it | Can |
+|---|---|---|
+| Visitor | Not logged in | Read everything. Progress stays in the browser. |
+| User | Signs up by email link, or Google/GitHub/Discord | Progress, bookmarks, and notes synced across devices. |
+| Moderator | Promoted by an admin | Will moderate chapter comments once they ship. No access to site settings or the catalog. |
+| Admin | `/setup`, or promoted by an admin | Everything under `/admin`: branding, email, users (roles, bans, reset links). |
+
+- Sign-up never reveals whether an address already has an account.
+- Sign-up links last 24 hours and reset links 1 hour. Both are single-use and stored only as hashes.
+- Each address gets at most 3 emails per hour, and each IP at most 10 requests per hour.
+- The last admin can never be demoted or banned. Every role change and ban is logged.
+- Without SMTP, an admin can allow sign-up without verification (`/admin/email`, off by default). Anyone can then create accounts with any address.
+
+## Configuration
+
+Branding and email are set in `/admin` and take effect without a restart. Environment variables are boot defaults; see [`.env.example`](.env.example).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MANGAREAD_DB` | `mangaread.db` | SQLite path (`/app/data/mangaread.db` in Docker) |
+| `MANGAREAD_CACHE_DIR` | `cache/` beside the database | Reader image cache (`/app/data/cache` in Docker); size cap set in Admin → Sources |
+| `MANGAREAD_BASE_URL` | `http://localhost:3000` | Public URL for emailed links and OAuth callbacks |
+| `MANGAREAD_COOKIE_SECURE` | unset | `1` behind HTTPS |
+| `MANGAREAD_TRUST_PROXY` | unset | `1` only behind a proxy that sets `X-Forwarded-For` |
+| `SMTP_URL`, `SMTP_FROM` | unset | Email defaults; `/admin/email` overrides |
+| `MANGAREAD_OAUTH_{GOOGLE,GITHUB,DISCORD}_{ID,SECRET}` | unset | Enables that login button |
+| `SITE_TITLE`, `SITE_COLOR`, `SITE_BG` | `MangaRead`, `#f59e0b`, `#131210` | Branding defaults; `/admin/branding` overrides |
+| `CHROMIUM_FLAGS` | `--no-sandbox --disable-dev-shm-usage --disable-gpu --headless` | Chromium args for scraping |
+| `RUST_LOG` | `info` | Log level |
+
+**Resources:** each sync runs up to 3 headless Chromium sessions, so give the container about 2 GB of RAM. Chromium's sandbox needs `SYS_ADMIN`; a Chrome seccomp profile is the stricter alternative.
+
+**Backups:** everything lives in the `mangaread_data` volume. Stop the container, then copy `mangaread.db` (with its `-wal` and `-shm` files if present).
+
+## Development
+
+Prerequisites: Rust 1.88+ and `chromedriver` on `PATH`.
+
+```bash
+cargo run -p website          # http://localhost:3000; prints a setup token on a fresh DB
+cargo test --workspace
+docker compose -f compose.build.yaml up --build   # build the image from source
 ```
 
 Three crates, one workspace:
 
 | Crate | What it does |
 |-------|-------------|
-| `mangaread-core` | Domain types, SQLite repository (`db.rs`), services, title normalization |
-| `scraper` | `SiteAdapter` trait + per-site implementations. CLI binary + library |
-| `website` | Axum web server. Routes in `routes/`, templates in `templates/`, static assets |
+| `mangaread-core` | Domain types, SQLite repository (`db.rs`), series merging, title normalization |
+| `scraper` | `SiteAdapter` trait, per-site adapters, and a debugging CLI |
+| `website` | Axum server: routes in `routes/`, Maud templates in `templates/`, Bulma + vanilla JS in `static/` |
 
-### Design notes
+Route tests drive the real router in-process over an in-memory database (`website/src/test_support.rs`). Outbound mail goes through the `Mailer` trait, which tests replace with an in-memory recorder.
 
-- **Unified series**: Manga from different sources link to one `series` by normalized title. Chapters merge across sources; the source with the most chapters wins on duplicates.
-- **Auto-sync**: On startup, scans all sources, finds stale entries (>2h), syncs chapters in parallel (up to 3 chromedriver sessions on OS threads). Repeats every 6 hours.
-- **rusqlite is `!Sync`**: Each scraper thread opens its own connection. Main `AppState` wraps its connection in `Mutex<Connection>`.
-- **Client-side state**: Bookmarks, reading progress, source filters — all `localStorage`. No accounts.
-- **WebDriver**: Uses system-installed chromedriver (`/usr/bin/chromedriver`), offline mode. Chromium flags from `CHROMIUM_FLAGS` env var.
+Design specs and implementation plans live in [`docs/superpowers/`](docs/superpowers/). See [`docs/architecture/README.md`](docs/architecture/README.md) for the data model, scraping pipeline, and sync loop.
 
-### Routes
+### Sources
 
-| Route | Handler | What it does |
-|-------|---------|--------------|
-| `GET /` | `home` | Landing page: stats + 30 recent chapters |
-| `GET /series` | `series_list` | Paginated grid, `?q=` search |
-| `GET /series/{id}` | `series_detail` | Merged chapters, source filter, triggers sync if stale |
-| `GET /bookmarks` | `bookmarks_page` | Client-side shell, JS fills from localStorage |
-| `GET /source/{source}` | `source_list` | Manga grid for one source |
-| `GET /manga/{id}` | `manga_detail` | Redirects to series (legacy) |
-| `GET /read/{m}/{ch}` | `chapter_reader` | Reader with prev/next nav, auto-reload if unsynced |
-| `GET /api/check-manga/{id}` | `check_manga` | Chapter count (lightweight) |
-| `GET /api/check-chapter/{id}` | `check_chapter` | Page count (lightweight) |
-| `GET /api/sync-status` | `sync_status` | Loop progress + error drain |
-| `POST /api/sync-manga/{id}` | `sync_manga` | Trigger background manga sync |
-| `GET /api/progress-series` | `progress_series` | Series info for "Continue Reading" |
-| `GET /health` | `health` | Docker liveness probe |
+| Adapter | Site |
+|---------|------|
+| `DemonicscansAdapter` | demonicscans.org |
+| `ManhuaplusAdapter` | manhuaplus.top |
 
-### Client-side bits
+To add one, implement `SiteAdapter` in `scraper/src/adapters/` and register it in `website/src/scraper_helper.rs` and `scraper/src/main.rs`.
 
-All state in `localStorage`. DOM built with `h(tag, props, ...children)`.
+### Scraper CLI
 
-- **Reading progress**: ○ unread, ▶ started, ✓ finished. Tracks pages via `IntersectionObserver`, saves on `beforeunload`
-- **Source filters**: Checkboxes above chapter list toggle visibility per source
-- **Reader**: Click left/right third of screen for prev/next. Arrow keys work too. Top bar shows page indicator when you scroll up.
-- **Bookmarks**: Page is a shell, JS reads from localStorage
-- **Continue Reading**: Cards on home page (170x227px, `background-size: cover`)
-
-## Docker
+The server syncs on its own; these commands are for debugging.
 
 ```bash
-docker compose up --build -d
-docker compose logs -f
-docker compose down
+cargo run -p manga-scraper scan                 # discover manga on every source
+cargo run -p manga-scraper sync-manga <id>      # fetch one manga's chapter list
+cargo run -p manga-scraper sync-chapter <id>    # fetch one chapter's page URLs
 ```
-
-Requires chromium/chromedriver in the image. Container needs `SYS_ADMIN` capability and 2GB memory limit.
-
-**Environment variables** (set in docker-compose.yml):
-
-| Variable | Default | What it does |
-|----------|---------|-------------|
-| `MANGAREAD_DB` | `/app/data/mangaread.db` | SQLite path |
-| `CHROMIUM_FLAGS` | `--no-sandbox --disable-dev-shm-usage --disable-gpu --headless` | Chromium args |
-| `RUST_LOG` | `info` | Log level |
-| `SITE_TITLE` | `MangaRead` | Site title |
-| `SITE_COLOR` | `#a78bfa` | Accent color |
-| `SITE_BG` | `#1a1b2e` | Background color |
-
-## Running without Docker
-
-**Prerequisites**: Rust 1.82+, chromedriver on `PATH`.
-
-```bash
-cargo run -p website
-```
-
-Open http://localhost:3000. The server starts a background sync loop that discovers manga and fetches chapters automatically — no manual scan needed.
-
-## CLI Reference
-
-These are optional — the server's background sync loop handles everything automatically. Use them for one-off debugging.
-
-### `cargo run -p manga-scraper scan`
-Visits each source's index page, finds manga listings, upserts to DB. Auto-links manga to series by normalized title.
-
-### `cargo run -p manga-scraper sync-manga <id>`
-Visits a manga's detail page, gets chapter list, upserts chapters. Updates series title from the detail page.
-
-### `cargo run -p manga-scraper sync-chapter <id>`
-Visits a chapter's reader page, extracts page image URLs, upserts pages.
-
-## Source Adapters
-
-| Adapter | Site | What it handles |
-|---------|------|----------------|
-| `DemonicscansAdapter` | demonicscans.org | Chapters, pages |
-| `ManhuaplusAdapter` | manhuaplus.top | Chapters, pages |
-
-New source: implement `SiteAdapter` in `scraper/src/adapters/`, register in `scraper_helper.rs` and `scraper/src/main.rs`.
-
-## Project Structure
-
-```
-mangaread/
-├── mangaread-core/         # Domain models, DB, services
-│   └── src/
-│       ├── domain/         # series.rs, manga.rs, chapter.rs, page.rs, source.rs, title.rs
-│       ├── db.rs           # SQLite repository (one big file)
-│       └── service/        # series merging logic
-├── scraper/                # Scraping library + CLI
-│   └── src/
-│       ├── adapter.rs      # SiteAdapter trait
-│       ├── engine.rs       # ScraperEngine orchestrator
-│       ├── adapters/       # demonicscans.rs, manhuaplus.rs, helpers.rs
-│       └── main.rs         # CLI entrypoint
-├── website/                # Axum web server
-│   └── src/
-│       ├── main.rs         # AppState, routes, server startup
-│       ├── scraper_helper  # build_engine(), create_webdriver(), start_sync_loop()
-│       ├── routes/         # 10 route modules
-│       ├── templates/      # layout.rs (base_layout, reader_layout, error_layout)
-│       └── static/         # style.css, app.js, favicon.svg
-├── docs/architecture/      # Architecture documentation
-├── Dockerfile
-└── docker-compose.yml
-```
-
-## Database
-
-SQLite with WAL mode. Four tables:
-
-- **series**: Unified title, groups manga from multiple sources
-- **manga**: Per-source entries linked to a series
-- **chapters**: Chapter metadata, linked to a manga
-- **pages**: Page image URLs, linked to a chapter
-
-All inserts use `ON CONFLICT ... DO UPDATE` (upsert). Safe to re-run.
-
-## Architecture
-
-See [docs/architecture/README.md](docs/architecture/README.md) for a deep dive into the crate structure, data model, scraping pipeline, sync loop, and design rationale.
 
 ## License
 

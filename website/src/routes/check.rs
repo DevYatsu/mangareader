@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::response::Json;
-use std::sync::Arc;
 use serde::Serialize;
+use std::sync::Arc;
 
 use crate::AppState;
 

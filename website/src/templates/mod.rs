@@ -2,4 +2,5 @@
 //!
 //! Provides layout functions used by all route handlers.
 
+pub mod content;
 pub mod layout;

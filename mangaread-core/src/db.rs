@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use rusqlite::Connection;
 
-use crate::error::Error;
-use crate::domain::*;
 use crate::domain::title::{clean_display_title, normalize_title};
+use crate::domain::*;
+use crate::error::Error;
 
 /// Return the database file path, using `MANGAREAD_DB` env var or a default.
 pub fn database_path() -> String {
@@ -85,6 +85,24 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
             device TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS oauth_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            provider TEXT NOT NULL,
+            provider_user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(provider, provider_user_id)
+        );
+        -- Legacy: reset links moved to email_tokens (hashed). Kept so old
+        -- databases open unchanged; nothing writes here any more.
+        CREATE TABLE IF NOT EXISTS password_resets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            token TEXT NOT NULL UNIQUE,
+            expires_at TEXT NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         CREATE TABLE IF NOT EXISTS bookmarks (
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
@@ -145,7 +163,125 @@ pub fn init_db(conn: &Connection) -> Result<(), Error> {
     if !has_theme {
         conn.execute_batch("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT ''")?;
     }
+    // users.reader_prefs migration: one JSON blob per user (design contract §2.3).
+    let has_reader_prefs: bool = {
+        let mut stmt = conn.prepare("PRAGMA table_info(users)")?;
+        let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for col in cols {
+            if col? == "reader_prefs" {
+                found = true;
+                break;
+            }
+        }
+        found
+    };
+    if !has_reader_prefs {
+        conn.execute_batch("ALTER TABLE users ADD COLUMN reader_prefs TEXT NOT NULL DEFAULT '{}'")?;
+    }
+    // Set when an admin renames a series, so syncs stop overwriting it.
+    if !has_column(conn, "series", "title_locked")? {
+        conn.execute_batch(
+            "ALTER TABLE series ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    if !has_column(conn, "series", "hidden_at")? {
+        conn.execute_batch("ALTER TABLE series ADD COLUMN hidden_at TEXT")?;
+    }
+    if !has_column(conn, "series", "cover_override")? {
+        conn.execute_batch("ALTER TABLE series ADD COLUMN cover_override TEXT")?;
+    }
+    if !has_column(conn, "users", "banned_at")? {
+        conn.execute_batch("ALTER TABLE users ADD COLUMN banned_at TEXT")?;
+    }
+    // A bookmark is a library entry; existing ones land on "reading".
+    if !has_column(conn, "bookmarks", "shelf")? {
+        conn.execute_batch(
+            "ALTER TABLE bookmarks ADD COLUMN shelf TEXT NOT NULL DEFAULT 'reading'",
+        )?;
+    }
+    // Comment mute: the user can read and log in but not post until then.
+    if !has_column(conn, "users", "muted_until")? {
+        conn.execute_batch("ALTER TABLE users ADD COLUMN muted_until TEXT")?;
+    }
+    // `editor` was the pre-2026-10 name of the moderator rank.
+    conn.execute_batch(
+        "UPDATE users SET role = 'moderator' WHERE role = 'editor';
+         CREATE TABLE IF NOT EXISTS mod_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_id INTEGER NOT NULL REFERENCES users(id),
+            action TEXT NOT NULL,
+            target_user_id INTEGER REFERENCES users(id),
+            detail TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_mod_log_created ON mod_log(created_at);
+         CREATE TABLE IF NOT EXISTS email_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_hash TEXT NOT NULL UNIQUE,
+            email TEXT NOT NULL,
+            purpose TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE INDEX IF NOT EXISTS idx_email_tokens_email ON email_tokens(email, purpose);
+         CREATE TABLE IF NOT EXISTS sync_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            target_id INTEGER,
+            started_at TEXT NOT NULL DEFAULT (datetime('now')),
+            finished_at TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            items INTEGER,
+            error TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_sync_runs_source ON sync_runs(source, id);
+         CREATE VIRTUAL TABLE IF NOT EXISTS series_search USING fts5(
+            series_id UNINDEXED, title, other_titles, authors, description,
+            tokenize = 'unicode61 remove_diacritics 2'
+         );
+         CREATE TABLE IF NOT EXISTS comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+            chapter_number REAL NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            parent_id INTEGER REFERENCES comments(id) ON DELETE CASCADE,
+            body TEXT NOT NULL,
+            spoiler INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            edited_at TEXT,
+            hidden_at TEXT,
+            hidden_by INTEGER REFERENCES users(id),
+            deleted_at TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_comments_thread
+            ON comments(series_id, chapter_number, parent_id, id);
+         CREATE TABLE IF NOT EXISTS comment_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+            reporter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved_by INTEGER REFERENCES users(id),
+            resolved_at TEXT,
+            UNIQUE(comment_id, reporter_id)
+         );",
+    )?;
     Ok(())
+}
+
+/// Whether `table` has a column named `column` (for idempotent migrations).
+fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool, Error> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for col in cols {
+        if col? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 // ── Manga CRUD ──
@@ -218,25 +354,8 @@ pub fn list_manga_by_source(conn: &Connection, source: &str) -> Result<Vec<Manga
          FROM manga WHERE source = ?1 ORDER BY title",
     )?;
     let rows = stmt.query_map(rusqlite::params![source], map_manga_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
-}
-
-/// List manga entries from a source site with their scraped chapter count.
-pub fn list_manga_by_source_with_count(conn: &Connection, source: &str) -> Result<Vec<MangaWithCount>, Error> {
-    let mut stmt = conn.prepare(
-        "SELECT m.id, m.source, m.source_id, m.title, m.author, m.cover_url, m.description, m.detail_url, m.created_at, m.updated_at, m.chapters_synced_at, m.series_id,
-                COALESCE(cnt.c, 0) AS chapter_count
-         FROM manga m
-         LEFT JOIN (SELECT manga_id, COUNT(*) AS c FROM chapters GROUP BY manga_id) cnt ON cnt.manga_id = m.id
-         WHERE m.source = ?1
-         ORDER BY m.title",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![source], |row| {
-        let manga = map_manga_row(row)?;
-        let chapter_count: i64 = row.get(12)?;
-        Ok(MangaWithCount { manga, chapter_count })
-    })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// List every manga entry across all sources, ordered by title.
@@ -246,7 +365,8 @@ pub fn list_all_manga(conn: &Connection) -> Result<Vec<Manga>, Error> {
          FROM manga ORDER BY title",
     )?;
     let rows = stmt.query_map([], map_manga_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Fetch a single manga entry by its database id.
@@ -284,7 +404,6 @@ fn map_manga_row(row: &rusqlite::Row) -> rusqlite::Result<Manga> {
 
 // ── Series CRUD ──
 
-
 /// Insert a new series and return its id.
 pub fn insert_series(conn: &Connection, title: &str) -> Result<i64, Error> {
     conn.execute(
@@ -300,13 +419,17 @@ pub fn insert_series(conn: &Connection, title: &str) -> Result<i64, Error> {
 /// Returns `Error::NotFound` if no series matches the given id.
 pub fn get_series_by_id(conn: &Connection, id: i64) -> Result<Series, Error> {
     conn.query_row(
-        "SELECT id, title, created_at FROM series WHERE id = ?1",
+        "SELECT id, title, created_at, hidden_at IS NOT NULL, cover_override, title_locked
+         FROM series WHERE id = ?1",
         rusqlite::params![id],
         |row| {
             Ok(Series {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 created_at: row.get(2)?,
+                hidden: row.get(3)?,
+                cover_override: row.get(4)?,
+                title_locked: row.get::<_, i64>(5)? != 0,
             })
         },
     )
@@ -337,41 +460,240 @@ pub fn find_or_create_series(conn: &Connection, title: &str) -> Result<i64, Erro
     insert_series(conn, &display)
 }
 
-/// List all series with their manga entries and total chapter count.
-pub fn list_all_series(conn: &Connection) -> Result<Vec<SeriesWithManga>, Error> {
-    let mut stmt = conn.prepare(
-        "SELECT s.id, s.title, s.created_at,
-                COALESCE(ch.cnt, 0) AS ch_count
-         FROM series s
-         LEFT JOIN (
-             SELECT m.series_id, COUNT(*) AS cnt
-             FROM chapters c
-             JOIN manga m ON m.id = c.manga_id
-             GROUP BY m.series_id
-         ) ch ON ch.series_id = s.id
-         ORDER BY s.title",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        let series = Series {
+/// CTEs shared by every series-card query.
+///
+/// `covers` picks one cover per series with `ROW_NUMBER()`: the manga with
+/// the most chapters wins, the lowest id breaks ties. `counts` gives the
+/// distinct chapter numbers and the newest chapter time. One statement,
+/// constant round trips regardless of library size.
+const CARD_CTES: &str = "
+    WITH per_manga AS (
+        SELECT m.id, m.series_id, m.cover_url, COUNT(c.id) AS cnt
+        FROM manga m
+        LEFT JOIN chapters c ON c.manga_id = m.id
+        WHERE m.series_id IS NOT NULL
+        GROUP BY m.id
+    ),
+    covers AS (
+        SELECT series_id, cover_url,
+               ROW_NUMBER() OVER (PARTITION BY series_id ORDER BY cnt DESC, id ASC) AS rn
+        FROM per_manga
+    ),
+    counts AS (
+        SELECT m.series_id, COUNT(DISTINCT c.number) AS n, MAX(c.created_at) AS last_at
+        FROM chapters c
+        JOIN manga m ON m.id = c.manga_id
+        GROUP BY m.series_id
+    )";
+
+/// Columns and joins every card query selects. Hidden series and series
+/// without chapters never appear.
+const CARD_FROM: &str = "
+    SELECT s.id, s.title, COALESCE(s.cover_override, cv.cover_url), counts.n,
+           counts.last_at
+    FROM series s
+    JOIN counts ON counts.series_id = s.id
+    LEFT JOIN covers cv ON cv.series_id = s.id AND cv.rn = 1";
+
+fn map_card(row: &rusqlite::Row) -> rusqlite::Result<(SeriesCard, String)> {
+    Ok((
+        SeriesCard {
             id: row.get(0)?,
             title: row.get(1)?,
-            created_at: row.get(2)?,
-        };
-        let total_chapters: i64 = row.get(3)?;
-        Ok((series, total_chapters))
-    })?;
-    let mut result = Vec::new();
-    for row in rows {
-        let (series, total_chapters) = row?;
-        // Fetch manga entries for this series
-        let manga_entries = list_manga_by_series(conn, series.id)?;
-        result.push(SeriesWithManga {
-            series,
-            manga_entries,
-            total_chapters,
-        });
+            cover_url: row.get(2)?,
+            chapter_count: row.get(3)?,
+        },
+        row.get(4)?,
+    ))
+}
+
+/// How the series grid is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BrowseSort {
+    /// Newest chapter first: what readers come back for.
+    #[default]
+    Updated,
+    /// Newest series first.
+    Added,
+    /// A–Z by title.
+    Title,
+}
+
+impl BrowseSort {
+    pub fn from_param(s: &str) -> Self {
+        match s {
+            "added" => BrowseSort::Added,
+            "az" => BrowseSort::Title,
+            _ => BrowseSort::Updated,
+        }
     }
-    Ok(result)
+
+    pub fn param(self) -> &'static str {
+        match self {
+            BrowseSort::Updated => "updated",
+            BrowseSort::Added => "added",
+            BrowseSort::Title => "az",
+        }
+    }
+}
+
+/// One page of the grid and the cursor for the next page, if any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowsePage {
+    pub cards: Vec<SeriesCard>,
+    pub next: Option<String>,
+}
+
+/// One page of the series grid with keyset pagination.
+///
+/// `after` is the opaque cursor from the previous page. Keyset (not
+/// `OFFSET`) keeps pages stable while the sync loop inserts rows, and costs
+/// the same on page 100 as on page 1.
+pub fn browse_series(
+    conn: &Connection,
+    sort: BrowseSort,
+    after: Option<&str>,
+    limit: i64,
+) -> Result<BrowsePage, Error> {
+    // Cursor: "<sort key>~<series id>"; the key may itself contain '~'.
+    let (key, id) = after
+        .and_then(|c| c.rsplit_once('~'))
+        .and_then(|(k, id)| id.parse::<i64>().ok().map(|id| (k.to_string(), id)))
+        .map_or((None, None), |(k, id)| (Some(k), Some(id)));
+    // Sort keys come from this enum, never from user text.
+    let (predicate, order) = match sort {
+        BrowseSort::Updated => (
+            "(counts.last_at, s.id) < (?1, ?2)",
+            "counts.last_at DESC, s.id DESC",
+        ),
+        BrowseSort::Added => ("s.id < ?2", "s.id DESC"),
+        BrowseSort::Title => ("(lower(s.title), s.id) > (?1, ?2)", "lower(s.title), s.id"),
+    };
+    let sql = format!(
+        "{CARD_CTES} {CARD_FROM}
+         WHERE s.hidden_at IS NULL AND (?2 IS NULL OR {predicate})
+         ORDER BY {order}
+         LIMIT ?3"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt
+        .query_map(rusqlite::params![key, id, limit + 1], map_card)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let next = if rows.len() as i64 > limit {
+        rows.truncate(limit as usize);
+        rows.last().map(|(card, last_at)| match sort {
+            BrowseSort::Updated => format!("{last_at}~{}", card.id),
+            BrowseSort::Added => format!("~{}", card.id),
+            BrowseSort::Title => format!("{}~{}", card.title.to_lowercase(), card.id),
+        })
+    } else {
+        None
+    };
+    Ok(BrowsePage {
+        cards: rows.into_iter().map(|(c, _)| c).collect(),
+        next,
+    })
+}
+
+/// Rebuild the full-text index from series and their source entries.
+///
+/// A full rebuild is a single statement and takes milliseconds at the
+/// 1-20-reader scale this app targets, so it runs at boot, after scans, at
+/// the end of each sync pass, and after admin catalog edits, instead of
+/// per-row triggers spread over every write path (KISS).
+pub fn rebuild_search_index(conn: &Connection) -> Result<(), Error> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM series_search", [])?;
+    tx.execute(
+        "INSERT INTO series_search (series_id, title, other_titles, authors, description)
+         SELECT s.id, s.title,
+                COALESCE(group_concat(DISTINCT m.title), ''),
+                COALESCE(group_concat(DISTINCT m.author), ''),
+                COALESCE(MAX(m.description), '')
+         FROM series s
+         LEFT JOIN manga m ON m.series_id = s.id
+         GROUP BY s.id",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// FTS5 query for user input: every word must match as a prefix. Quotes are
+/// doubled, so input cannot inject FTS operators.
+fn fts_query(q: &str) -> Option<String> {
+    let words: Vec<String> = q
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{}\"*", w.replace('"', "\"\"")))
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// Search series cards, best match first, at most `limit`.
+///
+/// Full-text search covers the title, every source's title for the series,
+/// authors and descriptions, with title hits weighted highest. Queries
+/// under 3 characters, or with no full-text hits, fall back to a substring
+/// match on the title (which also catches fragments inside words).
+pub fn search_series_cards(
+    conn: &Connection,
+    q: &str,
+    limit: i64,
+) -> Result<Vec<SeriesCard>, Error> {
+    let q = q.trim();
+    if q.chars().count() >= 3
+        && let Some(fts) = fts_query(q)
+    {
+        // bm25 weights per column: id 0, title 10, other titles 5,
+        // authors 2, description 1. Lower bm25 = better.
+        let sql = format!(
+            "{CARD_CTES},
+             hits AS (
+                 SELECT CAST(series_id AS INTEGER) AS series_id,
+                        bm25(series_search, 0.0, 10.0, 5.0, 2.0, 1.0) AS score
+                 FROM series_search WHERE series_search MATCH ?1
+             )
+             {CARD_FROM}
+             JOIN hits ON hits.series_id = s.id
+             WHERE s.hidden_at IS NULL
+             ORDER BY hits.score
+             LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let hits = stmt
+            .query_map(rusqlite::params![fts, limit], map_card)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !hits.is_empty() {
+            return Ok(hits.into_iter().map(|(c, _)| c).collect());
+        }
+    }
+    let sql = format!(
+        "{CARD_CTES} {CARD_FROM}
+         WHERE s.hidden_at IS NULL AND s.title LIKE ?1 ESCAPE '\\'
+         ORDER BY lower(s.title), s.id
+         LIMIT ?2"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![format!("%{}%", escape_like(q)), limit],
+            map_card,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().map(|(c, _)| c).collect())
+}
+
+/// Escape `LIKE` wildcards so user input matches literally (SQL `ESCAPE '\'`).
+fn escape_like(q: &str) -> String {
+    let mut out = String::with_capacity(q.len());
+    for ch in q.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Get all manga entries linked to a series.
@@ -381,7 +703,8 @@ pub fn list_manga_by_series(conn: &Connection, series_id: i64) -> Result<Vec<Man
          FROM manga WHERE series_id = ?1 ORDER BY source",
     )?;
     let rows = stmt.query_map(rusqlite::params![series_id], map_manga_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Get all manga that are NOT yet linked to any series.
@@ -391,7 +714,8 @@ pub fn list_unlinked_manga(conn: &Connection) -> Result<Vec<Manga>, Error> {
          FROM manga WHERE series_id IS NULL ORDER BY title",
     )?;
     let rows = stmt.query_map([], map_manga_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Link a manga to a series.
@@ -403,6 +727,23 @@ pub fn link_manga_to_series(conn: &Connection, manga_id: i64, series_id: i64) ->
     Ok(())
 }
 
+/// Link a manga to a series by title only if it has none yet. Returns the
+/// manga's series id either way.
+///
+/// Scans call this on every pass. Relinking an already-linked manga would
+/// undo an admin's manual merge or split, so existing links are kept.
+pub fn ensure_manga_linked(conn: &Connection, title: &str, manga_id: i64) -> Result<i64, Error> {
+    let current: Option<i64> = conn.query_row(
+        "SELECT series_id FROM manga WHERE id = ?1",
+        rusqlite::params![manga_id],
+        |row| row.get(0),
+    )?;
+    match current {
+        Some(sid) => Ok(sid),
+        None => ensure_manga_in_series(conn, title, manga_id),
+    }
+}
+
 /// Try to find or create a series for this manga, then link it.
 /// Returns the series id.
 pub fn ensure_manga_in_series(conn: &Connection, title: &str, manga_id: i64) -> Result<i64, Error> {
@@ -412,61 +753,24 @@ pub fn ensure_manga_in_series(conn: &Connection, title: &str, manga_id: i64) -> 
 }
 
 /// Update the series title (e.g. with a clean detail-page title after sync).
+/// A no-op for series an admin renamed (`title_locked`).
 pub fn update_series_title(conn: &Connection, series_id: i64, title: &str) -> Result<(), Error> {
     conn.execute(
-        "UPDATE series SET title = ?1 WHERE id = ?2 AND title != ?1",
+        "UPDATE series SET title = ?1 WHERE id = ?2 AND title != ?1 AND title_locked = 0",
         rusqlite::params![title, series_id],
     )?;
     Ok(())
-}
-
-/// Search series by title (LIKE %query%).
-pub fn search_series(conn: &Connection, query: &str) -> Result<Vec<SeriesWithManga>, Error> {
-    let pattern = format!("%{}%", query);
-    let mut stmt = conn.prepare(
-        "SELECT s.id, s.title, s.created_at,
-                COALESCE(ch.cnt, 0) AS ch_count
-         FROM series s
-         LEFT JOIN (
-             SELECT m.series_id, COUNT(*) AS cnt
-             FROM chapters c
-             JOIN manga m ON m.id = c.manga_id
-             GROUP BY m.series_id
-         ) ch ON ch.series_id = s.id
-         WHERE s.title LIKE ?1
-         ORDER BY s.title
-         LIMIT 50",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![pattern], |row| {
-        let series = Series {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            created_at: row.get(2)?,
-        };
-        let total_chapters: i64 = row.get(3)?;
-        Ok((series, total_chapters))
-    })?;
-    let mut result = Vec::new();
-    for row in rows {
-        let (series, total_chapters) = row?;
-        let manga_entries = list_manga_by_series(conn, series.id)?;
-        result.push(SeriesWithManga {
-            series,
-            manga_entries,
-            total_chapters,
-        });
-    }
-    Ok(result)
 }
 
 /// Get the most recently scraped chapters with their series info.
 pub fn list_recent_chapters(conn: &Connection, limit: i64) -> Result<Vec<RecentChapter>, Error> {
     let mut stmt = conn.prepare(
         "SELECT c.id, c.number, c.title, c.url, c.created_at,
-                m.id, m.series_id, s.title, m.cover_url
+                m.id, m.series_id, s.title, COALESCE(s.cover_override, m.cover_url)
          FROM chapters c
          JOIN manga m ON m.id = c.manga_id
          JOIN series s ON s.id = m.series_id
+         WHERE s.hidden_at IS NULL
          ORDER BY c.created_at DESC
          LIMIT ?1",
     )?;
@@ -483,7 +787,8 @@ pub fn list_recent_chapters(conn: &Connection, limit: i64) -> Result<Vec<RecentC
             cover_url: row.get(8)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 // ── Chapter CRUD ──
@@ -510,7 +815,8 @@ pub fn list_chapters_by_manga(conn: &Connection, manga_id: i64) -> Result<Vec<Ch
          FROM chapters WHERE manga_id = ?1 ORDER BY number",
     )?;
     let rows = stmt.query_map(rusqlite::params![manga_id], map_chapter_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Fetch a single chapter by its database id.
@@ -562,7 +868,32 @@ pub fn list_pages_by_chapter(conn: &Connection, chapter_id: i64) -> Result<Vec<P
          FROM pages WHERE chapter_id = ?1 ORDER BY page_index",
     )?;
     let rows = stmt.query_map(rusqlite::params![chapter_id], map_page_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
+/// Origin URL, source and visibility of one page. `Ok(None)` when missing.
+pub fn get_page_origin(conn: &Connection, page_id: i64) -> Result<Option<PageOrigin>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT p.image_url, m.source, s.hidden_at IS NOT NULL
+         FROM pages p
+         JOIN chapters c ON c.id = p.chapter_id
+         JOIN manga m ON m.id = c.manga_id
+         LEFT JOIN series s ON s.id = m.series_id
+         WHERE p.id = ?1",
+    )?;
+    match stmt.query_row(rusqlite::params![page_id], |row| {
+        Ok(PageOrigin {
+            image_url: row.get(0)?,
+            source: row.get(1)?,
+            // LEFT JOIN: a manga without a series yields NULL, i.e. visible.
+            hidden: row.get::<_, Option<bool>>(2)?.unwrap_or(false),
+        })
+    }) {
+        Ok(o) => Ok(Some(o)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Get the IDs of all manga entries that have zero chapters synced.
@@ -578,15 +909,18 @@ pub fn list_manga_ids_with_zero_chapters(conn: &Connection) -> Result<Vec<i64>, 
          ORDER BY m.id",
     )?;
     let ids = stmt.query_map([], |row| row.get::<_, i64>(0))?;
-    ids.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    ids.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
-/// Get the total count of manga that have chapters synced.
-pub fn count_manga_with_chapters(conn: &Connection) -> Result<i64, Error> {
+/// Count series with at least one chapter. A series with two sources counts once.
+pub fn count_series_with_chapters(conn: &Connection) -> Result<i64, Error> {
     let count: i64 = conn.query_row(
-        "SELECT COUNT(DISTINCT m.id)
+        "SELECT COUNT(DISTINCT m.series_id)
          FROM manga m
-         JOIN chapters c ON c.manga_id = m.id",
+         JOIN chapters c ON c.manga_id = m.id
+         JOIN series s ON s.id = m.series_id
+         WHERE s.hidden_at IS NULL",
         [],
         |row| row.get(0),
     )?;
@@ -597,29 +931,42 @@ pub fn count_manga_with_chapters(conn: &Connection) -> Result<i64, Error> {
 ///
 /// A manga is stale when its `chapters_synced_at` is older than
 /// `stale_minutes` ago. Returns IDs ordered by stalest first.
-pub fn list_manga_ids_needing_sync(conn: &Connection, stale_minutes: i64) -> Result<Vec<i64>, Error> {
+///
+/// Manga from `skip_sources` (sources an admin disabled) are left out.
+pub fn list_manga_ids_needing_sync(
+    conn: &Connection,
+    stale_minutes: i64,
+    skip_sources: &[String],
+) -> Result<Vec<i64>, Error> {
     let mut stmt = conn.prepare(
+        // `NOT EXISTS`, not a join: a join returned a stale manga once per
+        // chapter, so one pass could re-sync the same manga up to 50 times.
         "SELECT m.id
          FROM manga m
-         LEFT JOIN chapters c ON c.manga_id = m.id
-         WHERE c.id IS NULL
+         WHERE (NOT EXISTS (SELECT 1 FROM chapters c WHERE c.manga_id = m.id)
             OR m.chapters_synced_at IS NULL
-            OR m.chapters_synced_at < datetime('now', ?1)
+            OR m.chapters_synced_at < datetime('now', ?1))
+           AND m.source NOT IN (SELECT value FROM json_each(?2))
          ORDER BY m.chapters_synced_at IS NOT NULL, m.chapters_synced_at ASC
          LIMIT 50",
     )?;
     let ids = stmt.query_map(
-        rusqlite::params![format!("-{} minutes", stale_minutes)],
+        rusqlite::params![
+            format!("-{} minutes", stale_minutes),
+            serde_json::to_string(skip_sources).unwrap_or_else(|_| "[]".into())
+        ],
         |row| row.get::<_, i64>(0),
     )?;
-    ids.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    ids.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 /// Get all manga IDs (used for full sync pass).
 pub fn list_all_manga_ids(conn: &Connection) -> Result<Vec<i64>, Error> {
     let mut stmt = conn.prepare("SELECT id FROM manga ORDER BY id")?;
     let ids = stmt.query_map([], |row| row.get::<_, i64>(0))?;
-    ids.collect::<rusqlite::Result<Vec<_>>>().map_err(Error::from)
+    ids.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
 }
 
 fn map_page_row(row: &rusqlite::Row) -> rusqlite::Result<Page> {
@@ -632,6 +979,591 @@ fn map_page_row(row: &rusqlite::Row) -> rusqlite::Result<Page> {
     })
 }
 
+// ── Catalog management (admin-only) ──
+
+/// Series for the admin list, hidden ones included, optionally filtered by
+/// a title substring. Newest first, capped at `limit`.
+pub fn admin_list_series(
+    conn: &Connection,
+    search: Option<&str>,
+    limit: i64,
+) -> Result<Vec<AdminSeriesRow>, Error> {
+    let pattern = search.map(|q| format!("%{}%", escape_like(q)));
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.title, s.hidden_at IS NOT NULL, s.title_locked,
+                (SELECT COUNT(DISTINCT c.number) FROM chapters c
+                   JOIN manga m ON m.id = c.manga_id WHERE m.series_id = s.id),
+                (SELECT COUNT(*) FROM manga m WHERE m.series_id = s.id)
+         FROM series s
+         WHERE ?1 IS NULL OR s.title LIKE ?1 ESCAPE '\\'
+         ORDER BY s.id DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![pattern, limit], |row| {
+        Ok(AdminSeriesRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            hidden: row.get(2)?,
+            title_locked: row.get::<_, i64>(3)? != 0,
+            chapter_count: row.get(4)?,
+            manga_count: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
+/// Fail with `NotFound` when an UPDATE touched no series.
+fn expect_series_row(changed: usize, id: i64) -> Result<(), Error> {
+    if changed == 0 {
+        Err(Error::NotFound(format!("series id={id}")))
+    } else {
+        Ok(())
+    }
+}
+
+/// Rename a series and lock the title, so syncs stop overwriting it.
+pub fn rename_series(conn: &Connection, id: i64, title: &str) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE series SET title = ?2, title_locked = 1 WHERE id = ?1",
+        rusqlite::params![id, title],
+    )?;
+    expect_series_row(n, id)
+}
+
+/// Hide (`now` = timestamp) or show (`None`) a series for non-admins.
+pub fn set_series_hidden(conn: &Connection, id: i64, hidden_at: Option<&str>) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE series SET hidden_at = ?2 WHERE id = ?1",
+        rusqlite::params![id, hidden_at],
+    )?;
+    expect_series_row(n, id)
+}
+
+/// Set or clear (`None`) the admin cover.
+pub fn set_series_cover(conn: &Connection, id: i64, cover: Option<&str>) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE series SET cover_override = ?2 WHERE id = ?1",
+        rusqlite::params![id, cover],
+    )?;
+    expect_series_row(n, id)
+}
+
+/// Merge series `from` into `into`: its source entries and bookmarks move,
+/// then `from` is deleted. One transaction, so a failure changes nothing.
+///
+/// Bookmarks use `INSERT OR IGNORE` because a user may have bookmarked
+/// both series; they keep one bookmark on the survivor.
+pub fn merge_series(conn: &Connection, from: i64, into: i64) -> Result<(), Error> {
+    if from == into {
+        return Err(Error::Conflict("cannot merge a series into itself".into()));
+    }
+    let tx = conn.unchecked_transaction()?;
+    get_series_by_id(&tx, from)?;
+    get_series_by_id(&tx, into)?;
+    tx.execute(
+        "UPDATE manga SET series_id = ?2 WHERE series_id = ?1",
+        rusqlite::params![from, into],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO bookmarks (user_id, series_id, created_at)
+         SELECT user_id, ?2, created_at FROM bookmarks WHERE series_id = ?1",
+        rusqlite::params![from, into],
+    )?;
+    tx.execute(
+        "DELETE FROM bookmarks WHERE series_id = ?1",
+        rusqlite::params![from],
+    )?;
+    // Before the series row goes: `ON DELETE CASCADE` would drop them.
+    tx.execute(
+        "UPDATE comments SET series_id = ?2 WHERE series_id = ?1",
+        rusqlite::params![from, into],
+    )?;
+    tx.execute("DELETE FROM series WHERE id = ?1", rusqlite::params![from])?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Move one source entry out of its series into a new series of its own.
+/// Refuses (`Conflict`) when it is the series' only entry. Returns the new
+/// series id.
+pub fn split_manga(conn: &Connection, manga_id: i64) -> Result<i64, Error> {
+    let tx = conn.unchecked_transaction()?;
+    let manga = get_manga_by_id(&tx, manga_id)?;
+    let Some(old) = manga.series_id else {
+        return Err(Error::Conflict("manga is not in a series".into()));
+    };
+    let siblings: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM manga WHERE series_id = ?1",
+        rusqlite::params![old],
+        |row| row.get(0),
+    )?;
+    if siblings <= 1 {
+        return Err(Error::Conflict("it is already the only entry".into()));
+    }
+    let new_id = insert_series(&tx, &clean_display_title(&manga.title))?;
+    link_manga_to_series(&tx, manga_id, new_id)?;
+    tx.commit()?;
+    Ok(new_id)
+}
+
+// ── Comments ──
+
+const COMMENT_COLUMNS: &str = "c.id, c.series_id, c.chapter_number, c.user_id, u.name, c.parent_id,
+     c.body, c.spoiler, c.created_at, c.edited_at, c.hidden_at, c.deleted_at";
+
+fn map_comment(row: &rusqlite::Row) -> rusqlite::Result<Comment> {
+    Ok(Comment {
+        id: row.get(0)?,
+        series_id: row.get(1)?,
+        chapter_number: row.get(2)?,
+        user_id: row.get(3)?,
+        author: row.get(4)?,
+        parent_id: row.get(5)?,
+        body: row.get(6)?,
+        spoiler: row.get::<_, i64>(7)? != 0,
+        created_at: row.get(8)?,
+        edited_at: row.get(9)?,
+        hidden_at: row.get(10)?,
+        deleted_at: row.get(11)?,
+    })
+}
+
+/// One comment by id.
+pub fn get_comment(conn: &Connection, id: i64) -> Result<Comment, Error> {
+    conn.query_row(
+        &format!("SELECT {COMMENT_COLUMNS} FROM comments c JOIN users u ON u.id = c.user_id WHERE c.id = ?1"),
+        rusqlite::params![id],
+        map_comment,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("comment id={id}")),
+        other => other.into(),
+    })
+}
+
+/// Post a comment. A reply to a reply attaches to the top-level parent, so
+/// threads stay one level deep. The parent must be in the same chapter
+/// discussion and not deleted (`Conflict` otherwise).
+pub fn create_comment(conn: &Connection, c: &NewComment) -> Result<i64, Error> {
+    let parent_id = match c.parent_id {
+        None => None,
+        Some(pid) => {
+            let parent = get_comment(conn, pid)?;
+            if parent.series_id != c.series_id
+                || parent.chapter_number != c.chapter_number
+                || parent.deleted_at.is_some()
+            {
+                return Err(Error::Conflict("cannot reply to that comment".into()));
+            }
+            Some(parent.parent_id.unwrap_or(parent.id))
+        }
+    };
+    conn.execute(
+        "INSERT INTO comments (series_id, chapter_number, user_id, parent_id, body, spoiler)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            c.series_id,
+            c.chapter_number,
+            c.user_id,
+            parent_id,
+            c.body,
+            c.spoiler as i64
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// A page of a chapter discussion: up to `limit` top-level comments older
+/// than `before` (newest first), plus every reply to them (oldest first).
+/// Raw rows: the caller decides what each viewer may see.
+pub fn list_comment_page(
+    conn: &Connection,
+    series_id: i64,
+    chapter_number: f64,
+    before: Option<i64>,
+    limit: i64,
+) -> Result<(Vec<Comment>, Vec<Comment>), Error> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COMMENT_COLUMNS} FROM comments c JOIN users u ON u.id = c.user_id
+         WHERE c.series_id = ?1 AND c.chapter_number = ?2 AND c.parent_id IS NULL
+           AND (?3 IS NULL OR c.id < ?3)
+         ORDER BY c.id DESC
+         LIMIT ?4"
+    ))?;
+    let tops = stmt
+        .query_map(
+            rusqlite::params![series_id, chapter_number, before, limit],
+            map_comment,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let ids: Vec<i64> = tops.iter().map(|c| c.id).collect();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COMMENT_COLUMNS} FROM comments c JOIN users u ON u.id = c.user_id
+         WHERE c.parent_id IN (SELECT value FROM json_each(?1))
+         ORDER BY c.id ASC"
+    ))?;
+    let replies = stmt
+        .query_map(
+            rusqlite::params![serde_json::to_string(&ids).unwrap_or_else(|_| "[]".into())],
+            map_comment,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok((tops, replies))
+}
+
+/// A readable chapter row for `(series, number)`: `(manga_id, chapter_id)`.
+/// `None` when the series has no such chapter, so nobody can open
+/// discussions on chapters that do not exist.
+pub fn find_chapter_in_series(
+    conn: &Connection,
+    series_id: i64,
+    chapter_number: f64,
+) -> Result<Option<(i64, i64)>, Error> {
+    match conn.query_row(
+        "SELECT m.id, c.id FROM chapters c JOIN manga m ON m.id = c.manga_id
+         WHERE m.series_id = ?1 AND c.number = ?2
+         ORDER BY c.id LIMIT 1",
+        rusqlite::params![series_id, chapter_number],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ) {
+        Ok(pair) => Ok(Some(pair)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Comments readers can see in a chapter discussion (not hidden, not deleted).
+pub fn count_visible_comments(
+    conn: &Connection,
+    series_id: i64,
+    chapter_number: f64,
+) -> Result<i64, Error> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM comments
+         WHERE series_id = ?1 AND chapter_number = ?2 AND hidden_at IS NULL AND deleted_at IS NULL",
+        rusqlite::params![series_id, chapter_number],
+        |row| row.get(0),
+    )?)
+}
+
+/// Edit one's own live comment. `NotFound` when it is not the author's or
+/// is deleted or hidden, so nobody can probe other users' comments.
+pub fn edit_comment(conn: &Connection, id: i64, user_id: i64, body: &str) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE comments SET body = ?3, edited_at = datetime('now')
+         WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL AND hidden_at IS NULL",
+        rusqlite::params![id, user_id, body],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("comment id={id}")));
+    }
+    Ok(())
+}
+
+/// Delete one's own comment (soft: replies keep their place under "[deleted]").
+pub fn delete_comment(conn: &Connection, id: i64, user_id: i64) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE comments SET deleted_at = datetime('now')
+         WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL",
+        rusqlite::params![id, user_id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("comment id={id}")));
+    }
+    Ok(())
+}
+
+/// Hide (moderator) or restore a comment. Hiding resolves its open reports.
+pub fn set_comment_hidden(conn: &Connection, id: i64, by: i64, hidden: bool) -> Result<(), Error> {
+    let tx = conn.unchecked_transaction()?;
+    let n = if hidden {
+        tx.execute(
+            "UPDATE comments SET hidden_at = datetime('now'), hidden_by = ?2 WHERE id = ?1",
+            rusqlite::params![id, by],
+        )?
+    } else {
+        tx.execute(
+            "UPDATE comments SET hidden_at = NULL, hidden_by = NULL WHERE id = ?1",
+            rusqlite::params![id],
+        )?
+    };
+    if n == 0 {
+        return Err(Error::NotFound(format!("comment id={id}")));
+    }
+    if hidden {
+        resolve_reports(&tx, id, by)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Report a comment. Reporting the same comment twice is a no-op, so one
+/// user cannot inflate the count. Authors cannot report themselves.
+pub fn report_comment(
+    conn: &Connection,
+    id: i64,
+    reporter: i64,
+    reason: &str,
+) -> Result<(), Error> {
+    let comment = get_comment(conn, id)?;
+    if comment.user_id == reporter {
+        return Err(Error::Conflict("cannot report your own comment".into()));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO comment_reports (comment_id, reporter_id, reason) VALUES (?1, ?2, ?3)",
+        rusqlite::params![id, reporter, reason],
+    )?;
+    Ok(())
+}
+
+/// Close every open report on a comment.
+pub fn resolve_reports(conn: &Connection, comment_id: i64, by: i64) -> Result<usize, Error> {
+    Ok(conn.execute(
+        "UPDATE comment_reports SET resolved_by = ?2, resolved_at = datetime('now')
+         WHERE comment_id = ?1 AND resolved_at IS NULL",
+        rusqlite::params![comment_id, by],
+    )?)
+}
+
+/// The moderation queue: comments with open reports, most-reported first.
+pub fn list_open_reports(conn: &Connection, limit: i64) -> Result<Vec<ReportGroup>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT r.comment_id, COUNT(*), MIN(r.created_at),
+                COALESCE(json_group_array(DISTINCT NULLIF(r.reason, '')), '[]'),
+                s.title
+         FROM comment_reports r
+         JOIN comments c ON c.id = r.comment_id
+         JOIN series s ON s.id = c.series_id
+         WHERE r.resolved_at IS NULL
+         GROUP BY r.comment_id
+         ORDER BY COUNT(*) DESC, MIN(r.created_at) ASC
+         LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![limit], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (comment_id, count, first, reasons_json, series_title) in rows {
+        let reasons: Vec<Option<String>> = serde_json::from_str(&reasons_json).unwrap_or_default();
+        out.push(ReportGroup {
+            comment: get_comment(conn, comment_id)?,
+            series_title,
+            report_count: count,
+            reasons: reasons.into_iter().flatten().collect(),
+            first_reported_at: first,
+        });
+    }
+    Ok(out)
+}
+
+/// Mute a user from commenting until `until` (`None` lifts the mute).
+pub fn set_user_muted(conn: &Connection, user_id: i64, until: Option<&str>) -> Result<(), Error> {
+    let n = conn.execute(
+        "UPDATE users SET muted_until = ?2 WHERE id = ?1",
+        rusqlite::params![user_id, until],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("user id={user_id}")));
+    }
+    Ok(())
+}
+
+/// When the user's comment mute ends, if it is still in force at `now`.
+pub fn muted_until(conn: &Connection, user_id: i64, now: &str) -> Result<Option<String>, Error> {
+    Ok(conn
+        .query_row(
+            "SELECT muted_until FROM users WHERE id = ?1 AND muted_until > ?2",
+            rusqlite::params![user_id, now],
+            |row| row.get(0),
+        )
+        .ok())
+}
+
+// ── Sync runs (admin visibility into scraping) ──
+
+/// What a sync run did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncKind {
+    /// Discover manga listings on one source.
+    Scan,
+    /// Fetch one manga's metadata and chapter list.
+    Manga,
+    /// Fetch one chapter's page URLs.
+    Chapter,
+}
+
+impl SyncKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SyncKind::Scan => "scan",
+            SyncKind::Manga => "manga",
+            SyncKind::Chapter => "chapter",
+        }
+    }
+}
+
+/// One row of `sync_runs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncRun {
+    pub id: i64,
+    pub source: String,
+    pub kind: String,
+    pub target_id: Option<i64>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    /// `running`, `ok`, or `failed`.
+    pub status: String,
+    pub items: Option<i64>,
+    pub error: Option<String>,
+}
+
+/// Open a run in `running` state and return its id.
+pub fn start_sync_run(
+    conn: &Connection,
+    source: &str,
+    kind: SyncKind,
+    target_id: Option<i64>,
+) -> Result<i64, Error> {
+    conn.execute(
+        "INSERT INTO sync_runs (source, kind, target_id) VALUES (?1, ?2, ?3)",
+        rusqlite::params![source, kind.as_str(), target_id],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Close a run: `Ok(items)` marks it `ok`, `Err(message)` marks it `failed`.
+pub fn finish_sync_run(
+    conn: &Connection,
+    run_id: i64,
+    outcome: Result<i64, &str>,
+) -> Result<(), Error> {
+    let (status, items, error) = match outcome {
+        Ok(n) => ("ok", Some(n), None),
+        Err(e) => ("failed", None, Some(e)),
+    };
+    conn.execute(
+        "UPDATE sync_runs SET status = ?2, items = ?3, error = ?4, finished_at = datetime('now')
+         WHERE id = ?1",
+        rusqlite::params![run_id, status, items, error],
+    )?;
+    Ok(())
+}
+
+/// On boot, runs still marked `running` were cut off by a restart.
+pub fn fail_interrupted_sync_runs(conn: &Connection) -> Result<usize, Error> {
+    Ok(conn.execute(
+        "UPDATE sync_runs SET status = 'failed', error = 'interrupted by restart',
+                finished_at = datetime('now')
+         WHERE status = 'running'",
+        [],
+    )?)
+}
+
+/// Delete finished runs older than `days`.
+pub fn prune_sync_runs(conn: &Connection, days: i64) -> Result<usize, Error> {
+    Ok(conn.execute(
+        "DELETE FROM sync_runs WHERE status != 'running' AND started_at < datetime('now', ?1)",
+        rusqlite::params![format!("-{days} days")],
+    )?)
+}
+
+/// Most recent runs, newest first, optionally only failures.
+pub fn list_sync_runs(
+    conn: &Connection,
+    failed_only: bool,
+    limit: i64,
+) -> Result<Vec<SyncRun>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, source, kind, target_id, started_at, finished_at, status, items, error
+         FROM sync_runs
+         WHERE ?1 = 0 OR status = 'failed'
+         ORDER BY id DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![failed_only as i64, limit], map_sync_run)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
+/// One run by id.
+pub fn get_sync_run(conn: &Connection, id: i64) -> Result<SyncRun, Error> {
+    conn.query_row(
+        "SELECT id, source, kind, target_id, started_at, finished_at, status, items, error
+         FROM sync_runs WHERE id = ?1",
+        rusqlite::params![id],
+        map_sync_run,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("sync run id={id}")),
+        other => other.into(),
+    })
+}
+
+fn map_sync_run(row: &rusqlite::Row) -> rusqlite::Result<SyncRun> {
+    Ok(SyncRun {
+        id: row.get(0)?,
+        source: row.get(1)?,
+        kind: row.get(2)?,
+        target_id: row.get(3)?,
+        started_at: row.get(4)?,
+        finished_at: row.get(5)?,
+        status: row.get(6)?,
+        items: row.get(7)?,
+        error: row.get(8)?,
+    })
+}
+
+/// Health of one source, derived from its sync runs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SourceHealth {
+    pub last_success: Option<String>,
+    pub last_failure: Option<String>,
+    /// Failed runs since the last successful one.
+    pub failure_streak: i64,
+    /// Error of the newest failed run, when it is newer than the last success.
+    pub last_error: Option<String>,
+    /// Manga rows discovered on this source.
+    pub manga_count: i64,
+}
+
+/// Health for one source. Unknown sources yield the default (never run).
+pub fn source_health(conn: &Connection, source: &str) -> Result<SourceHealth, Error> {
+    Ok(conn.query_row(
+        "WITH last_ok AS (
+             SELECT MAX(id) AS id FROM sync_runs WHERE source = ?1 AND status = 'ok'
+         )
+         SELECT
+             (SELECT finished_at FROM sync_runs WHERE id = (SELECT id FROM last_ok)),
+             (SELECT finished_at FROM sync_runs WHERE source = ?1 AND status = 'failed'
+                ORDER BY id DESC LIMIT 1),
+             (SELECT COUNT(*) FROM sync_runs WHERE source = ?1 AND status = 'failed'
+                AND id > COALESCE((SELECT id FROM last_ok), 0)),
+             (SELECT error FROM sync_runs WHERE source = ?1 AND status = 'failed'
+                AND id > COALESCE((SELECT id FROM last_ok), 0)
+                ORDER BY id DESC LIMIT 1),
+             (SELECT COUNT(*) FROM manga WHERE source = ?1)",
+        rusqlite::params![source],
+        |row| {
+            Ok(SourceHealth {
+                last_success: row.get(0)?,
+                last_failure: row.get(1)?,
+                failure_streak: row.get(2)?,
+                last_error: row.get(3)?,
+                manga_count: row.get(4)?,
+            })
+        },
+    )?)
+}
+
 // ── Identity (users, sessions, bookmarks, progress, history, notes) ──
 
 fn map_user_row(row: &rusqlite::Row) -> rusqlite::Result<User> {
@@ -642,8 +1574,8 @@ fn map_user_row(row: &rusqlite::Row) -> rusqlite::Result<User> {
         password_hash: row.get(3)?,
         role: Role::from_str(&row.get::<_, String>(4)?),
         locale: row.get(5)?,
-        theme: row.get(6)?,
-        created_at: row.get(7)?,
+        created_at: row.get(6)?,
+        banned_at: row.get(7)?,
     })
 }
 
@@ -656,10 +1588,224 @@ pub fn create_user(conn: &Connection, u: &NewUser) -> Result<i64, Error> {
     Ok(conn.last_insert_rowid())
 }
 
+/// Create the instance's first admin, atomically.
+///
+/// The emptiness check and the insert are one statement, so two concurrent
+/// setup submissions cannot both succeed. Returns `None` when any user
+/// already exists.
+pub fn create_first_admin(conn: &Connection, u: &NewUser) -> Result<Option<i64>, Error> {
+    let inserted = conn.execute(
+        "INSERT INTO users (name, email, password_hash, role)
+         SELECT ?1, ?2, ?3, 'admin'
+         WHERE NOT EXISTS (SELECT 1 FROM users)",
+        rusqlite::params![u.name, u.email, u.password_hash],
+    )?;
+    Ok((inserted == 1).then(|| conn.last_insert_rowid()))
+}
+
+/// Number of admins that are not banned.
+fn active_admin_count(conn: &Connection) -> Result<i64, Error> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND banned_at IS NULL",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+/// Whether `user_id` is currently an unbanned admin.
+fn is_active_admin(conn: &Connection, user_id: i64) -> Result<bool, Error> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1 AND role = 'admin' AND banned_at IS NULL)",
+        rusqlite::params![user_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Change a user's role. Refuses (`Conflict`) to demote the last active
+/// admin, so an instance can never lock itself out of `/admin`.
+pub fn set_user_role(conn: &Connection, user_id: i64, role: &Role) -> Result<(), Error> {
+    let tx = conn.unchecked_transaction()?;
+    if *role != Role::Admin && is_active_admin(&tx, user_id)? && active_admin_count(&tx)? <= 1 {
+        return Err(Error::Conflict("cannot demote the last admin".into()));
+    }
+    let n = tx.execute(
+        "UPDATE users SET role = ?1 WHERE id = ?2",
+        rusqlite::params![role.as_str(), user_id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("user id={user_id}")));
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Ban or unban a user. Banning deletes their sessions and refuses
+/// (`Conflict`) to ban the last active admin.
+pub fn set_user_banned(
+    conn: &Connection,
+    user_id: i64,
+    banned: bool,
+    now: &str,
+) -> Result<(), Error> {
+    let tx = conn.unchecked_transaction()?;
+    if banned && is_active_admin(&tx, user_id)? && active_admin_count(&tx)? <= 1 {
+        return Err(Error::Conflict("cannot ban the last admin".into()));
+    }
+    let value = banned.then_some(now);
+    let n = tx.execute(
+        "UPDATE users SET banned_at = ?1 WHERE id = ?2",
+        rusqlite::params![value, user_id],
+    )?;
+    if n == 0 {
+        return Err(Error::NotFound(format!("user id={user_id}")));
+    }
+    if banned {
+        tx.execute(
+            "DELETE FROM sessions WHERE user_id = ?1",
+            rusqlite::params![user_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Append to the moderation audit log.
+pub fn insert_mod_log(
+    conn: &Connection,
+    actor_id: i64,
+    action: &str,
+    target_user_id: Option<i64>,
+    detail: &str,
+) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO mod_log (actor_id, action, target_user_id, detail) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![actor_id, action, target_user_id, detail],
+    )?;
+    Ok(())
+}
+
+/// Most recent moderation log entries, newest first.
+pub fn list_mod_log(conn: &Connection, limit: i64) -> Result<Vec<ModLogEntry>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT a.name, l.action, t.name, l.detail, l.created_at
+         FROM mod_log l
+         JOIN users a ON a.id = l.actor_id
+         LEFT JOIN users t ON t.id = l.target_user_id
+         ORDER BY l.id DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![limit], |row| {
+        Ok(ModLogEntry {
+            actor: row.get(0)?,
+            action: row.get(1)?,
+            target: row.get(2)?,
+            detail: row.get(3)?,
+            created_at: row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
+/// What an emailed link is allowed to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenPurpose {
+    /// Finish creating an account for a verified address.
+    Signup,
+    /// Set a new password for the account with this address.
+    Reset,
+}
+
+impl TokenPurpose {
+    fn as_str(self) -> &'static str {
+        match self {
+            TokenPurpose::Signup => "signup",
+            TokenPurpose::Reset => "reset",
+        }
+    }
+}
+
+/// Store a link token by its hash. Earlier unused tokens for the same
+/// address and purpose are deleted, so only the newest link works.
+pub fn create_email_token(
+    conn: &Connection,
+    token_hash: &str,
+    email: &str,
+    purpose: TokenPurpose,
+    expires_at: &str,
+) -> Result<(), Error> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM email_tokens WHERE email = ?1 AND purpose = ?2 AND used_at IS NULL",
+        rusqlite::params![email, purpose.as_str()],
+    )?;
+    tx.execute(
+        "INSERT INTO email_tokens (token_hash, email, purpose, expires_at) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![token_hash, email, purpose.as_str(), expires_at],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// The address behind a live (unused, unexpired) token, without consuming it.
+pub fn peek_email_token(
+    conn: &Connection,
+    token_hash: &str,
+    purpose: TokenPurpose,
+    now: &str,
+) -> Result<Option<String>, Error> {
+    let found = conn.query_row(
+        "SELECT email FROM email_tokens
+         WHERE token_hash = ?1 AND purpose = ?2 AND used_at IS NULL AND expires_at > ?3",
+        rusqlite::params![token_hash, purpose.as_str(), now],
+        |row| row.get(0),
+    );
+    match found {
+        Ok(email) => Ok(Some(email)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Consume a live token and return its address. The check and the mark are
+/// one `UPDATE … RETURNING`, so concurrent submissions cannot both succeed.
+pub fn consume_email_token(
+    conn: &Connection,
+    token_hash: &str,
+    purpose: TokenPurpose,
+    now: &str,
+) -> Result<Option<String>, Error> {
+    let found = conn.query_row(
+        "UPDATE email_tokens SET used_at = ?3
+         WHERE token_hash = ?1 AND purpose = ?2 AND used_at IS NULL AND expires_at > ?3
+         RETURNING email",
+        rusqlite::params![token_hash, purpose.as_str(), now],
+        |row| row.get(0),
+    );
+    match found {
+        Ok(email) => Ok(Some(email)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Find a user by id. `NotFound` when missing.
+pub fn find_user_by_id(conn: &Connection, id: i64) -> Result<User, Error> {
+    conn.query_row(
+        "SELECT id, name, email, password_hash, role, locale, created_at, banned_at FROM users WHERE id = ?1",
+        rusqlite::params![id],
+        map_user_row,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("user id={id}")),
+        other => other.into(),
+    })
+}
+
 /// Find a user by email. `NotFound` when missing.
 pub fn find_user_by_email(conn: &Connection, email: &str) -> Result<User, Error> {
     conn.query_row(
-        "SELECT id, name, email, password_hash, role, locale, theme, created_at FROM users WHERE email = ?1",
+        "SELECT id, name, email, password_hash, role, locale, created_at, banned_at FROM users WHERE email = ?1",
         rusqlite::params![email],
         map_user_row,
     )
@@ -695,16 +1841,14 @@ pub fn insert_session(
 /// Find the user owning a live session token (`expires_at > now`).
 pub fn find_user_by_session(conn: &Connection, token: &str, now: &str) -> Result<User, Error> {
     conn.query_row(
-        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.theme, u.created_at
+        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.created_at, u.banned_at
          FROM users u JOIN sessions s ON s.user_id = u.id
-         WHERE s.token = ?1 AND s.expires_at > ?2",
+         WHERE s.token = ?1 AND s.expires_at > ?2 AND u.banned_at IS NULL",
         rusqlite::params![token, now],
         map_user_row,
     )
     .map_err(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => {
-            Error::NotFound(format!("session token={}", token))
-        }
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("session token={}", token)),
         other => other.into(),
     })
 }
@@ -716,6 +1860,74 @@ pub fn delete_session(conn: &Connection, token: &str) -> Result<(), Error> {
         rusqlite::params![token],
     )?;
     Ok(())
+}
+
+/// Link an OAuth identity to a user. Idempotent: re-linking is a no-op.
+pub fn link_oauth_account(
+    conn: &Connection,
+    user_id: i64,
+    provider: &str,
+    provider_user_id: &str,
+) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO oauth_accounts (user_id, provider, provider_user_id) VALUES (?1, ?2, ?3)
+         ON CONFLICT(provider, provider_user_id) DO NOTHING",
+        rusqlite::params![user_id, provider, provider_user_id],
+    )?;
+    Ok(())
+}
+
+/// Find the user owning an OAuth identity. `NotFound` when unlinked.
+pub fn find_user_by_oauth(
+    conn: &Connection,
+    provider: &str,
+    provider_user_id: &str,
+) -> Result<User, Error> {
+    conn.query_row(
+        "SELECT u.id, u.name, u.email, u.password_hash, u.role, u.locale, u.created_at, u.banned_at
+         FROM users u JOIN oauth_accounts o ON o.user_id = u.id
+         WHERE o.provider = ?1 AND o.provider_user_id = ?2",
+        rusqlite::params![provider, provider_user_id],
+        map_user_row,
+    )
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Error::NotFound(format!("oauth {provider}")),
+        other => other.into(),
+    })
+}
+
+/// Provider keys linked to a user (e.g. `["google"]`). Empty when none.
+pub fn user_oauth_providers(conn: &Connection, user_id: i64) -> Result<Vec<String>, Error> {
+    let mut stmt =
+        conn.prepare("SELECT provider FROM oauth_accounts WHERE user_id = ?1 ORDER BY provider")?;
+    let rows = stmt.query_map(rusqlite::params![user_id], |row| row.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Delete all sessions of a user (used after password reset).
+pub fn delete_sessions_for_user(conn: &Connection, user_id: i64) -> Result<(), Error> {
+    conn.execute(
+        "DELETE FROM sessions WHERE user_id = ?1",
+        rusqlite::params![user_id],
+    )?;
+    Ok(())
+}
+
+/// All users ordered by id (admin list).
+pub fn list_users(conn: &Connection) -> Result<Vec<User>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, email, password_hash, role, locale, created_at, banned_at FROM users ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map([], map_user_row)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 /// Set or clear a bookmark.
@@ -739,11 +1951,182 @@ pub fn set_bookmark(
     Ok(())
 }
 
+/// Put a series on a shelf (adds it to the library if needed).
+pub fn set_shelf(
+    conn: &Connection,
+    user_id: i64,
+    series_id: i64,
+    shelf: Shelf,
+) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO bookmarks (user_id, series_id, shelf) VALUES (?1, ?2, ?3)
+         ON CONFLICT(user_id, series_id) DO UPDATE SET shelf = excluded.shelf",
+        rusqlite::params![user_id, series_id, shelf.as_str()],
+    )?;
+    Ok(())
+}
+
+/// The shelf a series is on, if it is in the user's library.
+pub fn get_shelf(conn: &Connection, user_id: i64, series_id: i64) -> Result<Option<Shelf>, Error> {
+    match conn.query_row(
+        "SELECT shelf FROM bookmarks WHERE user_id = ?1 AND series_id = ?2",
+        rusqlite::params![user_id, series_id],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(s) => Ok(Some(Shelf::parse(&s).unwrap_or(Shelf::Reading))),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Visible library entries per shelf. Shelves with no entries are 0.
+pub fn library_counts(conn: &Connection, user_id: i64) -> Result<Vec<(Shelf, i64)>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT b.shelf, COUNT(*) FROM bookmarks b
+         JOIN series s ON s.id = b.series_id
+         WHERE b.user_id = ?1 AND s.hidden_at IS NULL
+         GROUP BY b.shelf",
+    )?;
+    let found: HashMap<String, i64> = stmt
+        .query_map(rusqlite::params![user_id], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(Shelf::ALL
+        .into_iter()
+        .map(|s| (s, found.get(s.as_str()).copied().unwrap_or(0)))
+        .collect())
+}
+
+/// Cards on one shelf, most recently updated first.
+pub fn list_shelf(conn: &Connection, user_id: i64, shelf: Shelf) -> Result<Vec<SeriesCard>, Error> {
+    let sql = format!(
+        "{CARD_CTES} {CARD_FROM}
+         JOIN bookmarks b ON b.series_id = s.id
+         WHERE s.hidden_at IS NULL AND b.user_id = ?1 AND b.shelf = ?2
+         ORDER BY counts.last_at DESC, s.id DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params![user_id, shelf.as_str()], map_card)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().map(|(c, _)| c).collect())
+}
+
+/// Series to pick back up, most recently read first.
+///
+/// Uses the newest progress row per series. A chapter still in progress
+/// resumes at its page. A finished chapter points to the next chapter of
+/// the same source entry; series with nothing after it are skipped (the
+/// reader is caught up). Hidden series are skipped.
+pub fn continue_reading(
+    conn: &Connection,
+    user_id: i64,
+    limit: i64,
+) -> Result<Vec<ContinueItem>, Error> {
+    let mut stmt = conn.prepare(
+        "WITH latest AS (
+             SELECT m.series_id, p.chapter_id, p.page, p.status, p.updated_at,
+                    ROW_NUMBER() OVER (PARTITION BY m.series_id
+                                       ORDER BY p.updated_at DESC, p.chapter_id DESC) AS rn
+             FROM progress p
+             JOIN chapters c ON c.id = p.chapter_id
+             JOIN manga m ON m.id = c.manga_id
+             WHERE p.user_id = ?1 AND m.series_id IS NOT NULL
+         )
+         SELECT l.series_id, s.title, COALESCE(s.cover_override, m.cover_url),
+                m.id, c.id, c.number, l.page, l.status
+         FROM latest l
+         JOIN series s ON s.id = l.series_id
+         JOIN chapters c ON c.id = l.chapter_id
+         JOIN manga m ON m.id = c.manga_id
+         WHERE l.rn = 1 AND s.hidden_at IS NULL
+         ORDER BY l.updated_at DESC",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![user_id], |row| {
+            Ok((
+                ContinueItem {
+                    series_id: row.get(0)?,
+                    series_title: row.get(1)?,
+                    cover_url: row.get(2)?,
+                    manga_id: row.get(3)?,
+                    chapter_id: row.get(4)?,
+                    chapter_number: row.get(5)?,
+                    page: row.get(6)?,
+                    is_next: false,
+                },
+                row.get::<_, String>(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut out = Vec::new();
+    for (mut item, status) in rows {
+        if status == "finished" {
+            let next = conn.query_row(
+                "SELECT id, number FROM chapters WHERE manga_id = ?1 AND number > ?2
+                 ORDER BY number ASC LIMIT 1",
+                rusqlite::params![item.manga_id, item.chapter_number],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)),
+            );
+            match next {
+                Ok((id, number)) => {
+                    item.chapter_id = id;
+                    item.chapter_number = number;
+                    item.page = 1;
+                    item.is_next = true;
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        out.push(item);
+        if out.len() as i64 >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Newest chapters of series in the user's library (any shelf except
+/// dropped), newest first.
+pub fn library_updates(
+    conn: &Connection,
+    user_id: i64,
+    limit: i64,
+) -> Result<Vec<RecentChapter>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT c.id, c.number, c.title, c.url, c.created_at,
+                m.id, m.series_id, s.title, COALESCE(s.cover_override, m.cover_url)
+         FROM chapters c
+         JOIN manga m ON m.id = c.manga_id
+         JOIN series s ON s.id = m.series_id
+         JOIN bookmarks b ON b.series_id = s.id AND b.user_id = ?1
+         WHERE s.hidden_at IS NULL AND b.shelf != 'dropped'
+         ORDER BY c.created_at DESC, c.id DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![user_id, limit], |row| {
+        Ok(RecentChapter {
+            chapter_id: row.get(0)?,
+            chapter_number: row.get(1)?,
+            chapter_title: row.get(2)?,
+            chapter_url: row.get(3)?,
+            created_at: row.get(4)?,
+            manga_id: row.get(5)?,
+            series_id: row.get(6)?,
+            series_title: row.get(7)?,
+            cover_url: row.get(8)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Error::from)
+}
+
 /// List bookmarked series ids for a user.
 pub fn list_bookmarks(conn: &Connection, user_id: i64) -> Result<Vec<i64>, Error> {
-    let mut stmt = conn.prepare(
-        "SELECT series_id FROM bookmarks WHERE user_id = ?1 ORDER BY series_id",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT series_id FROM bookmarks WHERE user_id = ?1 ORDER BY series_id")?;
     let ids = stmt.query_map(rusqlite::params![user_id], |row| row.get::<_, i64>(0))?;
     ids.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Error::from)
@@ -820,11 +2203,7 @@ pub fn insert_note(
 }
 
 /// List a user's notes on a chapter.
-pub fn list_notes(
-    conn: &Connection,
-    user_id: i64,
-    chapter_id: i64,
-) -> Result<Vec<Note>, Error> {
+pub fn list_notes(conn: &Connection, user_id: i64, chapter_id: i64) -> Result<Vec<Note>, Error> {
     let mut stmt = conn.prepare(
         "SELECT id, user_id, chapter_id, page, body, created_at FROM notes
          WHERE user_id = ?1 AND chapter_id = ?2 ORDER BY id",
@@ -843,17 +2222,18 @@ pub fn list_notes(
         .map_err(Error::from)
 }
 
-/// Update a user's profile fields (name, locale, theme).
+/// Update a user's editable profile fields (name and locale).
+///
+/// The legacy `users.theme` value is intentionally left untouched.
 pub fn update_user_profile(
     conn: &Connection,
     user_id: i64,
     name: &str,
     locale: &str,
-    theme: &str,
 ) -> Result<(), Error> {
     conn.execute(
-        "UPDATE users SET name = ?1, locale = ?2, theme = ?3 WHERE id = ?4",
-        rusqlite::params![name, locale, theme, user_id],
+        "UPDATE users SET name = ?1, locale = ?2 WHERE id = ?3",
+        rusqlite::params![name, locale, user_id],
     )?;
     Ok(())
 }
@@ -880,7 +2260,12 @@ pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, Error
 }
 
 /// Upsert a site setting.
-pub fn set_setting(conn: &Connection, key: &str, value: &str, updated_by: i64) -> Result<(), Error> {
+pub fn set_setting(
+    conn: &Connection,
+    key: &str,
+    value: &str,
+    updated_by: i64,
+) -> Result<(), Error> {
     conn.execute(
         "INSERT INTO site_settings (key, value, updated_by, updated_at) VALUES (?1, ?2, ?3, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = datetime('now')",
         rusqlite::params![key, value, updated_by],
@@ -904,6 +2289,30 @@ pub fn all_settings(conn: &Connection) -> Result<HashMap<String, String>, Error>
     Ok(map)
 }
 
+// ── Reader preferences (one JSON blob per user) ──
+
+/// Load a user's reader preferences. Missing user or unreadable blob yields
+/// defaults — a prefs read must never fail a page render.
+pub fn get_reader_prefs(conn: &Connection, user_id: i64) -> Result<ReaderPrefs, Error> {
+    let mut stmt = conn.prepare("SELECT reader_prefs FROM users WHERE id = ?1")?;
+    match stmt.query_row(rusqlite::params![user_id], |row| row.get::<_, String>(0)) {
+        Ok(raw) => Ok(ReaderPrefs::from_json(&raw)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(ReaderPrefs::default()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Persist reader preferences, normalized first so a hand-crafted request can
+/// never store an illegal value.
+pub fn set_reader_prefs(conn: &Connection, user_id: i64, prefs: &ReaderPrefs) -> Result<(), Error> {
+    let json = prefs.clone().normalized().to_json();
+    conn.execute(
+        "UPDATE users SET reader_prefs = ?1 WHERE id = ?2",
+        rusqlite::params![json, user_id],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -915,13 +2324,744 @@ mod tests {
         conn
     }
 
+    /// Seed one series with manga entries; each entry is
+    /// `(source, cover, chapter numbers)`. Returns the series id.
+    fn seed_series(
+        conn: &Connection,
+        title: &str,
+        entries: &[(&str, Option<&str>, &[f64])],
+    ) -> i64 {
+        let sid = insert_series(conn, title).unwrap();
+        for (source, cover, numbers) in entries {
+            conn.execute(
+                "INSERT INTO manga (source, source_id, title, cover_url, detail_url, series_id)
+                 VALUES (?1, ?2, ?2, ?3, 'u', ?4)",
+                rusqlite::params![source, title, cover, sid],
+            )
+            .unwrap();
+            let mid = conn.last_insert_rowid();
+            for n in *numbers {
+                conn.execute(
+                    "INSERT INTO chapters (manga_id, source_id, number, url) VALUES (?1, ?2, ?3, 'u')",
+                    rusqlite::params![mid, n.to_string(), n],
+                )
+                .unwrap();
+            }
+        }
+        sid
+    }
+
+    #[test]
+    fn series_cards_count_shared_chapters_once_and_pick_fullest_cover() {
+        let conn = mem();
+        seed_series(
+            &conn,
+            "Alpha",
+            &[
+                ("a", Some("small.jpg"), &[1.0, 2.0]),
+                ("b", Some("full.jpg"), &[1.0, 2.0, 3.0]),
+            ],
+        );
+        let cards = browse_series(&conn, BrowseSort::Title, None, 1000)
+            .unwrap()
+            .cards;
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].chapter_count, 3);
+        assert_eq!(cards[0].cover_url.as_deref(), Some("full.jpg"));
+        assert_eq!(count_series_with_chapters(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn series_cards_exclude_empty_series_and_sort_by_title() {
+        let conn = mem();
+        seed_series(&conn, "Zeta", &[("a", None, &[1.0])]);
+        seed_series(&conn, "Empty", &[("a", None, &[])]);
+        seed_series(&conn, "Beta", &[("a", None, &[1.0])]);
+        let titles: Vec<_> = browse_series(&conn, BrowseSort::Title, None, 1000)
+            .unwrap()
+            .cards
+            .into_iter()
+            .map(|c| c.title)
+            .collect();
+        assert_eq!(titles, ["Beta", "Zeta"]);
+        assert_eq!(count_series_with_chapters(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn short_search_falls_back_to_literal_substring() {
+        let conn = mem();
+        seed_series(&conn, "100% Hero", &[("a", None, &[1.0])]);
+        seed_series(&conn, "100 Heroes", &[("a", None, &[1.0])]);
+        rebuild_search_index(&conn).unwrap();
+        // Under 3 characters: substring match, wildcards literal.
+        let hits = search_series_cards(&conn, "0%", 50).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "100% Hero");
+        // Full text ignores punctuation: both titles start with "100".
+        assert_eq!(search_series_cards(&conn, "100%", 50).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn full_text_search_weights_titles_and_covers_alt_titles() {
+        let conn = mem();
+        let a = seed_series(&conn, "Tower of God", &[("a", None, &[1.0])]);
+        let b = seed_series(&conn, "Dungeon Diary", &[("a", None, &[1.0])]);
+        conn.execute(
+            "UPDATE manga SET description = 'Climbing the tower is deadly', author = 'SIU' WHERE series_id = ?1",
+            [b],
+        )
+        .unwrap();
+        let c = seed_series(&conn, "Solo Leveling", &[("a", None, &[1.0])]);
+        conn.execute(
+            "UPDATE manga SET title = 'Only I Level Up' WHERE series_id = ?1",
+            [c],
+        )
+        .unwrap();
+        rebuild_search_index(&conn).unwrap();
+        let tower: Vec<i64> = search_series_cards(&conn, "tower", 10)
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(tower, [a, b], "title hit outranks description hit");
+        assert_eq!(
+            search_series_cards(&conn, "only i lev", 10).unwrap()[0].id,
+            c,
+            "alt title, prefix"
+        );
+        assert_eq!(
+            search_series_cards(&conn, "siu", 10).unwrap()[0].id,
+            b,
+            "author"
+        );
+        // FTS syntax in input is neutralized, not an error.
+        for evil in ["\"tower", "tower NEAR(", "AND OR NOT", "title:tower"] {
+            assert!(search_series_cards(&conn, evil, 10).is_ok(), "{evil}");
+        }
+    }
+
+    #[test]
+    fn browse_pages_by_keyset_for_every_sort() {
+        let conn = mem();
+        for t in ["Delta", "alpha", "Charlie", "bravo", "Echo"] {
+            seed_series(&conn, t, &[("a", None, &[1.0])]);
+        }
+        // Distinct update times: newest chapter belongs to the last seeded.
+        conn.execute(
+            "UPDATE chapters SET created_at = datetime('2026-01-01', '+' || id || ' minutes')",
+            [],
+        )
+        .unwrap();
+        for sort in [BrowseSort::Title, BrowseSort::Updated, BrowseSort::Added] {
+            let mut seen = Vec::new();
+            let mut after: Option<String> = None;
+            loop {
+                let page = browse_series(&conn, sort, after.as_deref(), 2).unwrap();
+                seen.extend(page.cards.iter().map(|c| c.title.clone()));
+                match page.next {
+                    Some(n) => after = Some(n),
+                    None => break,
+                }
+            }
+            let expected: Vec<&str> = match sort {
+                BrowseSort::Title => vec!["alpha", "bravo", "Charlie", "Delta", "Echo"],
+                _ => vec!["Echo", "bravo", "Charlie", "alpha", "Delta"],
+            };
+            assert_eq!(seen, expected, "{sort:?}");
+        }
+        assert!(browse_series(&conn, BrowseSort::Title, Some("garbage"), 2).is_ok());
+    }
+
+    fn new_user(email: &str, role: Role) -> NewUser {
+        NewUser {
+            name: email.split('@').next().unwrap().into(),
+            email: email.into(),
+            password_hash: "h".into(),
+            role,
+        }
+    }
+
+    #[test]
+    fn legacy_editor_role_reads_and_migrates_as_moderator() {
+        let conn = mem();
+        let id = create_user(&conn, &new_user("e@x.io", Role::Member)).unwrap();
+        conn.execute("UPDATE users SET role = 'editor' WHERE id = ?1", [id])
+            .unwrap();
+        assert_eq!(
+            find_user_by_email(&conn, "e@x.io").unwrap().role,
+            Role::Moderator
+        );
+        init_db(&conn).unwrap();
+        let stored: String = conn
+            .query_row("SELECT role FROM users WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, "moderator");
+    }
+
+    #[test]
+    fn first_admin_is_created_only_on_an_empty_instance() {
+        let conn = mem();
+        let first = create_first_admin(&conn, &new_user("a@x.io", Role::Member)).unwrap();
+        assert!(first.is_some());
+        assert_eq!(
+            find_user_by_email(&conn, "a@x.io").unwrap().role,
+            Role::Admin
+        );
+        let second = create_first_admin(&conn, &new_user("b@x.io", Role::Member)).unwrap();
+        assert_eq!(second, None);
+        assert_eq!(count_users(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn last_admin_cannot_be_demoted_or_banned() {
+        let conn = mem();
+        let admin = create_first_admin(&conn, &new_user("a@x.io", Role::Member))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            set_user_role(&conn, admin, &Role::Member),
+            Err(Error::Conflict(_))
+        ));
+        assert!(matches!(
+            set_user_banned(&conn, admin, true, "2026-10-14 00:00:00"),
+            Err(Error::Conflict(_))
+        ));
+        let other = create_user(&conn, &new_user("b@x.io", Role::Member)).unwrap();
+        set_user_role(&conn, other, &Role::Admin).unwrap();
+        set_user_role(&conn, admin, &Role::Moderator).unwrap();
+        assert_eq!(
+            find_user_by_email(&conn, "a@x.io").unwrap().role,
+            Role::Moderator
+        );
+        assert!(matches!(
+            set_user_role(&conn, 999, &Role::Member),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn banned_user_sessions_stop_resolving_and_unban_restores_login() {
+        let conn = mem();
+        create_first_admin(&conn, &new_user("a@x.io", Role::Member)).unwrap();
+        let id = create_user(&conn, &new_user("m@x.io", Role::Member)).unwrap();
+        insert_session(&conn, id, "tok", "2099-01-01 00:00:00", "t").unwrap();
+        set_user_banned(&conn, id, true, "2026-10-14 00:00:00").unwrap();
+        assert!(matches!(
+            find_user_by_session(&conn, "tok", "2026-10-14 00:00:00"),
+            Err(Error::NotFound(_))
+        ));
+        assert!(
+            find_user_by_email(&conn, "m@x.io")
+                .unwrap()
+                .banned_at
+                .is_some()
+        );
+        set_user_banned(&conn, id, false, "2026-10-14 00:00:00").unwrap();
+        assert!(
+            find_user_by_email(&conn, "m@x.io")
+                .unwrap()
+                .banned_at
+                .is_none()
+        );
+        insert_session(&conn, id, "tok2", "2099-01-01 00:00:00", "t").unwrap();
+        assert!(find_user_by_session(&conn, "tok2", "2026-10-14 00:00:00").is_ok());
+    }
+
+    #[test]
+    fn mod_log_lists_newest_first_with_names() {
+        let conn = mem();
+        let a = create_first_admin(&conn, &new_user("a@x.io", Role::Member))
+            .unwrap()
+            .unwrap();
+        let m = create_user(&conn, &new_user("m@x.io", Role::Member)).unwrap();
+        insert_mod_log(&conn, a, "role", Some(m), "member -> moderator").unwrap();
+        insert_mod_log(&conn, a, "ban", Some(m), "").unwrap();
+        let log = list_mod_log(&conn, 10).unwrap();
+        assert_eq!(log[0].action, "ban");
+        assert_eq!(log[1].actor, "a");
+        assert_eq!(log[1].target.as_deref(), Some("m"));
+    }
+
+    #[test]
+    fn email_tokens_are_single_use_scoped_and_expiring() {
+        let conn = mem();
+        let now = "2026-10-14 12:00:00";
+        create_email_token(
+            &conn,
+            "h1",
+            "a@x.io",
+            TokenPurpose::Signup,
+            "2026-10-15 12:00:00",
+        )
+        .unwrap();
+        assert_eq!(
+            peek_email_token(&conn, "h1", TokenPurpose::Reset, now).unwrap(),
+            None,
+            "purpose is part of the key"
+        );
+        assert_eq!(
+            peek_email_token(&conn, "h1", TokenPurpose::Signup, now)
+                .unwrap()
+                .as_deref(),
+            Some("a@x.io")
+        );
+        assert_eq!(
+            consume_email_token(&conn, "h1", TokenPurpose::Signup, now)
+                .unwrap()
+                .as_deref(),
+            Some("a@x.io")
+        );
+        assert_eq!(
+            consume_email_token(&conn, "h1", TokenPurpose::Signup, now).unwrap(),
+            None
+        );
+        assert_eq!(
+            consume_email_token(&conn, "h1", TokenPurpose::Signup, "2026-10-16 00:00:00").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn newer_email_token_revokes_the_older_one() {
+        let conn = mem();
+        let now = "2026-10-14 12:00:00";
+        let exp = "2026-10-15 12:00:00";
+        create_email_token(&conn, "old", "a@x.io", TokenPurpose::Reset, exp).unwrap();
+        create_email_token(&conn, "new", "a@x.io", TokenPurpose::Reset, exp).unwrap();
+        assert_eq!(
+            peek_email_token(&conn, "old", TokenPurpose::Reset, now).unwrap(),
+            None
+        );
+        assert!(
+            peek_email_token(&conn, "new", TokenPurpose::Reset, now)
+                .unwrap()
+                .is_some()
+        );
+        // Expired tokens are rejected even when unused.
+        create_email_token(
+            &conn,
+            "late",
+            "b@x.io",
+            TokenPurpose::Reset,
+            "2026-10-14 11:00:00",
+        )
+        .unwrap();
+        assert_eq!(
+            peek_email_token(&conn, "late", TokenPurpose::Reset, now).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn sync_run_lifecycle_and_health_streak() {
+        let conn = mem();
+        assert_eq!(source_health(&conn, "a").unwrap(), SourceHealth::default());
+        let r1 = start_sync_run(&conn, "a", SyncKind::Scan, None).unwrap();
+        finish_sync_run(&conn, r1, Ok(12)).unwrap();
+        let r2 = start_sync_run(&conn, "a", SyncKind::Manga, Some(7)).unwrap();
+        finish_sync_run(&conn, r2, Err("timeout")).unwrap();
+        let r3 = start_sync_run(&conn, "a", SyncKind::Manga, Some(8)).unwrap();
+        finish_sync_run(&conn, r3, Err("404")).unwrap();
+        let h = source_health(&conn, "a").unwrap();
+        assert!(h.last_success.is_some());
+        assert_eq!(h.failure_streak, 2);
+        assert_eq!(h.last_error.as_deref(), Some("404"));
+        // A success resets the streak and clears the shown error.
+        let r4 = start_sync_run(&conn, "a", SyncKind::Scan, None).unwrap();
+        finish_sync_run(&conn, r4, Ok(3)).unwrap();
+        let h = source_health(&conn, "a").unwrap();
+        assert_eq!(h.failure_streak, 0);
+        assert_eq!(h.last_error, None);
+        assert!(h.last_failure.is_some(), "history keeps the old failure");
+        let failed = list_sync_runs(&conn, true, 10).unwrap();
+        assert_eq!(failed.iter().map(|r| r.id).collect::<Vec<_>>(), [r3, r2]);
+        assert_eq!(get_sync_run(&conn, r2).unwrap().target_id, Some(7));
+    }
+
+    #[test]
+    fn interrupted_runs_fail_on_boot_and_old_runs_prune() {
+        let conn = mem();
+        let r = start_sync_run(&conn, "a", SyncKind::Scan, None).unwrap();
+        assert_eq!(fail_interrupted_sync_runs(&conn).unwrap(), 1);
+        let run = get_sync_run(&conn, r).unwrap();
+        assert_eq!(run.status, "failed");
+        assert_eq!(run.error.as_deref(), Some("interrupted by restart"));
+        conn.execute(
+            "UPDATE sync_runs SET started_at = datetime('now', '-40 days')",
+            [],
+        )
+        .unwrap();
+        start_sync_run(&conn, "a", SyncKind::Scan, None).unwrap();
+        assert_eq!(
+            prune_sync_runs(&conn, 30).unwrap(),
+            1,
+            "running rows are kept"
+        );
+    }
+
+    #[test]
+    fn stale_manga_ids_are_distinct() {
+        let conn = mem();
+        seed_series(&conn, "Many", &[("a", None, &[1.0, 2.0, 3.0])]);
+        let ids = list_manga_ids_needing_sync(&conn, 120, &[]).unwrap();
+        assert_eq!(ids.len(), 1);
+        let skipped = list_manga_ids_needing_sync(&conn, 120, &["a".to_string()]).unwrap();
+        assert!(skipped.is_empty(), "disabled sources are skipped");
+    }
+
+    #[test]
+    fn scan_keeps_manual_links_and_renames_stick() {
+        let conn = mem();
+        let target = insert_series(&conn, "Manual Pick").unwrap();
+        seed_series(&conn, "Solo Leveling", &[("a", None, &[1.0])]);
+        let mid: i64 = conn
+            .query_row(
+                "SELECT id FROM manga WHERE title = 'Solo Leveling'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        link_manga_to_series(&conn, mid, target).unwrap();
+        assert_eq!(
+            ensure_manga_linked(&conn, "Solo Leveling", mid).unwrap(),
+            target
+        );
+        conn.execute("UPDATE series SET title_locked = 1 WHERE id = ?1", [target])
+            .unwrap();
+        update_series_title(&conn, target, "Scraped Title").unwrap();
+        assert_eq!(
+            get_series_by_id(&conn, target).unwrap().title,
+            "Manual Pick"
+        );
+    }
+
+    #[test]
+    fn hidden_series_vanish_from_reader_lists_and_cover_override_wins() {
+        let conn = mem();
+        let a = seed_series(&conn, "Alpha", &[("a", Some("src.jpg"), &[1.0])]);
+        let b = seed_series(&conn, "Beta", &[("a", None, &[1.0])]);
+        set_series_cover(&conn, a, Some("mine.jpg")).unwrap();
+        let cards = browse_series(&conn, BrowseSort::Title, None, 1000)
+            .unwrap()
+            .cards;
+        assert_eq!(cards[0].cover_url.as_deref(), Some("mine.jpg"));
+        set_series_hidden(&conn, b, Some("2026-10-14 00:00:00")).unwrap();
+        let titles: Vec<_> = browse_series(&conn, BrowseSort::Title, None, 1000)
+            .unwrap()
+            .cards
+            .into_iter()
+            .map(|c| c.title)
+            .collect();
+        assert_eq!(titles, ["Alpha"]);
+        assert_eq!(count_series_with_chapters(&conn).unwrap(), 1);
+        assert!(
+            list_recent_chapters(&conn, 10)
+                .unwrap()
+                .iter()
+                .all(|c| c.series_id == a)
+        );
+        assert!(get_series_by_id(&conn, b).unwrap().hidden);
+        let admin_rows = admin_list_series(&conn, None, 50).unwrap();
+        assert_eq!(admin_rows.len(), 2, "admins still see hidden series");
+        set_series_hidden(&conn, b, None).unwrap();
+        assert_eq!(
+            browse_series(&conn, BrowseSort::Title, None, 1000)
+                .unwrap()
+                .cards
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn rename_locks_the_title_against_syncs() {
+        let conn = mem();
+        let a = seed_series(&conn, "Alpha", &[("a", None, &[1.0])]);
+        rename_series(&conn, a, "Alpha (Official)").unwrap();
+        update_series_title(&conn, a, "alpha raw").unwrap();
+        let s = get_series_by_id(&conn, a).unwrap();
+        assert_eq!(s.title, "Alpha (Official)");
+        assert!(s.title_locked);
+        assert!(matches!(
+            rename_series(&conn, 999, "x"),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn merge_moves_entries_and_bookmarks_then_deletes_source_series() {
+        let conn = mem();
+        let keep = seed_series(&conn, "Solo Leveling", &[("a", None, &[1.0, 2.0])]);
+        let dup = seed_series(&conn, "Only I Level Up", &[("b", None, &[2.0, 3.0])]);
+        let u1 = create_user(&conn, &new_user("u1@x.io", Role::Member)).unwrap();
+        let u2 = create_user(&conn, &new_user("u2@x.io", Role::Member)).unwrap();
+        for (u, s) in [(u1, keep), (u1, dup), (u2, dup)] {
+            conn.execute(
+                "INSERT INTO bookmarks (user_id, series_id) VALUES (?1, ?2)",
+                [u, s],
+            )
+            .unwrap();
+        }
+        merge_series(&conn, dup, keep).unwrap();
+        assert!(matches!(
+            get_series_by_id(&conn, dup),
+            Err(Error::NotFound(_))
+        ));
+        assert_eq!(list_manga_by_series(&conn, keep).unwrap().len(), 2);
+        let cards = browse_series(&conn, BrowseSort::Title, None, 1000)
+            .unwrap()
+            .cards;
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].chapter_count, 3);
+        let bookmarks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bookmarks WHERE series_id = ?1",
+                [keep],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bookmarks, 2, "u1 keeps one bookmark, u2's moves over");
+        assert!(matches!(
+            merge_series(&conn, keep, keep),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn split_moves_one_entry_out_but_never_the_last() {
+        let conn = mem();
+        let s = seed_series(&conn, "Mixed", &[("a", None, &[1.0]), ("b", None, &[1.0])]);
+        let entries = list_manga_by_series(&conn, s).unwrap();
+        let new_id = split_manga(&conn, entries[1].id).unwrap();
+        assert_ne!(new_id, s);
+        assert_eq!(list_manga_by_series(&conn, s).unwrap().len(), 1);
+        assert!(matches!(
+            split_manga(&conn, entries[0].id),
+            Err(Error::Conflict(_))
+        ));
+        // The next scan keeps the split instead of relinking by title.
+        assert_eq!(
+            ensure_manga_linked(&conn, "Mixed", entries[1].id).unwrap(),
+            new_id
+        );
+    }
+
+    fn comment(series_id: i64, user_id: i64, parent_id: Option<i64>, body: &str) -> NewComment {
+        NewComment {
+            series_id,
+            chapter_number: 12.0,
+            user_id,
+            parent_id,
+            body: body.into(),
+            spoiler: false,
+        }
+    }
+
+    #[test]
+    fn replies_flatten_to_one_level_and_pages_by_keyset() {
+        let conn = mem();
+        let s = insert_series(&conn, "S").unwrap();
+        let u = create_user(&conn, &new_user("u@x.io", Role::Member)).unwrap();
+        let top = create_comment(&conn, &comment(s, u, None, "first")).unwrap();
+        let reply = create_comment(&conn, &comment(s, u, Some(top), "reply")).unwrap();
+        let nested = create_comment(&conn, &comment(s, u, Some(reply), "nested")).unwrap();
+        assert_eq!(get_comment(&conn, nested).unwrap().parent_id, Some(top));
+        let second = create_comment(&conn, &comment(s, u, None, "second")).unwrap();
+
+        let (tops, replies) = list_comment_page(&conn, s, 12.0, None, 1).unwrap();
+        assert_eq!(tops.iter().map(|c| c.id).collect::<Vec<_>>(), [second]);
+        assert!(replies.is_empty());
+        let (tops, replies) = list_comment_page(&conn, s, 12.0, Some(second), 10).unwrap();
+        assert_eq!(tops.iter().map(|c| c.id).collect::<Vec<_>>(), [top]);
+        assert_eq!(
+            replies.iter().map(|c| c.id).collect::<Vec<_>>(),
+            [reply, nested]
+        );
+        assert_eq!(tops[0].author, "u");
+        // Other chapters are separate discussions.
+        assert!(
+            list_comment_page(&conn, s, 13.0, None, 10)
+                .unwrap()
+                .0
+                .is_empty()
+        );
+        let mut elsewhere = comment(s, u, Some(top), "x");
+        elsewhere.chapter_number = 13.0;
+        assert!(matches!(
+            create_comment(&conn, &elsewhere),
+            Err(Error::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn only_authors_edit_or_delete_and_counts_skip_removed() {
+        let conn = mem();
+        let s = insert_series(&conn, "S").unwrap();
+        let a = create_user(&conn, &new_user("a@x.io", Role::Member)).unwrap();
+        let b = create_user(&conn, &new_user("b@x.io", Role::Member)).unwrap();
+        let c1 = create_comment(&conn, &comment(s, a, None, "one")).unwrap();
+        let c2 = create_comment(&conn, &comment(s, a, None, "two")).unwrap();
+        assert!(matches!(
+            edit_comment(&conn, c1, b, "hijack"),
+            Err(Error::NotFound(_))
+        ));
+        edit_comment(&conn, c1, a, "one!").unwrap();
+        assert!(get_comment(&conn, c1).unwrap().edited_at.is_some());
+        assert!(matches!(
+            delete_comment(&conn, c2, b),
+            Err(Error::NotFound(_))
+        ));
+        delete_comment(&conn, c2, a).unwrap();
+        assert_eq!(count_visible_comments(&conn, s, 12.0).unwrap(), 1);
+        set_comment_hidden(&conn, c1, b, true).unwrap();
+        assert_eq!(count_visible_comments(&conn, s, 12.0).unwrap(), 0);
+        assert!(matches!(
+            edit_comment(&conn, c1, a, "sneaky"),
+            Err(Error::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn reports_dedupe_group_and_resolve_on_hide() {
+        let conn = mem();
+        let s = insert_series(&conn, "Series T").unwrap();
+        let a = create_user(&conn, &new_user("a@x.io", Role::Member)).unwrap();
+        let b = create_user(&conn, &new_user("b@x.io", Role::Member)).unwrap();
+        let m = create_user(&conn, &new_user("m@x.io", Role::Moderator)).unwrap();
+        let c = create_comment(&conn, &comment(s, a, None, "rude")).unwrap();
+        assert!(matches!(
+            report_comment(&conn, c, a, ""),
+            Err(Error::Conflict(_))
+        ));
+        report_comment(&conn, c, b, "spam").unwrap();
+        report_comment(&conn, c, b, "again").unwrap();
+        report_comment(&conn, c, m, "").unwrap();
+        let q = list_open_reports(&conn, 10).unwrap();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].report_count, 2);
+        assert_eq!(q[0].reasons, ["spam"]);
+        assert_eq!(q[0].series_title, "Series T");
+        set_comment_hidden(&conn, c, m, true).unwrap();
+        assert!(list_open_reports(&conn, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mute_expires_and_merge_keeps_comments() {
+        let conn = mem();
+        let u = create_user(&conn, &new_user("u@x.io", Role::Member)).unwrap();
+        let now = "2026-10-14 12:00:00";
+        assert_eq!(muted_until(&conn, u, now).unwrap(), None);
+        set_user_muted(&conn, u, Some("2026-10-15 12:00:00")).unwrap();
+        assert!(muted_until(&conn, u, now).unwrap().is_some());
+        assert_eq!(muted_until(&conn, u, "2026-10-16 00:00:00").unwrap(), None);
+
+        let keep = insert_series(&conn, "Keep").unwrap();
+        let dup = insert_series(&conn, "Dup").unwrap();
+        let c = create_comment(&conn, &comment(dup, u, None, "hi")).unwrap();
+        merge_series(&conn, dup, keep).unwrap();
+        assert_eq!(get_comment(&conn, c).unwrap().series_id, keep);
+    }
+
+    #[test]
+    fn shelves_move_entries_and_bookmarks_default_to_reading() {
+        let conn = mem();
+        let u = create_user(&conn, &new_user("u@x.io", Role::Member)).unwrap();
+        let a = seed_series(&conn, "A", &[("a", None, &[1.0])]);
+        let b = seed_series(&conn, "B", &[("a", None, &[1.0])]);
+        set_bookmark(&conn, u, a, true).unwrap();
+        assert_eq!(get_shelf(&conn, u, a).unwrap(), Some(Shelf::Reading));
+        set_shelf(&conn, u, b, Shelf::Plan).unwrap();
+        set_shelf(&conn, u, a, Shelf::Completed).unwrap();
+        // Re-bookmarking keeps the chosen shelf.
+        set_bookmark(&conn, u, a, true).unwrap();
+        assert_eq!(get_shelf(&conn, u, a).unwrap(), Some(Shelf::Completed));
+        let counts: HashMap<Shelf, i64> = library_counts(&conn, u).unwrap().into_iter().collect();
+        assert_eq!(counts[&Shelf::Completed], 1);
+        assert_eq!(counts[&Shelf::Plan], 1);
+        assert_eq!(counts[&Shelf::Reading], 0);
+        assert_eq!(list_shelf(&conn, u, Shelf::Plan).unwrap()[0].id, b);
+        set_series_hidden(&conn, b, Some("2026-10-14 00:00:00")).unwrap();
+        assert!(list_shelf(&conn, u, Shelf::Plan).unwrap().is_empty());
+    }
+
+    #[test]
+    fn continue_reading_resumes_or_points_to_the_next_chapter() {
+        let conn = mem();
+        let u = create_user(&conn, &new_user("u@x.io", Role::Member)).unwrap();
+        let mid_series = seed_series(&conn, "Mid", &[("a", None, &[1.0, 2.0])]);
+        let done_series = seed_series(&conn, "Done", &[("a", None, &[1.0, 2.0])]);
+        let caught_up = seed_series(&conn, "Caught", &[("a", None, &[1.0])]);
+        let chapter = |series: i64, number: f64| -> i64 {
+            conn.query_row(
+                "SELECT c.id FROM chapters c JOIN manga m ON m.id = c.manga_id
+                 WHERE m.series_id = ?1 AND c.number = ?2",
+                rusqlite::params![series, number],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let progress = |ch: i64, page: i64, status: &str, at: &str| {
+            conn.execute(
+                "INSERT INTO progress (user_id, chapter_id, page, status, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![u, ch, page, status, at],
+            )
+            .unwrap();
+        };
+        progress(
+            chapter(mid_series, 1.0),
+            7,
+            "started",
+            "2026-10-14 10:00:00",
+        );
+        progress(
+            chapter(done_series, 1.0),
+            20,
+            "finished",
+            "2026-10-14 11:00:00",
+        );
+        progress(
+            chapter(caught_up, 1.0),
+            20,
+            "finished",
+            "2026-10-14 12:00:00",
+        );
+        let items = continue_reading(&conn, u, 10).unwrap();
+        assert_eq!(items.len(), 2, "caught-up series are skipped");
+        assert_eq!(items[0].series_id, done_series, "most recent first");
+        assert!(items[0].is_next);
+        assert_eq!(items[0].chapter_number, 2.0);
+        assert_eq!(items[0].page, 1);
+        assert_eq!(items[1].series_id, mid_series);
+        assert_eq!(items[1].page, 7);
+        assert!(!items[1].is_next);
+    }
+
+    #[test]
+    fn library_updates_cover_library_series_except_dropped() {
+        let conn = mem();
+        let u = create_user(&conn, &new_user("u@x.io", Role::Member)).unwrap();
+        let kept = seed_series(&conn, "Kept", &[("a", None, &[1.0])]);
+        let dropped = seed_series(&conn, "Dropped", &[("a", None, &[1.0])]);
+        seed_series(&conn, "Other", &[("a", None, &[1.0])]);
+        set_shelf(&conn, u, kept, Shelf::Reading).unwrap();
+        set_shelf(&conn, u, dropped, Shelf::Dropped).unwrap();
+        let ups = library_updates(&conn, u, 10).unwrap();
+        assert_eq!(ups.iter().map(|c| c.series_id).collect::<Vec<_>>(), [kept]);
+    }
+
     #[test]
     fn user_roundtrip_and_session_lookup() {
         let conn = mem();
-        let id = create_user(&conn, &NewUser {
-            name: "r".into(), email: "r@x.io".into(),
-            password_hash: "h".into(), role: Role::Member,
-        }).unwrap();
+        let id = create_user(
+            &conn,
+            &NewUser {
+                name: "r".into(),
+                email: "r@x.io".into(),
+                password_hash: "h".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
         assert!(id > 0);
         insert_session(&conn, id, "tok123", "2099-01-01 00:00:00", "test").unwrap();
         let u = find_user_by_session(&conn, "tok123", "2026-01-01 00:00:00").unwrap();
@@ -933,24 +3073,128 @@ mod tests {
         let conn = mem();
         assert_eq!(get_setting(&conn, "site_title").unwrap(), None);
         set_setting(&conn, "site_title", "MyDen", 1).unwrap();
-        assert_eq!(get_setting(&conn, "site_title").unwrap().as_deref(), Some("MyDen"));
-        let id = create_user(&conn, &NewUser {
-            name: "r".into(), email: "r@x.io".into(),
-            password_hash: "h".into(), role: Role::Member,
-        }).unwrap();
-        update_user_profile(&conn, id, "renamed", "fr", "asura").unwrap();
+        set_setting(&conn, "site_theme", "retired-theme", 1).unwrap();
+        assert_eq!(
+            get_setting(&conn, "site_title").unwrap().as_deref(),
+            Some("MyDen")
+        );
+        let id = create_user(
+            &conn,
+            &NewUser {
+                name: "r".into(),
+                email: "r@x.io".into(),
+                password_hash: "h".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE users SET theme = 'asura' WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+        update_user_profile(&conn, id, "renamed", "fr").unwrap();
         let u = find_user_by_email(&conn, "r@x.io").unwrap();
         assert_eq!(u.name, "renamed");
+        let stored_theme: String = conn
+            .query_row(
+                "SELECT theme FROM users WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_theme, "asura");
+        assert_eq!(
+            get_setting(&conn, "site_theme").unwrap().as_deref(),
+            Some("retired-theme")
+        );
+    }
+
+    #[test]
+    fn oauth_link_roundtrip() {
+        let conn = mem();
+        let id = create_user(
+            &conn,
+            &NewUser {
+                name: "o".into(),
+                email: "o@x.io".into(),
+                password_hash: "OAUTH:google:1".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
+        link_oauth_account(&conn, id, "google", "gid-1").unwrap();
+        // idempotent re-link
+        link_oauth_account(&conn, id, "google", "gid-1").unwrap();
+        let u = find_user_by_oauth(&conn, "google", "gid-1").unwrap();
+        assert_eq!(u.id, id);
+        assert!(matches!(
+            find_user_by_oauth(&conn, "google", "nope"),
+            Err(crate::error::Error::NotFound(_))
+        ));
+        assert_eq!(
+            user_oauth_providers(&conn, id).unwrap(),
+            vec!["google".to_string()]
+        );
     }
 
     #[test]
     fn bookmark_unknown_series_fails_on_fk() {
         let conn = mem();
-        let user_id = create_user(&conn, &NewUser {
-            name: "fk".into(), email: "fk@x.io".into(),
-            password_hash: "h".into(), role: Role::Member,
-        }).unwrap();
+        let user_id = create_user(
+            &conn,
+            &NewUser {
+                name: "fk".into(),
+                email: "fk@x.io".into(),
+                password_hash: "h".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
         // No series with id 9999 exists → FK violation must error.
         assert!(set_bookmark(&conn, user_id, 9999, true).is_err());
+    }
+
+    #[test]
+    fn reader_prefs_roundtrip_and_defaults() {
+        let conn = mem();
+        let uid = create_user(
+            &conn,
+            &NewUser {
+                name: "r".into(),
+                email: "r@x.io".into(),
+                password_hash: "h".into(),
+                role: Role::Member,
+            },
+        )
+        .unwrap();
+        // Fresh user -> defaults.
+        assert_eq!(
+            get_reader_prefs(&conn, uid).unwrap(),
+            ReaderPrefs::default()
+        );
+        // Illegal values are normalized on write.
+        let mut p = ReaderPrefs::default();
+        p.layout = "nope".into();
+        p.max_w = 99999;
+        set_reader_prefs(&conn, uid, &p).unwrap();
+        let got = get_reader_prefs(&conn, uid).unwrap();
+        assert_eq!(got.layout, "strip");
+        assert_eq!(got.max_w, 1400);
+        // A corrupted blob degrades to defaults, never errors.
+        conn.execute(
+            "UPDATE users SET reader_prefs = '{{{' WHERE id = ?1",
+            rusqlite::params![uid],
+        )
+        .unwrap();
+        assert_eq!(
+            get_reader_prefs(&conn, uid).unwrap(),
+            ReaderPrefs::default()
+        );
+        // Unknown user -> defaults, not an error.
+        assert_eq!(
+            get_reader_prefs(&conn, 12_345).unwrap(),
+            ReaderPrefs::default()
+        );
     }
 }

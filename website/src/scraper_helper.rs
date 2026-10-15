@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 use std::time::Duration;
-use thirtyfour::manager::BrowserKind;
 use thirtyfour::ChromiumLikeCapabilities;
+use thirtyfour::manager::BrowserKind;
 
 use crate::AppState;
 
@@ -35,7 +35,11 @@ fn find_chromedriver() -> String {
     if let Ok(path) = std::env::var("CHROMEDRIVER_PATH") {
         return path;
     }
-    let which = if cfg!(target_os = "windows") { "where" } else { "which" };
+    let which = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
     if let Ok(out) = std::process::Command::new(which)
         .arg("chromedriver")
         .output()
@@ -99,325 +103,324 @@ where
     });
 }
 
-/// Build an engine with all registered adapters.
+/// Build an engine over every registered source.
 pub(crate) fn build_engine() -> scraper::engine::ScraperEngine {
-    let mut engine = scraper::engine::ScraperEngine::new();
-    engine.add_adapter(Box::new(
-        scraper::adapters::demonicscans::DemonicscansAdapter,
-    ));
-    engine.add_adapter(Box::new(
-        scraper::adapters::manhuaplus::ManhuaplusAdapter,
-    ));
-    engine
+    scraper::engine::ScraperEngine::from_adapters(scraper::adapters::all())
+}
+
+/// Names of every registered source, in scan order.
+pub(crate) fn source_names() -> Vec<String> {
+    build_engine().source_names()
+}
+
+/// `(name, base URL)` of every registered source, for the admin list.
+pub(crate) fn source_list() -> Vec<(String, String)> {
+    scraper::adapters::all()
+        .iter()
+        .map(|a| (a.source_name().to_string(), a.base_url().to_string()))
+        .collect()
+}
+
+/// `site_settings` key holding the comma-separated disabled source names.
+pub(crate) const SOURCES_DISABLED_KEY: &str = "sources_disabled";
+
+/// Sources an admin switched off. They are not scanned or synced.
+pub(crate) fn disabled_sources(conn: &rusqlite::Connection) -> Vec<String> {
+    mangaread_core::db::get_setting(conn, SOURCES_DISABLED_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+// ── Tracked jobs ──
+
+/// One unit of scraping work. Every job is recorded in `sync_runs`, so the
+/// admin pages show its outcome.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Job {
+    /// Discover listings on one source.
+    Scan(String),
+    /// Fetch one manga's metadata and chapters.
+    Manga(i64),
+    /// Fetch one chapter's page URLs.
+    Chapter(i64),
+}
+
+impl Job {
+    fn kind(&self) -> mangaread_core::db::SyncKind {
+        use mangaread_core::db::SyncKind;
+        match self {
+            Job::Scan(_) => SyncKind::Scan,
+            Job::Manga(_) => SyncKind::Manga,
+            Job::Chapter(_) => SyncKind::Chapter,
+        }
+    }
+
+    fn target_id(&self) -> Option<i64> {
+        match self {
+            Job::Scan(_) => None,
+            Job::Manga(id) | Job::Chapter(id) => Some(*id),
+        }
+    }
+
+    /// The source this job scrapes, for the run record.
+    fn source(&self, db: &rusqlite::Connection) -> Result<String, String> {
+        let manga_source = |id: i64| {
+            mangaread_core::db::get_manga_by_id(db, id)
+                .map(|m| m.source)
+                .map_err(|e| e.to_string())
+        };
+        match self {
+            Job::Scan(source) => Ok(source.clone()),
+            Job::Manga(id) => manga_source(*id),
+            Job::Chapter(id) => mangaread_core::db::get_chapter_by_id(db, *id)
+                .map_err(|e| e.to_string())
+                .and_then(|c| manga_source(c.manga_id)),
+        }
+    }
+}
+
+/// Run one job with its own browser and DB connection, recording it in
+/// `sync_runs`. Returns the item count or the error message.
+///
+/// Must run on a scraper thread (see [`spawn_scraper`]): the engine holds a
+/// `!Send` `&Connection` across awaits.
+pub(crate) async fn run_job(job: Job) -> Result<usize, String> {
+    let db = open_db().map_err(|e| format!("DB error: {e}"))?;
+    let source = job.source(&db)?;
+    // Not recorded as a run: nothing was attempted.
+    if disabled_sources(&db).contains(&source) {
+        tracing::debug!("{job:?} skipped: source {source} is disabled");
+        return Err(format!("source {source} is disabled"));
+    }
+    let run = mangaread_core::db::start_sync_run(&db, &source, job.kind(), job.target_id())
+        .map_err(|e| format!("DB error: {e}"))?;
+    let outcome = async {
+        let engine = build_engine();
+        let driver = create_webdriver(build_chrome_caps())
+            .await
+            .map_err(|e| format!("WebDriver error: {e}"))?;
+        let result = match &job {
+            Job::Scan(source) => engine.scan_source(source, &driver, &db).await,
+            Job::Manga(id) => engine.sync_manga(&driver, &db, *id).await,
+            Job::Chapter(id) => engine.sync_chapter(&driver, &db, *id).await,
+        };
+        if let Err(e) = driver.quit().await {
+            tracing::warn!("driver quit error: {e:?}");
+        }
+        result.map_err(|e| format!("{e:#}"))
+    }
+    .await;
+    match &outcome {
+        Ok(n) => tracing::info!("{job:?} on {source}: ok ({n} items)"),
+        Err(e) => tracing::error!("{job:?} on {source}: {e}"),
+    }
+    let recorded = outcome.as_ref().map(|n| *n as i64).map_err(String::as_str);
+    if let Err(e) = mangaread_core::db::finish_sync_run(&db, run, recorded) {
+        tracing::error!("could not record sync run {run}: {e}");
+    }
+    // Scans add series; make them searchable right away.
+    if matches!(job, Job::Scan(_)) && outcome.is_ok() {
+        refresh_search_index(&db);
+    }
+    outcome
+}
+
+/// Rebuild the search index, logging instead of failing: a stale index only
+/// costs search freshness until the next rebuild.
+pub(crate) fn refresh_search_index(db: &rusqlite::Connection) {
+    if let Err(e) = mangaread_core::db::rebuild_search_index(db) {
+        tracing::error!("search index rebuild failed: {e}");
+    }
 }
 
 // ── Public API ──
 
-/// Sync a manga's chapters in the background.
-///
-/// Each task creates its own chromedriver and quits it when done.
-pub fn sync_manga_background(manga_id: i64) {
+/// Cap on concurrent page-view-triggered syncs. Each one runs a headless
+/// browser, so the cap bounds memory no matter how many pages visitors open.
+/// It matches the sync loop's 3 parallel drivers.
+const MAX_ON_DEMAND_SYNCS: usize = 3;
+
+/// Syncs started by page views, keyed by `(kind, id)`.
+static IN_FLIGHT: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<(&'static str, i64)>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// RAII claim on one on-demand sync slot. Dropping it frees the slot, so
+/// every early return in the sync task releases it.
+struct InFlight {
+    key: (&'static str, i64),
+}
+
+impl InFlight {
+    /// `None` when the same item is already syncing or all slots are busy.
+    /// The caller then skips; the next page view retries.
+    fn try_claim(kind: &'static str, id: i64) -> Option<Self> {
+        let mut set = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+        if set.len() >= MAX_ON_DEMAND_SYNCS || !set.insert((kind, id)) {
+            return None;
+        }
+        Some(Self { key: (kind, id) })
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
+/// Run `job` in the background unless the same item is already running or
+/// the on-demand cap is reached. Returns whether it started.
+pub(crate) fn spawn_job(job: Job) -> bool {
+    let key = match &job {
+        // Scans are keyed by source position, so each source scans once at a time.
+        Job::Scan(source) => (
+            "scan",
+            source_names()
+                .iter()
+                .position(|s| s == source)
+                .unwrap_or(usize::MAX) as i64,
+        ),
+        Job::Manga(id) => ("manga", *id),
+        Job::Chapter(id) => ("chapter", *id),
+    };
+    let Some(claim) = InFlight::try_claim(key.0, key.1) else {
+        tracing::debug!("{job:?} skipped (in flight or at cap)");
+        return false;
+    };
     spawn_scraper(move || async move {
-        tracing::info!("bg sync: manga {} starting...", manga_id);
-
-        let engine = build_engine();
-
-        let driver = match create_webdriver(build_chrome_caps()).await {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!("bg sync: failed to create WebDriver: {:?}", e);
-                return;
-            }
-        };
-
-        let db = match open_db() {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::error!("bg sync: failed to open DB: {:?}", e);
-                let _ = driver.quit().await;
-                return;
-            }
-        };
-
-        if let Err(e) = engine.sync_manga(&driver, &db, manga_id).await {
-            tracing::error!("bg sync: manga {} failed: {:?}", manga_id, e);
-        }
-
-        // Properly close the browser session
-        if let Err(e) = driver.quit().await {
-            tracing::warn!("bg sync: driver quit error: {:?}", e);
-        }
-
-        tracing::info!("bg sync: manga {} complete", manga_id);
+        let _claim = claim;
+        let _ = run_job(job).await;
     });
+    true
 }
 
-/// Sync a chapter's pages in the background.
-///
-/// Each task creates its own chromedriver and quits it when done.
-/// Spawned on a dedicated OS thread with its own tokio runtime.
-pub fn sync_chapter_background(chapter_id: i64) {
-    spawn_scraper(move || async move {
-        tracing::info!("bg sync: chapter {} starting...", chapter_id);
-
-        let engine = build_engine();
-
-        let driver = match create_webdriver(build_chrome_caps()).await {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!("bg sync: failed to create WebDriver: {:?}", e);
-                return;
-            }
-        };
-
-        let db = match open_db() {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::error!("bg sync: failed to open DB: {:?}", e);
-                let _ = driver.quit().await;
-                return;
-            }
-        };
-
-        if let Err(e) = engine.sync_chapter(&driver, &db, chapter_id).await {
-            tracing::error!("bg sync: chapter {} failed: {:?}", chapter_id, e);
-        }
-
-        // Properly close the browser session
-        if let Err(e) = driver.quit().await {
-            tracing::warn!("bg sync: driver quit error: {:?}", e);
-        }
-
-        tracing::info!("bg sync: chapter {} complete", chapter_id);
-    });
-}
-
-/// Scan all sources for manga listings at startup, discovering new series.
-///
-/// Spawned as a background task so the server can start accepting requests
-/// immediately.  Runs `scan_all` on each configured adapter.
-pub fn scan_background() {
-    spawn_scraper(|| async move {
-        tracing::info!("startup scan: starting...");
-
-        let engine = build_engine();
-
-        let driver = match create_webdriver(build_chrome_caps()).await {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!("startup scan: failed to create WebDriver: {:?}", e);
-                return;
-            }
-        };
-
-        let db = match open_db() {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::error!("startup scan: failed to open DB: {:?}", e);
-                let _ = driver.quit().await;
-                return;
-            }
-        };
-
-        if let Err(e) = engine.scan_all(&driver, &db).await {
-            tracing::error!("startup scan: scan failed: {:?}", e);
-        }
-
-        if let Err(e) = driver.quit().await {
-            tracing::warn!("startup scan: driver quit error: {:?}", e);
-        }
-
-        tracing::info!("startup scan: complete");
-    });
-}
-
-/// Sync a single manga using a fresh chromedriver session.
-///
-/// Opens its own WebDriver, syncs the manga, quits the driver.
-/// Reports success/failure to [`AppState::adapter_health`].
-async fn sync_single_manga(manga_id: i64, state: Arc<AppState>) {
-    // Look up source name so we can track per-source health
-    let source = match open_db() {
-        Ok(ref db) => match mangaread_core::db::get_manga_by_id(db, manga_id) {
-            Ok(m) => m.source,
-            Err(e) => {
-                tracing::error!("sync worker: failed to look up manga {manga_id}: {e}");
-                return;
-            }
-        },
-        Err(e) => {
-            tracing::error!("sync worker: DB error for manga {manga_id}: {e}");
-            return;
-        }
-    };
-
-    // Helper: record a failure for this source and log a warning
-    async fn record_failure(state: &AppState, src: &str, msg: &str) {
-        let mut h = state.adapter_health.lock().await;
-        if let Some(entry) = h.get_mut(src) {
-            if entry.healthy {
-                tracing::warn!("adapter {} is now UNHEALTHY: {msg}", src);
-            }
-            entry.healthy = false;
-            entry.consecutive_failures += 1;
-            entry.last_error = Some(msg.to_string());
-        }
-    }
-
-    // Helper: record a success for this source, log recovery
-    async fn record_success(state: &AppState, src: &str) {
-        let mut h = state.adapter_health.lock().await;
-        if let Some(entry) = h.get_mut(src) {
-            if !entry.healthy {
-                tracing::info!("adapter {} recovered after {} failures", src, entry.consecutive_failures);
-            }
-            entry.healthy = true;
-            entry.consecutive_failures = 0;
-            entry.last_error = None;
-        }
-    }
-
-    let engine = build_engine();
-    let driver = match create_webdriver(build_chrome_caps()).await {
-        Ok(d) => d,
-        Err(e) => {
-            let msg = format!("WebDriver error: {e}");
-            tracing::error!("sync worker: {msg}");
-            record_failure(&state, &source, &msg).await;
-            return;
-        }
-    };
-    let db = match open_db() {
-        Ok(db) => db,
-        Err(e) => {
-            let msg = format!("DB error: {e}");
-            tracing::error!("sync worker: {msg}");
-            let _ = driver.quit().await;
-            record_failure(&state, &source, &msg).await;
-            return;
-        }
-    };
-
-    if let Err(e) = engine.sync_manga(&driver, &db, manga_id).await {
-        let msg = format!("Sync failed: {e}");
-        tracing::error!("sync worker: {msg}");
-        record_failure(&state, &source, &msg).await;
-    } else {
-        record_success(&state, &source).await;
-    }
-
-    let _ = driver.quit().await;
-}
+/// Days of sync history kept for the admin pages.
+const SYNC_HISTORY_DAYS: i64 = 30;
 
 /// Start the automatic sync loop in the background.
 ///
 /// # Flow
-/// 1. **Scan** — one chromedriver session discovers manga listings from all sources
-/// 2. **Sync** — finds manga that need syncing (unsynced or stale), syncs them in
-///    parallel with up to [`MAX_CONCURRENT_SYNCS`] concurrent OS threads
-/// 3. **Sleep** — waits [`SYNC_INTERVAL_SECS`], then repeats
-///
-/// Each manga sync gets its own chromedriver + DB connection on a dedicated OS
-/// thread, avoiding rusqlite's `!Send` constraint.  Progress is reported through
-/// [`AppState::auto_sync`] and exposed via the `/api/sync-status` endpoint.
+/// 1. **Scan** — each source is scanned as its own recorded job, so one
+///    broken source cannot block the others
+/// 2. **Sync** — manga that are unsynced or stale sync in parallel, at most
+///    [`MAX_CONCURRENT_SYNCS`] at a time, each on its own OS thread
+/// 3. **Sleep** — waits [`SYNC_INTERVAL_SECS`], or until an admin presses
+///    "Run full sync now" ([`AppState::sync_wake`])
 pub fn start_sync_loop(state: Arc<AppState>) {
     spawn_scraper(move || async move {
+        if let Ok(db) = open_db() {
+            match mangaread_core::db::fail_interrupted_sync_runs(&db) {
+                Ok(n) if n > 0 => tracing::warn!("marked {n} interrupted sync runs as failed"),
+                _ => {}
+            }
+        }
         loop {
-            // ── 1. Scan sources (single driver) ──
-            tracing::info!("sync loop: scanning sources...");
-            let engine = build_engine();
-
-            let scan_driver = match create_webdriver(build_chrome_caps()).await {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::error!("sync loop: scan driver failed: {:?}", e);
-                    tokio::time::sleep(Duration::from_secs(300)).await;
-                    continue;
-                }
-            };
-
-            let scan_db = match open_db() {
-                Ok(db) => db,
-                Err(e) => {
-                    tracing::error!("sync loop: scan DB failed: {:?}", e);
-                    let _ = scan_driver.quit().await;
-                    tokio::time::sleep(Duration::from_secs(300)).await;
-                    continue;
-                }
-            };
-
-            let _ = engine.scan_all(&scan_driver, &scan_db).await;
-            let _ = scan_driver.quit().await;
-
-            // ── 2. Get manga IDs needing sync ──
-            let manga_ids = match mangaread_core::db::list_manga_ids_needing_sync(&scan_db, STALE_MINUTES) {
-                Ok(ids) => ids,
-                Err(e) => {
-                    tracing::error!("sync loop: DB query failed: {:?}", e);
-                    tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_SECS)).await;
-                    continue;
-                }
-            };
-
-            let total = manga_ids.len();
-            if total == 0 {
-                tracing::info!("sync loop: nothing to sync, sleeping {SYNC_INTERVAL_SECS}s");
-                tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_SECS)).await;
-                continue;
-            }
-
-            tracing::info!(
-                "sync loop: syncing {total} manga (max {MAX_CONCURRENT_SYNCS} concurrent)..."
-            );
-
-            {
-                let mut p = state.auto_sync.lock().await;
-                p.running = true;
-                p.total = total as i64;
-                p.current = 0;
-            }
-
-            // ── 3. Sync in parallel on OS threads (avoids rusqlite !Send issue) ──
-            let completed = Arc::new(std::sync::atomic::AtomicI64::new(0));
-
-            // Process in chunks so at most MAX_CONCURRENT_SYNCS threads exist at once
-            for chunk in manga_ids.chunks(MAX_CONCURRENT_SYNCS) {
-                let mut thread_handles = Vec::with_capacity(chunk.len());
-
-                for manga_id in chunk {
-                    let state_clone = state.clone();
-                    let completed_clone = completed.clone();
-                    let mid = *manga_id;
-
-                    let handle = std::thread::spawn(move || {
-                        let rt = tokio::runtime::Runtime::new().expect("sync worker rt");
-                        rt.block_on(async move {
-                            sync_single_manga(mid, state_clone.clone()).await;
-
-                            let done = completed_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-                            let mut p = state_clone.auto_sync.lock().await;
-                            p.current = done;
-                        });
-                    });
-
-                    thread_handles.push(handle);
-                }
-
-                // Wait for this chunk before launching the next
-                for h in thread_handles {
-                    let _ = h.join();
+            run_pass(&state).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_SECS)) => {}
+                _ = state.sync_wake.notified() => {
+                    tracing::info!("sync loop: woken by admin");
                 }
             }
-
-            {
-                let mut p = state.auto_sync.lock().await;
-                p.running = false;
-            }
-
-            tracing::info!(
-                "sync loop: pass complete ({total} synced), sleeping {SYNC_INTERVAL_SECS}s"
-            );
-            tokio::time::sleep(Duration::from_secs(SYNC_INTERVAL_SECS)).await;
         }
     });
+}
+
+/// One full scan + sync pass.
+async fn run_pass(state: &Arc<AppState>) {
+    {
+        let mut p = state.auto_sync.lock().await;
+        p.running = true;
+        p.total = 0;
+        p.current = 0;
+    }
+
+    let disabled = open_db()
+        .map(|db| disabled_sources(&db))
+        .unwrap_or_default();
+
+    // ── 1. Scan each enabled source ──
+    for source in source_names() {
+        if !disabled.contains(&source) {
+            let _ = run_job(Job::Scan(source)).await;
+        }
+    }
+
+    // ── 2. Manga needing sync ──
+    let manga_ids = match open_db().map_err(|e| e.to_string()).and_then(|db| {
+        let _ = mangaread_core::db::prune_sync_runs(&db, SYNC_HISTORY_DAYS);
+        mangaread_core::db::list_manga_ids_needing_sync(&db, STALE_MINUTES, &disabled)
+            .map_err(|e| e.to_string())
+    }) {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::error!("sync loop: could not list stale manga: {e}");
+            Vec::new()
+        }
+    };
+    let total = manga_ids.len();
+    tracing::info!("sync loop: syncing {total} manga (max {MAX_CONCURRENT_SYNCS} concurrent)");
+    state.auto_sync.lock().await.total = total as i64;
+
+    // ── 3. Sync in parallel on OS threads (rusqlite is !Send) ──
+    let completed = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    for chunk in manga_ids.chunks(MAX_CONCURRENT_SYNCS) {
+        let handles: Vec<_> = chunk
+            .iter()
+            .map(|&mid| {
+                let state = state.clone();
+                let completed = completed.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().expect("sync worker rt");
+                    rt.block_on(async move {
+                        let _ = run_job(Job::Manga(mid)).await;
+                        let done = completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        state.auto_sync.lock().await.current = done;
+                    });
+                })
+            })
+            .collect();
+        for h in handles {
+            let _ = h.join();
+        }
+    }
+
+    if let Ok(db) = open_db() {
+        refresh_search_index(&db);
+    }
+    let mut p = state.auto_sync.lock().await;
+    p.running = false;
+    p.last_finished = Some(crate::auth::now_utc_string());
+    tracing::info!("sync loop: pass complete ({total} manga)");
+}
+
+#[cfg(test)]
+mod in_flight_tests {
+    use super::*;
+
+    #[test]
+    fn claims_dedupe_cap_and_release_on_drop() {
+        // Distinct kind so parallel tests in this binary cannot collide.
+        let a = InFlight::try_claim("test", 1).expect("first claim");
+        assert!(
+            InFlight::try_claim("test", 1).is_none(),
+            "duplicate refused"
+        );
+        let b = InFlight::try_claim("test", 2).expect("second");
+        let c = InFlight::try_claim("test", 3).expect("third");
+        assert!(InFlight::try_claim("test", 4).is_none(), "cap reached");
+        drop(a);
+        let d = InFlight::try_claim("test", 1).expect("slot freed on drop");
+        drop((b, c, d));
+    }
 }

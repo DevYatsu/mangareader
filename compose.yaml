@@ -1,0 +1,48 @@
+# MangaRead — run the published image.
+#
+#   docker compose up -d
+#   docker compose logs mangaread | grep "setup token"   # first run only
+#
+# Then open http://localhost:3000/setup, paste the token, and create your
+# admin account. Branding and email are configured from /admin afterwards.
+services:
+  mangaread:
+    image: ghcr.io/devyatsu/mangareader:latest
+    container_name: mangaread
+    ports:
+      - "3000:3000"
+    volumes:
+      # The SQLite database lives here; back up this volume.
+      - mangaread_data:/app/data
+    environment:
+      - MANGAREAD_DB=/app/data/mangaread.db
+      # Public URL used in emailed links and OAuth callbacks.
+      - MANGAREAD_BASE_URL=http://localhost:3000
+      # Set to 1 when served over HTTPS (marks the session cookie Secure).
+      # - MANGAREAD_COOKIE_SECURE=1
+      # Set to 1 only behind a reverse proxy that sets X-Forwarded-For.
+      # - MANGAREAD_TRUST_PROXY=1
+      # Optional: SMTP can also be set in /admin/email (that value wins).
+      # - SMTP_URL=smtps://user:password@smtp.example.com
+      # - SMTP_FROM=MangaRead <noreply@example.com>
+      - RUST_LOG=info
+    restart: unless-stopped
+    init: true
+    # Headless Chromium (used to fetch chapters) needs SYS_ADMIN for its
+    # sandbox. A Chrome seccomp profile is the stricter alternative.
+    cap_add:
+      - SYS_ADMIN
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          # Up to 3 Chromium sessions run during a sync; each needs ~300-500 MB.
+          memory: 2g
+
+volumes:
+  mangaread_data:

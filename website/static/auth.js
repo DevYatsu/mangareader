@@ -110,24 +110,32 @@
       return currentUserId() !== null;
     },
     /**
+     * Returns the request promise so a caller can observe the outcome.
+     * The request shape and the error-swallowing contract are unchanged:
+     * callers that ignore the return value behave exactly as before.
      * @param {number} seriesId
      * @param {boolean} bookmarked
+     * @returns {Promise<Response|null>|undefined} `undefined` when no write is sent
      */
     pushBookmark: function (seriesId, bookmarked) {
       if (!currentUserId()) return;
-      postJson('/api/bookmarks', { series_id: seriesId, bookmarked: !!bookmarked });
+      return postJson('/api/bookmarks', { series_id: seriesId, bookmarked: !!bookmarked });
     },
     /**
+     * Returns the request promise so a caller can observe the outcome.
+     * On a network failure the promise resolves `null` (never rejects); a
+     * delivered-but-non-ok response resolves as the `Response`.
      * @param {number|string} chapterId
      * @param {number} page
      * @param {string} status
+     * @returns {Promise<Response|null>|undefined} `undefined` when no write is sent
      */
     pushProgress: function (chapterId, page, status) {
       var id;
       if (!currentUserId()) return;
       id = parseInt(chapterId, 10);
       if (!isFinite(id)) return;
-      postJson('/api/progress', {
+      return postJson('/api/progress', {
         chapter_id: id,
         page: page || 1,
         status: status || 'started'

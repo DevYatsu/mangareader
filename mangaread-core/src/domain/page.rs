@@ -15,3 +15,13 @@ pub struct NewPage {
     pub index: i32,
     pub image_url: String,
 }
+
+/// Where a page image comes from, for the image proxy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageOrigin {
+    pub image_url: String,
+    /// Adapter name of the manga that owns the page.
+    pub source: String,
+    /// Whether an admin hid the owning series.
+    pub hidden: bool,
+}

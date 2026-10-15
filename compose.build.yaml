@@ -1,3 +1,5 @@
+# Build from source. Most people want compose.yaml (prebuilt image) instead:
+#   docker compose -f compose.build.yaml up --build
 services:
   mangaread:
     build:
@@ -18,9 +20,6 @@ services:
       - MANGAREAD_DB=/app/data/mangaread.db
       - CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage --disable-gpu --headless
       - RUST_LOG=info
-      - SITE_TITLE=MangaRead
-      - SITE_COLOR=#3b82f6
-      - SITE_BG=#0f0f0f
     restart: unless-stopped
     init: true
 

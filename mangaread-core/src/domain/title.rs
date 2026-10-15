@@ -6,8 +6,14 @@ fn collapse_whitespace(s: &str) -> String {
     let mut sp = false;
     for c in s.chars() {
         if c.is_whitespace() || c == '\n' || c == '\r' {
-            if !sp { out.push(' '); sp = true; }
-        } else { out.push(c); sp = false; }
+            if !sp {
+                out.push(' ');
+                sp = true;
+            }
+        } else {
+            out.push(c);
+            sp = false;
+        }
     }
     out.trim().to_string()
 }
@@ -29,10 +35,14 @@ pub fn clean_display_title(title: &str) -> String {
     let t = if let Some(pos) = t.rfind('(') {
         let before = t[..pos].trim_end();
         let after = t[pos..].trim();
-        if after.ends_with(')') && !after[1..after.len()-1].contains('(') {
+        if after.ends_with(')') && !after[1..after.len() - 1].contains('(') {
             before
-        } else { t }
-    } else { t };
+        } else {
+            t
+        }
+    } else {
+        t
+    };
     let t = t.trim_matches(|c: char| c.is_ascii_punctuation() || c.is_whitespace());
     t.to_string()
 }
@@ -53,12 +63,18 @@ mod tests {
 
     #[test]
     fn test_clean_truncated() {
-        assert_eq!(clean_display_title("Martial Peak...\n36850575"), "Martial Peak");
+        assert_eq!(
+            clean_display_title("Martial Peak...\n36850575"),
+            "Martial Peak"
+        );
     }
 
     #[test]
     fn test_clean_alt_titles() {
-        assert_eq!(clean_display_title("Nano Machine;;나노마신"), "Nano Machine");
+        assert_eq!(
+            clean_display_title("Nano Machine;;나노마신"),
+            "Nano Machine"
+        );
     }
 
     #[test]

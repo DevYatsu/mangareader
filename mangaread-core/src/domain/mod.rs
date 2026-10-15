@@ -4,16 +4,22 @@
 //! `series` → `manga` → `chapter` → `page`.
 
 pub mod chapter;
+pub mod comment;
+pub mod library;
 pub mod manga;
 pub mod page;
+pub mod reader;
 pub mod series;
 pub mod source;
 pub mod title;
 pub mod user;
 
 pub use chapter::*;
+pub use comment::*;
+pub use library::*;
 pub use manga::*;
 pub use page::*;
+pub use reader::*;
 pub use series::*;
 pub use source::*;
 pub use title::*;
